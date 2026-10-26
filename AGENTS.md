@@ -4,7 +4,7 @@
 
 Cleverbox implements a Matter-over-Wi-Fi radiator bridge on the Elecram
 ESP32-C6 + CC1101 Sub-GHz 855–925 MHz board. Keep changes specific to that
-hardware and purpose. Read README.md and docs/implementation.md first.
+hardware and purpose. Read README.md, docs/implementation.md and docs/libraries.md first.
 
 Treat the protocol descriptions in hemphen/clevertouch-protocol as the working
 contract. Use hemphen/clevertouch-radio for implementation references when needed.
@@ -22,17 +22,24 @@ back to the source project. Do not expand this repository into a research archiv
 
 - Do not duplicate protocol specifications, captures, conversation history or
   general Matter/ESP-IDF documentation.
-- Use ESP-IDF and Espressif's ESP-Matter stack; pin compatible versions when
-  creating the first build. Do not create another Matter stack.
+- Use C/C++, ESP-IDF, ESP-Matter and RadioLib with Matter over Wi-Fi.
+  Pin compatible versions in the first build. Use MIT for project code.
 - Build only components required by the current milestone. Avoid speculative
   abstractions for other hardware, transports or providers.
-- Keep RF framing independent of hardware so it can have small deterministic tests.
-- Reuse source code only after checking its license. Preserve required attribution;
-  do not copy GPL-derived decoder code into differently licensed firmware casually.
+- Use the libraries and component boundaries in docs/libraries.md. Keep one
+  protocol codec, independent of chip/RTOS code and testable on a host.
 - Never commit credentials, Matter fabric secrets, real household addresses,
   pairing codes, NVS dumps or private captures.
 - Make focused commits. Update documentation for resulting behaviour, not the
   chronology of attempts. Remove abandoned alternatives.
+
+## Scheduling
+
+Do not implement a scheduler, weekly-program storage or Matter schedule execution
+in Cleverbox. Scheduling belongs in HA because it is controller-side, not native
+to the radiators. Cleverbox accepts immediate target/mode commands. Reconsider
+only if the external protocol reference establishes a native radiator scheduling
+operation; even then, expose that operation rather than execute schedules here.
 
 ## Implementation and validation
 

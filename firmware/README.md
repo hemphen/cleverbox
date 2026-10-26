@@ -1,22 +1,19 @@
 # Firmware
 
-This directory will become the ESP-IDF / ESP-Matter project. It deliberately
-contains no nonfunctional build scaffold yet.
+The ESP-IDF / ESP-Matter project will live here, targeting esp32c6.
+See [libraries and components](../docs/libraries.md).
 
-Create the top-level CMakeLists.txt, sdkconfig.defaults, dependency manifest and
-partition table with the first buildable change. Target esp32c6 only. Keep SDK
-version selection and build/flash/monitor instructions here.
-
-Introduce these directories as their implementations arrive:
+Create CMakeLists.txt, sdkconfig.defaults, the dependency manifest and partition
+table with the first buildable change. Pin compatible dependencies and document
+build, flash and monitor commands here.
 
 | Path | Responsibility |
 | --- | --- |
-| main/ | Application startup, board configuration and user controls |
-| components/radiator_rf/ | Pure frame codec plus CC1101 transport and inclusion/session handling |
-| components/radiators/ | Per-radiator state, persistence and command reconciliation |
-| components/matter_bridge/ | Matter endpoints and translation to radiator operations |
+| main/ | Startup, board configuration and user controls |
+| components/radiator_protocol/ | Hardware-independent frame codec and protocol values |
+| components/radio_transport/ | Elecram/RadioLib driver and exchange handling |
+| components/device_store/ | Pairing storage and stable endpoint identities |
+| components/matter_bridge/ | Matter thermostat mapping |
 
-These are small internal components, not public extension APIs. Do not create a
-generic hardware abstraction or a transport plugin system. Keep pure codec tests
-beside the component; add hardware acceptance instructions to the implementation
-plan when an executable build exists.
+Add directories when their implementation starts. Keep codec tests beside the
+component; appliance tests cover transport, Matter mapping and persistence.

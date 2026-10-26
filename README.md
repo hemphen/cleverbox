@@ -37,13 +37,14 @@ control interface may be added later if useful; it is not required for Matter.
 
 ## Working here
 
-Read [AGENTS.md](AGENTS.md), [hardware](docs/hardware.md), and the
-[implementation plan](docs/implementation.md).
-The [firmware directory](firmware/README.md) describes the intended build and
-component boundaries.
+Read [AGENTS.md](AGENTS.md), the [hardware checklist](docs/hardware.md),
+[implementation plan](docs/implementation.md) and [libraries](docs/libraries.md).
+The [firmware directory](firmware/README.md) describes the build layout.
 
 Protocol definitions live in
 [clevertouch-protocol](https://github.com/hemphen/clevertouch-protocol/tree/main/docs/radiator-rf).
 Existing decoder and tooling live in
 [clevertouch-radio](https://github.com/hemphen/clevertouch-radio).
 Link to these sources rather than copying their documentation or private captures.
+
+Licensed under [MIT](LICENSE).

@@ -34,13 +34,17 @@ a setpoint write proves heating output changed.
 
 ## Small implementation milestones
 
+Use the [libraries and component boundaries](libraries.md).
+
 1. **Build and board bring-up.** Establish the sourced pin map, pinned SDKs,
    build/flash/monitor commands and serial diagnostics. Read the CC1101 identity
    and receive frames. Add a firmware build check once a real build exists.
-2. **Radiator communication.** Implement framing, checksums, decoding, controller
-   messages and the documented inclusion exchange. Store pairing state. Use
-   synthetic reference vectors for codec tests. Demonstrate a target change on
-   one radiator with the Touch E3 disconnected and observe its resulting state.
+2. **Radiator communication.** Implement the portable protocol component and
+   Elecram transport adapter with framing, checksums, decoding, controller messages
+   and the documented inclusion exchange. Keep chip-specific behaviour outside
+   the portable codec. Store pairing state and test the codec with synthetic
+   reference vectors. Demonstrate a target change on one radiator with the
+   Touch E3 disconnected and observe its resulting state.
 3. **Matter integration.** Commission over Wi-Fi into HA; expose temperature and
    heating target, then the supported modes. Persist Matter fabric and endpoint
    identity. Keep radio work outside the Matter event loop.
@@ -76,6 +80,7 @@ Do not implement simultaneous Wi-Fi/Thread operation in the first version.
 A local HTTP API can reuse the same command/state handling if a concrete client
 needs it. Neither feature is necessary for the first HA-controlled appliance.
 
-Weekly schedules belong in HA initially. Power estimates, vendor diagnostics,
+Weekly schedules belong in HA. Cleverbox has no scheduler or weekly-program
+storage because scheduling is not native to the radiators. Power estimates, vendor diagnostics,
 onboard history, other board support and general-purpose protocol plugins are
 not part of the first product.
