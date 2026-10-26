@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cleverbox</title>
+<style>
+body{font:17px system-ui;max-width:650px;margin:3rem auto;padding:0 1rem;color:#19332c;background:#f4f7f5}
+section{background:white;padding:1.3rem;margin:1rem 0;border-radius:12px}h1,h2{margin-top:0}
+label{display:block;margin:.8rem 0}input,select,textarea,button{font:inherit;padding:.6rem;box-sizing:border-box}
+input,textarea{width:100%}textarea{min-height:6rem}button{cursor:pointer;margin:.3rem .3rem .3rem 0}
+pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685f}
+</style>
+<h1>Cleverbox</h1>
+<p>Stage 1 · Local setup</p>
+<p><strong>Frame preview only.</strong> Radio transport is not connected. Nothing is sent and no radiator is paired.</p>
+<section>
+<h2>Pair a radiator</h2>
+<p>Put the radiator in <code>rF.bi</code> mode. Pairing uses an offer, a radiator reply and a bind command.</p>
+<label>Controller address <input id="source" maxlength="8" placeholder="8 hexadecimal digits" autocomplete="off"></label>
+<label>Offer destination / replying radiator address <input id="destination" maxlength="8" placeholder="8 hexadecimal digits" autocomplete="off"></label>
+<small>For this draft, enter addresses manually. Use the returned radiator address for Bind; discovery is not implemented.</small>
+<button data-command="offer">Preview offer</button>
+<button data-command="bind">Preview bind</button>
+<button data-command="poll">Preview poll</button>
+</section>
+<section>
+<h2>Set temperature and mode</h2>
+<label>Controller-state frame <textarea id="state" spellcheck="false" placeholder="Paste a complete 59-byte controller-state frame as hex"></textarea></label>
+<small>The draft preserves the frame's addresses and other state, including its clock.</small>
+<label>Mode <select id="mode"><option value="0">Comfort</option><option value="3">Eco</option><option value="2">Frost</option><option value="1">Off</option></select></label>
+<label>Target °C <input id="temperature" type="number" min="5" max="30" step="0.5" value="20"></label>
+<button data-command="target">Preview change</button>
+</section>
+<section><h2>Result</h2><pre id="result" role="status" aria-live="polite">No command prepared.</pre></section>
+<script>
+const field=id=>document.getElementById(id);
+document.querySelectorAll('button[data-command]').forEach(button=>button.addEventListener('click',async()=>{
+  const command=button.dataset.command;
+  const body=command==='target'
+    ? {command,state:field('state').value.trim(),mode:Number(field('mode').value),centi_c:Math.round(Number(field('temperature').value)*100)}
+    : {command,source:field('source').value.trim(),destination:field('destination').value.trim()};
+  button.disabled=true;
+  try {
+    const response=await fetch('/api/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok) throw new Error(await response.text());
+    const result=await response.json();
+    field('result').textContent='Prepared only — not transmitted.\n'+result.frame;
+  } catch(error) {field('result').textContent=error.message;}
+  finally {button.disabled=false;}
+}));
+</script>
+</html>

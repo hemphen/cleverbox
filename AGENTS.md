@@ -33,6 +33,9 @@ back to the source project. Do not expand this repository into a research archiv
 - Make focused commits. Update documentation for resulting behaviour, not the
   chronology of attempts. Remove abandoned alternatives.
 
+Build and test the local HTTP interface before adding Matter. Both interfaces
+must use the same protocol component and command handling.
+
 ## Scheduling
 
 Do not implement a scheduler, weekly-program storage or Matter schedule execution

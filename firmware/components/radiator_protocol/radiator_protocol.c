@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: MIT
+#include "radiator_protocol.h"
+#include <string.h>
+
+static uint16_t crc(const uint8_t *p, size_t n, bool reflected)
+{
+    uint16_t c = 0xffff;
+    while (n--) {
+        c ^= reflected ? *p++ : (uint16_t)*p++ << 8;
+        for (int i = 0; i < 8; ++i)
+            c = reflected ? (c >> 1) ^ ((c & 1) ? 0xa001 : 0)
+                          : (uint16_t)(c << 1) ^ ((c & 0x8000) ? 0x8005 : 0);
+    }
+    return c;
+}
+
+static void seal(rf_frame *f)
+{
+    size_t l = f->bytes[0];
+    uint16_t c = crc(f->bytes + 1, l - 2, true);
+    f->bytes[l - 1] = c & 255; f->bytes[l] = c >> 8;
+    c = crc(f->bytes, l + 1, false);
+    f->bytes[l + 1] = c >> 8; f->bytes[l + 2] = c & 255;
+}
+
+bool rf_valid(const rf_frame *f)
+{
+    if (!f || f->size < 14 || f->size > RF_MAX_FRAME) return false;
+    size_t l = f->bytes[0];
+    if (l < 11 || f->size != l + 3 || f->bytes[5] != 0xc6) return false;
+    return crc(f->bytes + 1, l - 2, true) ==
+               (uint16_t)(f->bytes[l - 1] | f->bytes[l] << 8) &&
+           crc(f->bytes, l + 1, false) ==
+               (uint16_t)(f->bytes[l + 1] << 8 | f->bytes[l + 2]);
+}
+
+bool rf_short(rf_frame *out, const uint8_t source[4], const uint8_t dest[4], rf_command command)
+{
+    if (!out || !source || !dest || command < RF_OFFER || command > RF_POLL) return false;
+    rf_frame f = {0};
+    size_t payload = command == RF_OFFER ? 4 : 2;
+    f.size = payload + 14; f.bytes[0] = payload + 11;
+    memcpy(f.bytes + 1, source, 4); f.bytes[5] = 0xc6;
+    memcpy(f.bytes + 6, dest, 4);
+    if (command == RF_OFFER) { f.bytes[12] = 3; f.bytes[13] = 1; }
+    else f.bytes[10] = command == RF_BIND ? 1 : 0x19;
+    seal(&f); *out = f; return true;
+}
+
+bool rf_set_target(rf_frame *out, const rf_frame *state, rf_mode mode, int centi_c)
+{
+    static const uint8_t tags[] = {0x45,0x4b,0x3b,0x4c,0x8e,0xcc,0x97,0x94,0xe1,0xda,0x5b,0xb2};
+    if (!out || !rf_valid(state) || state->size != 59 || mode < RF_COMFORT || mode > RF_ECO)
+        return false;
+    // Stage-1 application limits, matching the observed 5–30 C profile.
+    if (mode != RF_OFF && (centi_c < 500 || centi_c > 3000)) return false;
+    size_t pos = 10, target = 0;
+    for (size_t i = 0; i < sizeof(tags); ++i) {
+        if (pos >= 55 || state->bytes[pos] != tags[i]) return false;
+        if (tags[i] == 0x94) target = pos + 1;
+        pos += 2 + (tags[i] >> 6);
+    }
+    if (pos != 55 || !target) return false;
+    rf_frame f = *state;
+    unsigned raw = mode == RF_OFF ? 320 : (18 * centi_c + 50) / 100 + 320;
+    f.bytes[target] = raw >> 8; f.bytes[target + 1] = raw & 255;
+    f.bytes[target + 2] = (uint8_t)mode;
+    seal(&f); *out = f; return true;
+}
+
+static int nibble(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+bool rf_parse_hex(const char *hex, uint8_t *out, size_t capacity, size_t *size)
+{
+    if (!hex || !out || !size) return false;
+    size_t n = strlen(hex);
+    if (!n || n % 2 || n / 2 > capacity) return false;
+    for (size_t i = 0; i < n; ++i) if (nibble(hex[i]) < 0) return false;
+    for (size_t i = 0; i < n / 2; ++i) out[i] = nibble(hex[2*i]) * 16 + nibble(hex[2*i+1]);
+    *size = n / 2; return true;
+}
+
+void rf_to_hex(const rf_frame *f, char out[RF_MAX_FRAME * 2 + 1])
+{
+    static const char digits[] = "0123456789ABCDEF";
+    size_t n = f->size <= RF_MAX_FRAME ? f->size : 0;
+    for (size_t i = 0; i < n; ++i) {
+        out[2*i] = digits[f->bytes[i] >> 4]; out[2*i+1] = digits[f->bytes[i] & 15];
+    }
+    out[2*n] = 0;
+}

@@ -36,9 +36,10 @@ a setpoint write proves heating output changed.
 
 Use the [libraries and component boundaries](libraries.md).
 
-1. **Build and board bring-up.** Establish the sourced pin map, pinned SDKs,
-   build/flash/monitor commands and serial diagnostics. Read the CC1101 identity
-   and receive frames. Add a firmware build check once a real build exists.
+1. **Local HTTP and board bring-up.** Serve the pairing/control page without
+   Matter. First exercise protocol frame previews, then establish the sourced
+   CC1101 pin map, read its identity and receive frames. Use the same command
+   handling for HTTP and the later Matter interface.
 2. **Radiator communication.** Implement the portable protocol component and
    Elecram transport adapter with framing, checksums, decoding, controller messages
    and the documented inclusion exchange. Keep chip-specific behaviour outside
@@ -77,8 +78,7 @@ Passing software tests does not imply that these physical checks have passed.
 
 Matter-over-Thread can be an alternative firmware/configuration on this board.
 Do not implement simultaneous Wi-Fi/Thread operation in the first version.
-A local HTTP API can reuse the same command/state handling if a concrete client
-needs it. Neither feature is necessary for the first HA-controlled appliance.
+The local HTTP interface remains available for setup and testing.
 
 Weekly schedules belong in HA. Cleverbox has no scheduler or weekly-program
 storage because scheduling is not native to the radiators. Power estimates, vendor diagnostics,
