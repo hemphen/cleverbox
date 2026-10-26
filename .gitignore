@@ -1,0 +1,16 @@
+# Generated firmware artifacts
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+# Local development and sensitive installation data
+.env
+.env.*
+!.env.example
+local/
+*.log
+*.pcap
+*.pcapng
+*.iq
+nvs*.bin
+.DS_Store
