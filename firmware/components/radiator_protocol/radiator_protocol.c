@@ -132,3 +132,30 @@ bool rf_decode_report(const rf_frame *frame, rf_report *out)
     *out = report;
     return true;
 }
+
+bool rf_live_state(rf_frame *out, const rf_frame *state, const rf_frame *report,
+                   const uint8_t controller[4], const uint8_t radiator[4],
+                   rf_mode mode, int centi_c, unsigned clock_seconds)
+{
+    rf_report decoded;
+    rf_frame f;
+    if (!out || !controller || !radiator || clock_seconds >= 86400 ||
+        !rf_set_target(&f, state, mode, centi_c) ||
+        !rf_decode_report(report, &decoded) ||
+        memcmp(state->bytes + 6, radiator, 4) ||
+        memcmp(decoded.source, radiator, 4) || memcmp(decoded.destination, controller, 4))
+        return false;
+    // These offsets belong to the strictly validated report/state layouts above.
+    memcpy(f.bytes + 1, controller, 4);
+    memcpy(f.bytes + 6, radiator, 4);
+    memcpy(f.bytes + 14, report->bytes + 16, 2); // 4B, including unavailable sentinel
+    // Prototype policy: echo current E1; do not invent a thermostat/PID output.
+    memcpy(f.bytes + 39, report->bytes + 23, 4);
+    memset(f.bytes + 44, 0, 4); // DA is zero in the documented controller states.
+    f.bytes[52] = clock_seconds / 3600;
+    f.bytes[53] = clock_seconds / 60 % 60;
+    f.bytes[54] = clock_seconds % 60;
+    seal(&f);
+    *out = f;
+    return true;
+}

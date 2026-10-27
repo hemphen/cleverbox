@@ -121,6 +121,52 @@ static esp_err_t pairing_action(httpd_req_t *r)
     return httpd_resp_sendstr(r, "{\"accepted\":true}");
 }
 
+static bool integer(cJSON *j, const char *key, int low, int high, int *out)
+{
+    cJSON *value = cJSON_GetObjectItemCaseSensitive(j, key);
+    if (!cJSON_IsNumber(value) || !isfinite(value->valuedouble) ||
+        value->valuedouble < low || value->valuedouble > high ||
+        value->valuedouble != value->valueint) return false;
+    *out = value->valueint;
+    return true;
+}
+
+static esp_err_t live_command(httpd_req_t *r)
+{
+    char body[512], type[40];
+    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
+        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
+    size_t used = 0;
+    while (used < r->content_len) {
+        int n = httpd_req_recv(r, body + used, r->content_len - used);
+        if (n <= 0) return ESP_FAIL;
+        used += (size_t)n;
+    }
+    body[used] = 0;
+    cJSON *j = cJSON_ParseWithOpts(body, NULL, true);
+    rf_control_request command = {0};
+    int mode, target, clock;
+    bool valid = integer(j, "mode", 0, 3, &mode) && integer(j, "centi_c", 0, 3000, &target) &&
+                 integer(j, "clock_seconds", 0, 86399, &clock) &&
+                 rf_parse_hex(string(j, "state"), command.state.bytes,
+                              sizeof(command.state.bytes), &command.state.size);
+    if (valid) {
+        command.mode = (rf_mode)mode; command.centi_c = target; command.clock_seconds = clock;
+    }
+    cJSON_Delete(j);
+    esp_err_t result = valid ? radio_control_start(&command) : ESP_ERR_INVALID_ARG;
+    if (result == ESP_ERR_INVALID_ARG)
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid target, mode, clock or radiator template");
+    if (result != ESP_OK) {
+        httpd_resp_set_status(r, "409 Conflict");
+        return httpd_resp_sendstr(r, "Command busy, radio unavailable or no saved pairing");
+    }
+    httpd_resp_set_status(r, "202 Accepted");
+    httpd_resp_set_type(r, "application/json");
+    return httpd_resp_sendstr(r, "{\"status\":\"queued\"}");
+}
+
 static void address_text(const uint8_t a[4], char out[9])
 {
     snprintf(out, 9, "%02X%02X%02X%02X", a[0], a[1], a[2], a[3]);
@@ -147,6 +193,29 @@ static esp_err_t radio_status_page(httpd_req_t *r)
     address_text(s.pairing.radiator, radiator);
     cJSON_AddStringToObject(pair, "controller", controller);
     cJSON_AddStringToObject(pair, "radiator", radiator);
+    cJSON *command = cJSON_AddObjectToObject(j, "command");
+    cJSON_AddStringToObject(command, "phase", rf_control_phase_name(s.control.phase));
+    cJSON_AddNumberToObject(command, "error", s.control_error);
+    cJSON_AddNumberToObject(command, "attempts", s.control.attempts);
+    if (s.control.phase != RF_CONTROL_IDLE) {
+        cJSON_AddNumberToObject(command, "requested_target_c", s.control.centi_c / 100.0);
+        cJSON_AddNumberToObject(command, "requested_mode", s.control.mode);
+    }
+    if (s.control.phase == RF_CONTROL_MATCHED)
+        cJSON_AddNumberToObject(command, "match_age_ms", now / 1000 - s.control.matched_ms);
+    if (s.has_paired_report) {
+        cJSON *observed = cJSON_AddObjectToObject(j, "observed");
+        int64_t age = (now - s.paired_report_time_us) / 1000;
+        cJSON_AddNumberToObject(observed, "age_ms", age);
+        cJSON_AddBoolToObject(observed, "stale", age >= RF_REPORT_STALE_MS);
+        cJSON_AddNumberToObject(observed, "mode", s.paired_report.mode);
+        if (s.paired_report.temperature_available)
+            cJSON_AddNumberToObject(observed, "temperature_c", s.paired_report.temperature_centi_c / 100.0);
+        else cJSON_AddNullToObject(observed, "temperature_c");
+        if (s.paired_report.target_available)
+            cJSON_AddNumberToObject(observed, "target_c", s.paired_report.target_centi_c / 100.0);
+        else cJSON_AddNullToObject(observed, "target_c");
+    }
     if (s.has_frame) {
         char hex[RF_MAX_FRAME * 2 + 1];
         rf_to_hex(&s.last_frame, hex);
@@ -208,6 +277,8 @@ void app_main(void)
     httpd_uri_t command = {.uri = "/api/preview", .method = HTTP_POST, .handler = preview};
     httpd_uri_t radio_info = {.uri = "/api/radio", .method = HTTP_GET, .handler = radio_status_page};
     httpd_uri_t pair = {.uri = "/api/pairing", .method = HTTP_POST, .handler = pairing_action};
+    httpd_uri_t live = {.uri = "/api/command", .method = HTTP_POST, .handler = live_command};
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &live));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &pair));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &radio_info));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &root));

@@ -12,7 +12,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685
 </style>
 <h1>Cleverbox</h1>
 <p>Local setup · Radio receiver</p>
-<p>Pairing transmits inclusion frames. Temperature and mode commands remain previews.</p>
+<p>Pairing and the live command button transmit RF frames. Preview buttons prepare frames only.</p>
 <section>
 <h2>Radio receiver</h2>
 <p id="radioStatus" role="status">Checking radio…</p>
@@ -42,10 +42,14 @@ The radiator supplies its actual address in the reply. One saved radiator is sup
 <section>
 <h2>Set temperature and mode</h2>
 <label>Controller-state frame <textarea id="state" spellcheck="false" placeholder="Paste a complete 59-byte controller-state frame as hex"></textarea></label>
-<small>The draft preserves the frame's addresses and other state, including its clock.</small>
+<small>For live commands, use a controller-state template captured for this radiator. Opaque fields are preserved; addresses, clock and report-derived values are refreshed.</small>
 <label>Mode <select id="mode"><option value="0">Comfort</option><option value="3">Eco</option><option value="2">Frost</option><option value="1">Off</option></select></label>
 <label>Target °C <input id="temperature" type="number" min="5" max="30" step="0.5" value="20"></label>
 <button data-command="target">Preview change</button>
+<button id="sendTarget" disabled>Send to paired radiator</button>
+<p id="commandStatus" role="status" aria-live="polite">No live command requested.</p>
+<p id="commandAction" role="status"></p>
+<pre id="pairedReport">No report from the paired radiator.</pre>
 </section>
 <section><h2>Result</h2><pre id="result" role="status" aria-live="polite">No command prepared.</pre></section>
 <script>
@@ -71,6 +75,23 @@ async function refreshRadio(){
           ? 'Inclusion acknowledged, but saving failed. Retry save. Error '+pair.error
           : 'Pairing: '+pair.phase+(pair.error?' · error '+pair.error:'');
     }
+    const command=data.command;
+    if(command){
+      const active=['poll','waiting_report','sending','waiting_readback'].includes(command.phase);
+      field('sendTarget').disabled=!data.ready||!pair?.saved||active;
+      field('commandStatus').textContent=command.phase==='idle' ? 'No live command requested.'
+        : 'Command: '+command.phase+' · state transmissions: '+command.attempts
+          +'\nRequested: '+command.requested_target_c+' °C · '+(modes[command.requested_mode]??command.requested_mode)
+          +(command.match_age_ms===undefined?'':' · matching report '+(command.match_age_ms/1000).toFixed(1)+' s ago')
+          +(command.error?' · error '+command.error:'');
+    }
+    const observed=data.observed;
+    field('pairedReport').textContent=observed
+      ? 'Paired radiator · '+(observed.stale?'STALE · ':'')+'last report '+(observed.age_ms/1000).toFixed(1)+' s ago'
+        +'\nMeasured: '+(observed.temperature_c===null?'unavailable':observed.temperature_c+' °C')
+        +'\nReported target: '+(observed.target_c===null?'unavailable':observed.target_c+' °C')
+        +'\nReported mode: '+(modes[observed.mode]??'Unknown')+' ('+observed.mode+')'
+      : 'No report from the paired radiator.';
     const r=data.report;
     field('radioReport').textContent=r
       ? 'Radiator '+r.source+' → '+r.destination+'\nLast received '+(r.age_ms/1000).toFixed(1)+' s ago'
@@ -79,10 +100,22 @@ async function refreshRadio(){
         +'\nMode: '+(modes[r.mode]??'Unknown')+' ('+r.mode+')'
       : 'No radiator report received.';
     field('radioDiagnostics').textContent=JSON.stringify(data,null,2);
-  } catch(error){field('radioStatus').textContent=error.message;}
+  } catch(error){field('radioStatus').textContent=error.message;field('sendTarget').disabled=true;field('pairedReport').textContent='Status unavailable; the last observation cannot be refreshed.';}
   setTimeout(refreshRadio,2000);
 }
 refreshRadio();
+field('sendTarget').addEventListener('click',async()=>{
+  const button=field('sendTarget'); button.disabled=true;
+  const now=new Date();
+  const body={state:field('state').value.trim(),mode:Number(field('mode').value),
+    centi_c:Math.round(Number(field('temperature').value)*100),
+    clock_seconds:now.getHours()*3600+now.getMinutes()*60+now.getSeconds()};
+  try {
+    const response=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok) throw new Error(await response.text());
+    field('commandAction').textContent='Queued. Waiting for a radiator report; delivery is not yet established.';
+  } catch(error){field('commandAction').textContent=error.message;}
+});
 document.querySelectorAll('button[data-pair-action]').forEach(button=>button.addEventListener('click',async()=>{
   const action=button.dataset.pairAction;
   const body={action};
