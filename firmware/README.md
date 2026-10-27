@@ -76,8 +76,11 @@ specification, not a hardware-validated profile. CC1101's 30/32 sync detector ma
 the repeated D391 word, with preamble-quality gating disabled because the
 preamble length is not established. NRZ, no whitening and no hardware CRC filtering are used.
 Infinite packet mode preserves the length byte and both CRCs for software validation;
-the radio task polls and drains the FIFO every tick (1 ms), then flushes/rearms after
-a frame, overflow or 100 ms incomplete-frame timeout. There is one bounded frame
+the radio task polls the FIFO every tick (1 ms). It uses stable byte counts and
+keeps one byte buffered during reception, following the
+[CC1101 FIFO errata](https://www.ti.com/lit/er/swrz020e/swrz020e.pdf).
+RX stops before the final drain, then flushes/rearms after a frame, overflow or
+100 ms incomplete-frame timeout. There is one bounded frame
 buffer, no receive history and no radio work in HTTP handlers.
 
 ### First board test

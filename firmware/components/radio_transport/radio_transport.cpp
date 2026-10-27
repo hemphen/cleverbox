@@ -17,28 +17,59 @@ extern "C" radio_status radio_transport_status(void)
     return copy;
 }
 
+static bool receive_count(uint8_t &count)
+{
+    // TI SWRZ020E: RXBYTES can be torn while the radio updates it.
+    // Bound the consecutive-read check; try again next tick if it stays unstable.
+    uint8_t previous = module.SPIreadRegister(RADIOLIB_CC1101_REG_RXBYTES | 0x40);
+    for (int i = 0; i < 8; ++i) {
+        count = module.SPIreadRegister(RADIOLIB_CC1101_REG_RXBYTES | 0x40);
+        if (count == previous) return true;
+        previous = count;
+    }
+    return false;
+}
+
 static void receive_task(void *)
 {
     rf_frame frame = {};
     int64_t started = 0;
     for (;;) {
-        // CC1101 status registers need the burst-read bit even for one byte.
-        uint8_t count = module.SPIreadRegister(RADIOLIB_CC1101_REG_RXBYTES | 0x40);
-        bool restart = (count & 0x80) != 0;
+        uint8_t count = 0;
+        bool stable = receive_count(count);
+        bool restart = stable && (count & 0x80) != 0;
         bool receive_error = restart;
+        int result = RADIOLIB_ERR_NONE;
         count &= 0x7f;
-        if (!restart && count) {
-            if (!frame.size) started = esp_timer_get_time();
-            if (count > 64 || frame.size + count > sizeof(frame.bytes)) {
+        if (stable && !restart && count) {
+            if (!started) started = esp_timer_get_time();
+            if (count > 64) {
                 restart = receive_error = true;
             } else {
-                module.SPIreadRegisterBurst(RADIOLIB_CC1101_REG_FIFO | 0x40, count,
-                                           frame.bytes + frame.size);
-                frame.size += count;
+                // Never empty a live FIFO: TI's RX FIFO erratum can duplicate
+                // the last byte when it is read as a new RF byte arrives.
+                if (!frame.size && count > 1) {
+                    frame.bytes[0] = module.SPIreadRegister(RADIOLIB_CC1101_REG_FIFO);
+                    frame.size = 1;
+                    --count;
+                }
                 size_t expected = (size_t)frame.bytes[0] + 3;
-                if (frame.bytes[0] < 11 || frame.size >= expected) {
-                    // Bytes beyond the envelope are receiver tail/noise.
-                    if (frame.size >= expected) frame.size = expected;
+                if (frame.size && frame.bytes[0] >= 11) {
+                    size_t remaining = expected - frame.size;
+                    bool complete = count >= remaining;
+                    size_t take = complete ? remaining : (count > 1 ? count - 1 : 0);
+                    // Infinite mode has no hardware packet end. Stop RX before
+                    // the final drain, and leave any tail/noise for the flush.
+                    if (complete) result = radio.standby();
+                    if (result == RADIOLIB_ERR_NONE && take) {
+                        module.SPIreadRegisterBurst(RADIOLIB_CC1101_REG_FIFO | 0x40, take,
+                                                   frame.bytes + frame.size);
+                        frame.size += take;
+                    }
+                    if (result != RADIOLIB_ERR_NONE) restart = receive_error = true;
+                }
+                if (result == RADIOLIB_ERR_NONE && frame.size &&
+                    (frame.bytes[0] < 11 || frame.size == expected)) {
                     bool valid = rf_valid(&frame);
                     rf_report report = {};
                     bool decoded = valid && rf_decode_report(&frame, &report);
@@ -61,21 +92,23 @@ static void receive_task(void *)
             }
         }
         // A maximum 258-byte envelope takes about 56 ms at this bitrate.
-        if (frame.size && esp_timer_get_time() - started > 100000)
+        if (started && esp_timer_get_time() - started > 100000)
             restart = receive_error = true;
         if (restart) {
-            int result = radio.startReceive(); // standby, flush, re-enter RX
+            if (result == RADIOLIB_ERR_NONE)
+                result = radio.startReceive(); // standby, flush, re-enter RX
             portENTER_CRITICAL(&status_lock);
             if (receive_error) ++status.receive_errors;
             status.error = result;
             status.ready = result == RADIOLIB_ERR_NONE;
             portEXIT_CRITICAL(&status_lock);
             if (result != RADIOLIB_ERR_NONE) {
-                ESP_LOGE("radio", "Receive restart failed: %d", result);
+                ESP_LOGE("radio", "Receive failed: %d", result);
                 vTaskDelete(nullptr);
                 return;
             }
             frame = {};
+            started = 0;
         }
         vTaskDelay(1);
     }
