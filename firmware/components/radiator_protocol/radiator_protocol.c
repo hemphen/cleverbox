@@ -95,3 +95,40 @@ void rf_to_hex(const rf_frame *f, char out[RF_MAX_FRAME * 2 + 1])
     }
     out[2*n] = 0;
 }
+
+static int temperature(uint16_t raw)
+{
+    int value = ((int)raw - 320) * 100;
+    return (value + (value < 0 ? -9 : 9)) / 18;
+}
+
+bool rf_decode_report(const rf_frame *frame, rf_report *out)
+{
+    static const uint8_t tags[] = {0xdf, 0x4b, 0x8a, 0xe1, 0xda, 0x0a};
+    if (!out || !rf_valid(frame) || frame->size != 38) return false;
+    rf_report report = {0};
+    memcpy(report.source, frame->bytes + 1, 4);
+    memcpy(report.destination, frame->bytes + 6, 4);
+    size_t pos = 10;
+    for (size_t i = 0; i < sizeof(tags); ++i) {
+        uint8_t tag = frame->bytes[pos];
+        size_t size = (tag >> 6) + 1;
+        if (tag != tags[i] || pos + 1 + size > 34) return false;
+        const uint8_t *v = frame->bytes + pos + 1;
+        if (tag == 0x4b || tag == 0x8a) {
+            uint16_t raw = (uint16_t)(v[0] << 8 | v[1]);
+            if (tag == 0x4b) {
+                report.temperature_available = raw != 0x084c;
+                if (report.temperature_available) report.temperature_centi_c = temperature(raw);
+            } else {
+                report.target_available = raw != 0x084c;
+                if (report.target_available) report.target_centi_c = temperature(raw);
+                report.mode = v[2];
+            }
+        }
+        pos += size + 1;
+    }
+    if (pos != 34) return false;
+    *out = report;
+    return true;
+}

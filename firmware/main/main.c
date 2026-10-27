@@ -6,11 +6,13 @@
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_netif.h"
 #include "esp_random.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "radiator_protocol.h"
+#include "radio_transport.h"
 
 extern const unsigned char page_start[] asm("_binary_index_html_start");
 extern const unsigned char page_end[] asm("_binary_index_html_end");
@@ -83,6 +85,55 @@ static esp_err_t preview(httpd_req_t *r)
     return httpd_resp_sendstr(r, response);
 }
 
+static void address_text(const uint8_t a[4], char out[9])
+{
+    snprintf(out, 9, "%02X%02X%02X%02X", a[0], a[1], a[2], a[3]);
+}
+
+static esp_err_t radio_status_page(httpd_req_t *r)
+{
+    radio_status s = radio_transport_status();
+    int64_t now = esp_timer_get_time();
+    cJSON *j = cJSON_CreateObject();
+    if (!j) return ESP_ERR_NO_MEM;
+    cJSON_AddBoolToObject(j, "ready", s.ready);
+    cJSON_AddNumberToObject(j, "error", s.error);
+    cJSON_AddNumberToObject(j, "chip_version", s.chip_version);
+    cJSON_AddNumberToObject(j, "valid_frames", s.valid_frames);
+    cJSON_AddNumberToObject(j, "invalid_frames", s.invalid_frames);
+    cJSON_AddNumberToObject(j, "receive_errors", s.receive_errors);
+    if (s.has_frame) {
+        char hex[RF_MAX_FRAME * 2 + 1];
+        rf_to_hex(&s.last_frame, hex);
+        cJSON_AddStringToObject(j, "last_frame", hex);
+        cJSON_AddNumberToObject(j, "frame_age_ms", (now - s.frame_time_us) / 1000);
+    }
+    if (s.has_report) {
+        cJSON *report = cJSON_AddObjectToObject(j, "report");
+        char source[9], destination[9];
+        address_text(s.last_report.source, source);
+        address_text(s.last_report.destination, destination);
+        cJSON_AddStringToObject(report, "source", source);
+        cJSON_AddStringToObject(report, "destination", destination);
+        cJSON_AddNumberToObject(report, "age_ms", (now - s.report_time_us) / 1000);
+        if (s.last_report.temperature_available)
+            cJSON_AddNumberToObject(report, "temperature_c", s.last_report.temperature_centi_c / 100.0);
+        else cJSON_AddNullToObject(report, "temperature_c");
+        if (s.last_report.target_available)
+            cJSON_AddNumberToObject(report, "target_c", s.last_report.target_centi_c / 100.0);
+        else cJSON_AddNullToObject(report, "target_c");
+        cJSON_AddNumberToObject(report, "mode", s.last_report.mode);
+    }
+    char *body = cJSON_PrintUnformatted(j);
+    cJSON_Delete(j);
+    if (!body) return ESP_ERR_NO_MEM;
+    httpd_resp_set_type(r, "application/json");
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    esp_err_t result = httpd_resp_sendstr(r, body);
+    cJSON_free(body);
+    return result;
+}
+
 void app_main(void)
 {
     // Do not erase NVS automatically: later versions store pairing here.
@@ -103,12 +154,15 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_LOGI("cleverbox", "Wi-Fi Cleverbox password: %s; open http://192.168.4.1",
              (char *)config.ap.password);
+    radio_transport_start();
     httpd_handle_t server;
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
     http.stack_size = 8192;
     ESP_ERROR_CHECK(httpd_start(&server, &http));
     httpd_uri_t root = {.uri = "/", .method = HTTP_GET, .handler = home};
     httpd_uri_t command = {.uri = "/api/preview", .method = HTTP_POST, .handler = preview};
+    httpd_uri_t radio_info = {.uri = "/api/radio", .method = HTTP_GET, .handler = radio_status_page};
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &radio_info));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &root));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &command));
 }

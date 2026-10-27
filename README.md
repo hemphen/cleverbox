@@ -3,8 +3,9 @@
 A small, local Matter bridge for Purmo/LVI radiators, built specifically for the
 Elecram Sub-GHz 855–925 MHz Bridge (ESP32-C6 + CC1101).
 
-**Status: first HTTP/codec draft. Frame previews work in code; RF transport and
-Matter are not implemented. No hardware test yet.**
+**Status: receive-only CC1101 prototype with HTTP diagnostics and report decoding.
+Command previews remain available; pairing, RF transmission and Matter are not
+implemented. No hardware test yet.**
 
 Cleverbox will translate Matter thermostat commands into radiator RF messages
 and report radiator state back over Wi-Fi. Home Assistant supplies dashboards,

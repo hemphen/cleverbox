@@ -11,8 +11,14 @@ input,textarea{width:100%}textarea{min-height:6rem}button{cursor:pointer;margin:
 pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685f}
 </style>
 <h1>Cleverbox</h1>
-<p>Stage 1 · Local setup</p>
-<p><strong>Frame preview only.</strong> Radio transport is not connected. Nothing is sent and no radiator is paired.</p>
+<p>Local setup · Radio receiver</p>
+<p><strong>Frame preview only.</strong> Commands are not transmitted. Nothing is paired by this page.</p>
+<section>
+<h2>Radio receiver</h2>
+<p id="radioStatus" role="status">Checking radio…</p>
+<pre id="radioReport">No radiator report received.</pre>
+<details><summary>Receive diagnostics</summary><pre id="radioDiagnostics"></pre></details>
+</section>
 <section>
 <h2>Pair a radiator</h2>
 <p>Put the radiator in <code>rF.bi</code> mode. Pairing uses an offer, a radiator reply and a bind command.</p>
@@ -34,6 +40,27 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685
 <section><h2>Result</h2><pre id="result" role="status" aria-live="polite">No command prepared.</pre></section>
 <script>
 const field=id=>document.getElementById(id);
+const modes={0:'Comfort',1:'Off',2:'Frost',3:'Eco',4:'Boost',8:'Program Comfort',11:'Program Eco'};
+async function refreshRadio(){
+  try {
+    const response=await fetch('/api/radio',{cache:'no-store'});
+    if(!response.ok) throw new Error('Radio status unavailable');
+    const data=await response.json();
+    field('radioStatus').textContent=data.ready
+      ? 'Listening · '+data.valid_frames+' valid frames'
+      : 'Radio unavailable · error '+data.error;
+    const r=data.report;
+    field('radioReport').textContent=r
+      ? 'Radiator '+r.source+' → '+r.destination+'\nLast received '+(r.age_ms/1000).toFixed(1)+' s ago'
+        +'\nTemperature: '+(r.temperature_c===null?'unavailable':r.temperature_c+' °C')
+        +'\nTarget: '+(r.target_c===null?'unavailable':r.target_c+' °C')
+        +'\nMode: '+(modes[r.mode]??'Unknown')+' ('+r.mode+')'
+      : 'No radiator report received.';
+    field('radioDiagnostics').textContent=JSON.stringify(data,null,2);
+  } catch(error){field('radioStatus').textContent=error.message;}
+  setTimeout(refreshRadio,2000);
+}
+refreshRadio();
 document.querySelectorAll('button[data-command]').forEach(button=>button.addEventListener('click',async()=>{
   const command=button.dataset.command;
   const body=command==='target'
