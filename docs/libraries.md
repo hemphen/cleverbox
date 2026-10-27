@@ -1,7 +1,7 @@
 # Libraries
 
 Use C/C++ with ESP-IDF, ESP-Matter and RadioLib. Use ESP-IDF's HTTP
-server and RadioLib receive transport; add Matter over Wi-Fi afterward.
+server and RadioLib transport; add Matter over Wi-Fi afterward.
 
 | Dependency | Use |
 | --- | --- |
@@ -12,7 +12,7 @@ server and RadioLib receive transport; add Matter over Wi-Fi afterward.
 The stage-1 HTTP draft targets ESP-IDF v5.5.1. RadioLib 7.3.0 is pinned to commit
 `2a2f6e0edf5a527cd83d2a04a7e2eb5d220329cd` in the component manifest.
 Only the CC1101 driver and core support are enabled. Pin ESP-Matter when added.
-Verify the working receive profile on the physical board before adding TX.
+The RX and inclusion TX profiles still need physical board acceptance.
 
 ## Application components
 
@@ -33,5 +33,6 @@ does not store or execute schedules; this is outside its scope. Cleverbox
 reports radiator state separately from requested settings. RF Auto Comfort/Eco
 codes are schedule phases, not a direct mapping to Matter Auto mode.
 
-HTTP, the host-tested codec and receive-only RadioLib adapter are present.
+HTTP, the host-tested codec/pairing logic, RadioLib RX/inclusion adapter and
+one-radiator NVS store are present.
 ESP-Matter is selected but not yet imported.

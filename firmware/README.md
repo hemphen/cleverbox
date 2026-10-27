@@ -1,6 +1,6 @@
 # Firmware
 
-The receive prototype uses ESP-IDF **v5.5.1**, its HTTP server and the portable C protocol
+The pairing prototype uses ESP-IDF **v5.5.1**, its HTTP server and the portable C protocol
 component. The fixed Elecram board wiring is documented in [hardware](../docs/hardware.md).
 The page remains available if radio initialization fails.
 
@@ -19,7 +19,7 @@ the serial console. Open **http://192.168.4.1**. The password changes each boot.
 This bench build starts an access point; home-network provisioning comes later.
 
 The start page prepares pairing offer/bind, poll and target/mode frames.
-**It receives frames but does not transmit, discover or pair radiators yet.**
+**Pairing transmits offer/bind frames. Target, mode and poll controls remain previews.**
 Every command result is labelled preview. Frame bytes begin at the length byte;
 preamble/sync and CC1101 framing belong to the upcoming transport.
 
@@ -37,8 +37,9 @@ Offer, bind and poll requests use eight-digit source and destination addresses:
 
 These are synthetic reference addresses, not defaults for a real installation.
 For an offer, supply a controller source with the candidate's family byte.
-Bind uses the responding radiator's address. Automatic discovery and pairing
-state are not implemented in this draft.
+The bind preview uses the entered destination. The separate pairing flow below
+uses the responding radiator's address automatically; candidate enumeration is
+not implemented.
 
 Target changes require a complete CRC-valid 59-byte controller-state frame:
 
@@ -97,9 +98,68 @@ buffer, no receive history and no radio work in HTTP handlers.
    An unfamiliar frame can appear in diagnostics without replacing the latest report.
 
 Software tests and the firmware build do not establish RF reception. No physical
-board test has been performed. Pairing and live commands are the next milestone.
+board test has been performed. The pairing exchange is implemented; successful physical inclusion and live target
+commands have not yet been demonstrated.
 
 Successful firmware CI runs publish a `cleverbox-esp32c6` artifact containing the
 application, bootloader, partition table, flash arguments and resolved dependency
 lock. After extracting, flash from its `build` directory with
 `python -m esptool --chip esp32c6 --port PORT write_flash @flash_args`.
+
+## Pair one radiator
+
+Attach the antenna and complete the receive check first. Disconnect the existing
+Touch E3 for the inclusion test, and put just one radiator into `rF.bi` mode.
+Inclusion may reset that radiator's stored settings, as described in the external
+[protocol reference](https://github.com/hemphen/clevertouch-protocol/blob/b70fab79300544a62ee2606bd4055cdb81763fd4/docs/radiator-rf/specification.md#inclusion--pairing).
+
+Enter an eight-digit controller source and discovery destination, with matching
+F1 or D0 family bytes. Choose a controller identity distinct from the old Touch E3
+and the destination. The discovery destination is not the installed radiator ID.
+This first implementation takes one destination explicitly; it does not guess an
+enumeration range. Start pairing sends one offer, accepts an addressed inclusion
+reply, then binds to the radiator's returned address. A matching inclusion ack
+completes the exchange and saves both addresses in NVS.
+
+Prototype policies: one offer and one bind, five seconds to wait for each reply,
+and a one-second delay before bind. No automatic retries. TX uses the existing
+2-FSK profile, a 32-bit AA preamble, repeated D391 sync, 0 dBm output and fixed
+packet length, including the codec's length byte and both CRCs. These are explicit
+initial TX assumptions, not a verified transmit profile. Reception is restored
+after every TX attempt, including errors. Radio timing and NVS writes run in the
+radio task, outside the HTTP handlers.
+
+`POST /api/pairing` accepts JSON actions:
+
+- `{"action":"start","source":"F1010203","destination":"F1100001"}`
+  (synthetic source; select your own controller identity).
+- `{"action":"cancel"}` stops the remaining steps. An already transmitted bind
+  cannot be undone by cancelling.
+- `{"action":"save"}` retries a failed NVS write after inclusion completed,
+  without transmitting any RF frames again.
+
+202 means the action was queued. Read `pairing` in `/api/radio` for its phase,
+error code, controller/radiator addresses and `saved` flag. 400 means invalid
+input; 409 means unavailable/busy/already saved or blocked storage. The single
+saved radiator cannot be overwritten by starting another attempt. Removal and
+multiple-radiator handling come later. Unknown/corrupt NVS records are reported
+and retained; they never silently start a new inclusion.
+
+A completed/saved inclusion handshake does not confirm an applied target or
+working thermostat control. Restart loads the saved addresses and starts RX only;
+it sends no offer, bind, poll or settings change. In-progress attempts are not
+resumed. Ordinary firmware updates keep the NVS partition.
+
+### Pairing acceptance on hardware (pending)
+
+1. Start inclusion through the page and observe the reply, bind and ack phases.
+   Check `saved: true` and the radiator address returned in the reply.
+2. Reboot. Confirm the saved addresses remain and that no inclusion frames are
+   transmitted at boot. The saved record is not a reachability indication.
+3. Try cancellation during the bind delay and a timeout with no radiator in
+   inclusion mode; neither should save a new pairing. Retry is explicit.
+
+Host tests cover the exchange, address/CRC matching, timeout, cancellation and TX
+failure. Tests at a fake NVS boundary cover fresh loading, version rejection and
+write/commit failure. Physical radio inclusion, flash persistence across an actual
+power cycle and firmware upgrades still need the board test.

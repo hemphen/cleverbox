@@ -85,6 +85,42 @@ static esp_err_t preview(httpd_req_t *r)
     return httpd_resp_sendstr(r, response);
 }
 
+static esp_err_t pairing_action(httpd_req_t *r)
+{
+    char body[256], type[40];
+    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
+        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
+    size_t used = 0;
+    while (used < r->content_len) {
+        int n = httpd_req_recv(r, body + used, r->content_len - used);
+        if (n <= 0) return ESP_FAIL;
+        used += (size_t)n;
+    }
+    body[used] = 0;
+    cJSON *j = cJSON_ParseWithOpts(body, NULL, true);
+    const char *action = string(j, "action");
+    esp_err_t result = ESP_ERR_INVALID_ARG;
+    if (action && !strcmp(action, "start")) {
+        uint8_t source[4], destination[4];
+        rf_pairing check = {0};
+        if (address(j, "source", source) && address(j, "destination", destination) &&
+            rf_pair_start(&check, source, destination))
+            result = radio_pair_start(source, destination);
+    } else if (action && !strcmp(action, "cancel")) result = radio_pair_cancel();
+    else if (action && !strcmp(action, "save")) result = radio_pair_save();
+    cJSON_Delete(j);
+    if (result == ESP_ERR_INVALID_ARG)
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid pairing action or addresses");
+    if (result != ESP_OK) {
+        httpd_resp_set_status(r, "409 Conflict");
+        return httpd_resp_sendstr(r, "Radio unavailable, pairing busy, already saved, or storage blocked. Check radio status.");
+    }
+    httpd_resp_set_status(r, "202 Accepted");
+    httpd_resp_set_type(r, "application/json");
+    return httpd_resp_sendstr(r, "{\"accepted\":true}");
+}
+
 static void address_text(const uint8_t a[4], char out[9])
 {
     snprintf(out, 9, "%02X%02X%02X%02X", a[0], a[1], a[2], a[3]);
@@ -102,6 +138,15 @@ static esp_err_t radio_status_page(httpd_req_t *r)
     cJSON_AddNumberToObject(j, "valid_frames", s.valid_frames);
     cJSON_AddNumberToObject(j, "invalid_frames", s.invalid_frames);
     cJSON_AddNumberToObject(j, "receive_errors", s.receive_errors);
+    cJSON *pair = cJSON_AddObjectToObject(j, "pairing");
+    cJSON_AddStringToObject(pair, "phase", rf_pair_phase_name(s.pairing.phase));
+    cJSON_AddBoolToObject(pair, "saved", s.pairing_saved);
+    cJSON_AddNumberToObject(pair, "error", s.pairing_error);
+    char controller[9], radiator[9];
+    address_text(s.pairing.controller, controller);
+    address_text(s.pairing.radiator, radiator);
+    cJSON_AddStringToObject(pair, "controller", controller);
+    cJSON_AddStringToObject(pair, "radiator", radiator);
     if (s.has_frame) {
         char hex[RF_MAX_FRAME * 2 + 1];
         rf_to_hex(&s.last_frame, hex);
@@ -136,7 +181,7 @@ static esp_err_t radio_status_page(httpd_req_t *r)
 
 void app_main(void)
 {
-    // Do not erase NVS automatically: later versions store pairing here.
+    // Never erase NVS automatically: it contains saved pairing data.
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -162,6 +207,8 @@ void app_main(void)
     httpd_uri_t root = {.uri = "/", .method = HTTP_GET, .handler = home};
     httpd_uri_t command = {.uri = "/api/preview", .method = HTTP_POST, .handler = preview};
     httpd_uri_t radio_info = {.uri = "/api/radio", .method = HTTP_GET, .handler = radio_status_page};
+    httpd_uri_t pair = {.uri = "/api/pairing", .method = HTTP_POST, .handler = pairing_action};
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &pair));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &radio_info));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &root));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &command));
