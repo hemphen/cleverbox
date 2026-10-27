@@ -13,6 +13,8 @@
 class IdfHal : public RadioLibHal {
 public:
     IdfHal() : RadioLibHal(0, 1, 0, 1, GPIO_INTR_POSEDGE, GPIO_INTR_NEGEDGE) {}
+    void init() override { spiBegin(); }
+    void term() override { spiEnd(); }
     void pinMode(uint32_t pin, uint32_t mode) override {
         if (pin == RADIOLIB_NC) return;
         gpio_set_direction((gpio_num_t)pin, mode ? GPIO_MODE_OUTPUT : GPIO_MODE_INPUT);
