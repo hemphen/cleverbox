@@ -45,9 +45,16 @@ public:
     }
     void spiBeginTransaction() override {}
     void spiTransfer(uint8_t *out, size_t len, uint8_t *in) override {
-        spi_transaction_t t = {};
-        t.length = len * 8; t.tx_buffer = out; t.rx_buffer = in;
-        ESP_ERROR_CHECK(spi_device_polling_transmit(spi, &t));
+        // Non-DMA SPI transactions are limited to the 64-byte hardware FIFO.
+        // CS stays asserted by RadioLib across these chunks.
+        for (size_t offset = 0; offset < len; offset += 64) {
+            size_t chunk = len - offset < 64 ? len - offset : 64;
+            spi_transaction_t t = {};
+            t.length = chunk * 8;
+            t.tx_buffer = out ? out + offset : nullptr;
+            t.rx_buffer = in ? in + offset : nullptr;
+            ESP_ERROR_CHECK(spi_device_polling_transmit(spi, &t));
+        }
     }
     void spiEndTransaction() override {}
     void spiEnd() override {

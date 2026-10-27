@@ -46,6 +46,23 @@ int main(void)
     assert(!rf_set_target(&f, &state, RF_COMFORT, 3001));
     assert(!rf_set_target(&f, &state, (rf_mode)8, 2000));
     rf_frame report = parse("23F1040506C6F1010203DF203000404B02A88A02BA00E100641919DA000A000A0A47CD48C59D");
+    rf_report decoded;
+    assert(rf_decode_report(&report, &decoded));
+    assert(memcmp(decoded.source, radiator, 4) == 0);
+    assert(memcmp(decoded.destination, controller, 4) == 0);
+    assert(decoded.temperature_available && decoded.temperature_centi_c == 2000);
+    assert(decoded.target_available && decoded.target_centi_c == 2100);
+    assert(decoded.mode == 0);
+    assert(!rf_decode_report(&state, &decoded));
+    assert(!rf_decode_report(&report, NULL));
+    for (size_t i = 0; i < report.size; ++i) {
+        rf_frame bad = report; bad.bytes[i] ^= 1;
+        assert(!rf_decode_report(&bad, &decoded));
+    }
+    for (size_t n = 0; n < report.size; ++n) {
+        rf_frame bad = report; bad.size = n;
+        assert(!rf_decode_report(&bad, &decoded));
+    }
     assert(!rf_set_target(&f, &report, RF_COMFORT, 2000));
     for (size_t i = 0; i < state.size; ++i) {
         rf_frame bad = state; bad.bytes[i] ^= 1;
@@ -54,9 +71,19 @@ int main(void)
     for (size_t n = 0; n < state.size; ++n) {
         rf_frame bad = state; bad.size = n; assert(!rf_valid(&bad));
     }
+    // Unavailable temperatures remain unavailable; unknown mode stays raw.
+    rf_frame unavailable = parse("23F1040506C6F1010203DF203000404B084C8A084C63E100641919DA000A000A0A471D37039E");
+    assert(rf_decode_report(&unavailable, &decoded));
+    assert(!decoded.temperature_available && !decoded.target_available && decoded.mode == 99);
+    rf_frame cold = parse("23F1040506C6F1010203DF203000404B00E68A014001E100641919DA000A000A0A47823DC7B2");
+    assert(rf_decode_report(&cold, &decoded));
+    assert(decoded.temperature_centi_c == -500 && decoded.target_centi_c == 0 && decoded.mode == 1);
+    // An unfamiliar, CRC-valid layout is retained as a frame, not decoded as a report.
+    rf_frame unknown = parse("23F1040506C6F1010203DF203000404C02A88A02BA00E100641919DA000A000A0A47783C95DA");
+    assert(!rf_decode_report(&unknown, &decoded));
     size_t n; uint8_t small[4];
     assert(!rf_parse_hex("abc", small, sizeof(small), &n));
     assert(!rf_parse_hex("gg", small, sizeof(small), &n));
     assert(!rf_parse_hex("0011223344", small, sizeof(small), &n));
-    puts("Protocol vectors, modes, bounds and corrupt/truncated frames: passed");
+    puts("Protocol vectors, report decoding, unavailable values and invalid frames: passed");
 }
