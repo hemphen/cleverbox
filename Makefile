@@ -18,3 +18,9 @@ test:
 	  firmware/components/device_store/device_store.c \
 	  firmware/components/device_store/test/test_store.c -o build/test_store
 	./build/test_store
+	$(CC) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ifirmware/components/radiator_protocol/include \
+	  firmware/components/radiator_protocol/radiator_protocol.c \
+	  firmware/components/radiator_protocol/radiator_control.c \
+	  firmware/components/radiator_protocol/test/test_control.c -o build/test_control
+	./build/test_control
