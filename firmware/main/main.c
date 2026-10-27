@@ -11,6 +11,7 @@
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "radiator_protocol.h"
+#include "radio_transport.h"
 
 extern const unsigned char page_start[] asm("_binary_index_html_start");
 extern const unsigned char page_end[] asm("_binary_index_html_end");
@@ -83,6 +84,17 @@ static esp_err_t preview(httpd_req_t *r)
     return httpd_resp_sendstr(r, response);
 }
 
+static esp_err_t radio_status_page(httpd_req_t *r)
+{
+    radio_status s = radio_transport_status();
+    char body[128];
+    snprintf(body, sizeof(body), "{\"ready\":%s,\"error\":%d,\"chip_version\":%d}",
+             s.ready ? "true" : "false", s.error, s.chip_version);
+    httpd_resp_set_type(r, "application/json");
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(r, body);
+}
+
 void app_main(void)
 {
     // Do not erase NVS automatically: later versions store pairing here.
@@ -103,12 +115,15 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_LOGI("cleverbox", "Wi-Fi Cleverbox password: %s; open http://192.168.4.1",
              (char *)config.ap.password);
+    radio_transport_start();
     httpd_handle_t server;
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
     http.stack_size = 8192;
     ESP_ERROR_CHECK(httpd_start(&server, &http));
     httpd_uri_t root = {.uri = "/", .method = HTTP_GET, .handler = home};
     httpd_uri_t command = {.uri = "/api/preview", .method = HTTP_POST, .handler = preview};
+    httpd_uri_t radio_info = {.uri = "/api/radio", .method = HTTP_GET, .handler = radio_status_page};
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &radio_info));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &root));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &command));
 }

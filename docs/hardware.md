@@ -38,3 +38,26 @@ received board. It is a wiring/driver reference, not the radiator application.
 Fit the antenna before transmission. Use the public RF specification for initial
 radio parameters; keep the resulting CC1101 register profile in the firmware's
 board/radio configuration with its implementation assumptions.
+
+## Receive prototype wiring
+
+The radio adapter uses the manufacturer's
+[`sdkconfig.defaults` at 301bbbc](https://github.com/IMMRMKW/ramses_esp/blob/301bbbc4fe46b9c7e35e681aebc2a785cea89e76/sdkconfig.defaults):
+
+| CC1101 signal | ESP32-C6 GPIO |
+| --- | ---: |
+| SCLK | 6 |
+| MOSI | 7 |
+| MISO | 2 |
+| CSn | 18 |
+| GDO0 | 15 |
+| GDO2 | 14 |
+
+The received PCB revision is still unverified: compare it with the manufacturer
+reference before flashing. GDO pins are reserved in the adapter; reception polls
+the FIFO. Button and LED behaviour are not implemented.
+
+RadioLib 7.3.0 is pinned by commit in the component manifest. The small HAL uses
+ESP-IDF's public GPIO/SPI drivers because RadioLib's bundled ESP-IDF example HAL
+supports the original ESP32 only. `/api/radio` reports initialization status and
+CC1101 version; radio initialization failure leaves HTTP available.
