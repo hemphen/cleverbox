@@ -54,8 +54,7 @@ The radio adapter uses the manufacturer's
 | GDO2 | 14 |
 
 The received PCB revision is still unverified: compare it with the manufacturer
-reference before flashing. GDO pins are reserved in the adapter; reception polls
-the FIFO. Button and LED behaviour are not implemented.
+reference before flashing. Reception polls the FIFO; short-frame transmit completion uses GDO2. Button and LED behaviour are not implemented.
 
 RadioLib 7.3.0 is pinned by commit in the component manifest. The small HAL uses
 ESP-IDF's public GPIO/SPI drivers because RadioLib's bundled ESP-IDF example HAL

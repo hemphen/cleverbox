@@ -12,7 +12,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685
 </style>
 <h1>Cleverbox</h1>
 <p>Local setup · Radio receiver</p>
-<p><strong>Frame preview only.</strong> Commands are not transmitted. Nothing is paired by this page.</p>
+<p>Pairing transmits inclusion frames. Temperature and mode commands remain previews.</p>
 <section>
 <h2>Radio receiver</h2>
 <p id="radioStatus" role="status">Checking radio…</p>
@@ -21,13 +21,23 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685
 </section>
 <section>
 <h2>Pair a radiator</h2>
-<p>Put the radiator in <code>rF.bi</code> mode. Pairing uses an offer, a radiator reply and a bind command.</p>
+<p>Put one radiator in <code>rF.bi</code> mode. Pairing can reset its settings.</p>
 <label>Controller address <input id="source" maxlength="8" placeholder="8 hexadecimal digits" autocomplete="off"></label>
-<label>Offer destination / replying radiator address <input id="destination" maxlength="8" placeholder="8 hexadecimal digits" autocomplete="off"></label>
-<small>For this draft, enter addresses manually. Use the returned radiator address for Bind; discovery is not implemented.</small>
+<label>Discovery destination <input id="destination" maxlength="8" placeholder="8 hexadecimal digits" autocomplete="off"></label>
+<small>Enter a controller address and discovery destination in the same F1 or D0 family.
+The radiator supplies its actual address in the reply. One saved radiator is supported.</small>
+<button id="pairStart" data-pair-action="start">Start pairing</button>
+<button id="pairCancel" data-pair-action="cancel" disabled>Cancel attempt</button>
+<button id="pairSave" data-pair-action="save" hidden>Retry save</button>
+<p id="pairStatus" role="status" aria-live="polite">Checking saved pairing…</p>
+<p id="pairAction" role="status"></p>
+<small>Cancel stops further steps; it cannot undo a bind already transmitted.</small>
+<details><summary>Frame previews</summary>
 <button data-command="offer">Preview offer</button>
 <button data-command="bind">Preview bind</button>
 <button data-command="poll">Preview poll</button>
+<small>Bind preview uses the address entered above, not an automatically discovered address.</small>
+</details>
 </section>
 <section>
 <h2>Set temperature and mode</h2>
@@ -49,6 +59,18 @@ async function refreshRadio(){
     field('radioStatus').textContent=data.ready
       ? 'Listening · '+data.valid_frames+' valid frames'
       : 'Radio unavailable · error '+data.error;
+    const pair=data.pairing;
+    if(pair){
+      const active=['offer','waiting_reply','bind','waiting_ack'].includes(pair.phase);
+      field('pairStart').disabled=!data.ready||active||pair.phase==='complete';
+      field('pairCancel').disabled=!active;
+      field('pairSave').hidden=pair.phase!=='complete'||pair.saved;
+      field('pairStatus').textContent=pair.saved
+        ? 'Saved pairing: '+pair.controller+' → '+pair.radiator
+        : pair.phase==='complete'
+          ? 'Inclusion acknowledged, but saving failed. Retry save. Error '+pair.error
+          : 'Pairing: '+pair.phase+(pair.error?' · error '+pair.error:'');
+    }
     const r=data.report;
     field('radioReport').textContent=r
       ? 'Radiator '+r.source+' → '+r.destination+'\nLast received '+(r.age_ms/1000).toFixed(1)+' s ago'
@@ -61,6 +83,21 @@ async function refreshRadio(){
   setTimeout(refreshRadio,2000);
 }
 refreshRadio();
+document.querySelectorAll('button[data-pair-action]').forEach(button=>button.addEventListener('click',async()=>{
+  const action=button.dataset.pairAction;
+  const body={action};
+  if(action==='start'){
+    body.source=field('source').value.trim();
+    body.destination=field('destination').value.trim();
+  }
+  button.disabled=true;
+  try {
+    const response=await fetch('/api/pairing',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok) throw new Error(await response.text());
+    field('pairAction').textContent='Action accepted. Status updates shortly.';
+  } catch(error){field('pairAction').textContent=error.message;}
+  finally {button.disabled=false;}
+}));
 document.querySelectorAll('button[data-command]').forEach(button=>button.addEventListener('click',async()=>{
   const command=button.dataset.command;
   const body=command==='target'

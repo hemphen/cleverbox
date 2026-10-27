@@ -2,6 +2,9 @@
 #include "idf_hal.h"
 #include "radio_transport.h"
 #include "esp_log.h"
+#include "device_store.h"
+#include "freertos/queue.h"
+#include <string.h>
 
 static IdfHal hal;
 static Module module(&hal, RADIO_CS, RADIO_GDO0, RADIOLIB_NC, RADIO_GDO2);
@@ -15,6 +18,70 @@ extern "C" radio_status radio_transport_status(void)
     radio_status copy = status;
     portEXIT_CRITICAL(&status_lock);
     return copy;
+}
+
+enum pair_action { PAIR_START, PAIR_CANCEL, PAIR_SAVE };
+struct pair_request { pair_action action; uint8_t controller[4], candidate[4]; };
+static QueueHandle_t pair_requests;
+static bool store_load_failed;
+
+static esp_err_t enqueue_pair(const pair_request &request)
+{
+    radio_status current = radio_transport_status();
+    if (!current.ready || !pair_requests) return ESP_ERR_INVALID_STATE;
+    if (request.action == PAIR_START) {
+        rf_pairing check = current.pairing;
+        if (current.pairing_saved || store_load_failed ||
+            !rf_pair_start(&check, request.controller, request.candidate))
+            return ESP_ERR_INVALID_STATE;
+    }
+    if (request.action == PAIR_SAVE &&
+        (current.pairing_saved || current.pairing.phase != RF_PAIR_COMPLETE))
+        return ESP_ERR_INVALID_STATE;
+    return xQueueSend(pair_requests, &request, 0) == pdPASS ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+extern "C" esp_err_t radio_pair_start(const uint8_t controller[4], const uint8_t candidate[4])
+{
+    pair_request request = {};
+    request.action = PAIR_START;
+    memcpy(request.controller, controller, 4);
+    memcpy(request.candidate, candidate, 4);
+    return enqueue_pair(request);
+}
+extern "C" esp_err_t radio_pair_cancel(void)
+{
+    pair_request request = {}; request.action = PAIR_CANCEL;
+    return enqueue_pair(request);
+}
+extern "C" esp_err_t radio_pair_save(void)
+{
+    pair_request request = {}; request.action = PAIR_SAVE;
+    return enqueue_pair(request);
+}
+
+static int transmit_pair_frame(const rf_frame &frame, int &rx_result)
+{
+    // Inclusion frames fit in the FIFO. Fixed length sends our complete envelope
+    // without RadioLib adding another length byte or a hardware CRC.
+    int result = radio.standby();
+    if (result == RADIOLIB_ERR_NONE) result = radio.fixedPacketLengthMode(frame.size);
+    if (result == RADIOLIB_ERR_NONE) result = radio.transmit(frame.bytes, frame.size);
+    // Always leave TX and restore the receive profile, including after timeout.
+    rx_result = radio.standby();
+    if (rx_result == RADIOLIB_ERR_NONE)
+        rx_result = module.SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL0, 2, 1, 0);
+    if (rx_result == RADIOLIB_ERR_NONE) rx_result = radio.startReceive();
+    return result != RADIOLIB_ERR_NONE ? result : rx_result;
+}
+
+static void save_pair(const rf_pairing &pair, bool &saved, int &error)
+{
+    paired_device device = {};
+    memcpy(device.controller, pair.controller, 4);
+    memcpy(device.radiator, pair.radiator, 4);
+    error = device_store_save(&device);
+    saved = error == ESP_OK;
 }
 
 static bool receive_count(uint8_t &count)
@@ -34,7 +101,41 @@ static void receive_task(void *)
 {
     rf_frame frame = {};
     int64_t started = 0;
+    rf_pairing pair = status.pairing;
+    bool saved = status.pairing_saved;
+    int pair_error = status.pairing_error;
     for (;;) {
+        pair_request request;
+        if (xQueueReceive(pair_requests, &request, 0) == pdPASS) {
+            if (request.action == PAIR_CANCEL) rf_pair_cancel(&pair);
+            else if (request.action == PAIR_SAVE && pair.phase == RF_PAIR_COMPLETE && !saved)
+                save_pair(pair, saved, pair_error);
+            else if (request.action == PAIR_START && !saved &&
+                     pair.phase != RF_PAIR_COMPLETE) {
+                // A prior timeout/TX error can be retried explicitly.
+                pair_error = 0;
+                rf_pair_start(&pair, request.controller, request.candidate);
+            }
+        }
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        rf_pair_tick(&pair, now_ms);
+        rf_frame outgoing = {};
+        if (rf_pair_next(&pair, now_ms, &outgoing)) {
+            int rx_result;
+            pair_error = transmit_pair_frame(outgoing, rx_result);
+            rf_pair_sent(&pair, esp_timer_get_time() / 1000, pair_error == 0);
+            frame = {}; started = 0;
+            portENTER_CRITICAL(&status_lock);
+            status.error = rx_result;
+            status.ready = rx_result == RADIOLIB_ERR_NONE;
+            portEXIT_CRITICAL(&status_lock);
+        }
+        if (!radio_transport_status().ready) {
+            portENTER_CRITICAL(&status_lock);
+            status.pairing = pair; status.pairing_saved = saved; status.pairing_error = pair_error;
+            portEXIT_CRITICAL(&status_lock);
+            vTaskDelete(nullptr); return;
+        }
         uint8_t count = 0;
         bool stable = receive_count(count);
         bool restart = stable && (count & 0x80) != 0;
@@ -74,6 +175,10 @@ static void receive_task(void *)
                     rf_report report = {};
                     bool decoded = valid && rf_decode_report(&frame, &report);
                     int64_t now = esp_timer_get_time();
+                    rf_pair_phase before = pair.phase;
+                    if (valid) rf_pair_receive(&pair, now / 1000, &frame);
+                    if (before != RF_PAIR_COMPLETE && pair.phase == RF_PAIR_COMPLETE)
+                        save_pair(pair, saved, pair_error);
                     portENTER_CRITICAL(&status_lock);
                     if (valid) {
                         ++status.valid_frames;
@@ -104,18 +209,36 @@ static void receive_task(void *)
             portEXIT_CRITICAL(&status_lock);
             if (result != RADIOLIB_ERR_NONE) {
                 ESP_LOGE("radio", "Receive failed: %d", result);
+                if (rf_pair_active(&pair)) pair.phase = RF_PAIR_ERROR;
+                portENTER_CRITICAL(&status_lock);
+                status.pairing = pair; status.pairing_saved = saved; status.pairing_error = result;
+                portEXIT_CRITICAL(&status_lock);
                 vTaskDelete(nullptr);
                 return;
             }
             frame = {};
             started = 0;
         }
+        portENTER_CRITICAL(&status_lock);
+        status.pairing = pair; status.pairing_saved = saved; status.pairing_error = pair_error;
+        portEXIT_CRITICAL(&status_lock);
         vTaskDelay(1);
     }
 }
 
 extern "C" void radio_transport_start(void)
 {
+    paired_device device = {};
+    int load_result = device_store_load(&device);
+    if (load_result == ESP_OK) {
+        status.pairing.phase = RF_PAIR_COMPLETE;
+        memcpy(status.pairing.controller, device.controller, 4);
+        memcpy(status.pairing.radiator, device.radiator, 4);
+        status.pairing_saved = true;
+    } else if (load_result != ESP_ERR_NOT_FOUND) {
+        status.pairing_error = load_result; store_load_failed = true;
+    }
+    pair_requests = xQueueCreate(1, sizeof(pair_request));
     // Working receive assumptions from the RF spec, not a calibrated TX profile.
     int result = radio.begin(868.3, 1000.0 / 27.0, 17.0, 101.6, 0, 32);
     status.chip_version = result == RADIOLIB_ERR_NONE ? radio.getChipVersion() : -1;
@@ -135,6 +258,9 @@ extern "C" void radio_transport_start(void)
     if (result == RADIOLIB_ERR_NONE)
         result = module.SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL1, 0, 2, 2);
     if (result == RADIOLIB_ERR_NONE) result = radio.startReceive();
+    // RadioLib's blocking short-frame TX completion uses GDO2 as an input.
+    hal.pinMode(RADIO_GDO2, hal.GpioModeInput);
+    if (!pair_requests && result == RADIOLIB_ERR_NONE) result = ESP_ERR_NO_MEM;
     status.error = result;
     status.ready = result == RADIOLIB_ERR_NONE;
     if (status.ready && xTaskCreate(receive_task, "radio_rx", 4096, nullptr, 5, nullptr) != pdPASS) {
