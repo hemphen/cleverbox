@@ -24,6 +24,7 @@ enum radio_action { PAIR_START, PAIR_CANCEL, PAIR_SAVE, CONTROL_START };
 struct radio_request { radio_action action; uint8_t controller[4], candidate[4]; rf_control_request control; };
 static QueueHandle_t radio_requests;
 static bool store_load_failed;
+static bool control_pending; // Protected by status_lock until the worker publishes active status.
 
 static esp_err_t enqueue_pair(const radio_request &request)
 {
@@ -70,7 +71,16 @@ extern "C" esp_err_t radio_control_start(const rf_control_request *request)
                                      current.pairing.radiator, esp_timer_get_time() / 1000))
         return ESP_ERR_INVALID_ARG;
     radio_request queued = {}; queued.action = CONTROL_START; queued.control = *request;
-    return xQueueSend(radio_requests, &queued, 0) == pdPASS ? ESP_OK : ESP_ERR_TIMEOUT;
+    portENTER_CRITICAL(&status_lock);
+    bool busy = control_pending || rf_control_active(&status.control) || !status.ready;
+    if (!busy) control_pending = true;
+    portEXIT_CRITICAL(&status_lock);
+    if (busy) return ESP_ERR_INVALID_STATE;
+    if (xQueueSend(radio_requests, &queued, 0) == pdPASS) return ESP_OK;
+    portENTER_CRITICAL(&status_lock);
+    control_pending = false;
+    portEXIT_CRITICAL(&status_lock);
+    return ESP_ERR_TIMEOUT;
 }
 
 static int transmit_frame(const rf_frame &frame, int &rx_result)
@@ -129,6 +139,10 @@ static void receive_task(void *)
             if (request.action == CONTROL_START && saved) {
                 if (rf_control_start(&control, &request.control, pair.controller, pair.radiator,
                                      esp_timer_get_time() / 1000)) control_error = 0;
+                portENTER_CRITICAL(&status_lock);
+                status.control = control.status;
+                control_pending = false;
+                portEXIT_CRITICAL(&status_lock);
             }
             else if (request.action == PAIR_CANCEL) rf_pair_cancel(&pair);
             else if (request.action == PAIR_SAVE && pair.phase == RF_PAIR_COMPLETE && !saved)
