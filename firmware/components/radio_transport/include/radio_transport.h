@@ -9,6 +9,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+typedef enum { RADIO_STORE_NONE, RADIO_STORE_PENDING, RADIO_STORE_OK, RADIO_STORE_FAILED } radio_store_result;
 typedef struct {
     bool ready;
     int error;
@@ -26,6 +27,10 @@ typedef struct {
     bool has_paired_report;
     rf_report paired_report;
     int64_t paired_report_time_us;
+    bool has_saved_template;
+    rf_frame saved_template;
+    int state_load_error, state_store_error;
+    radio_store_result state_save_result, state_clear_result;
     bool has_control_template;
     rf_frame control_template; // Latest matching state heard over RF; RAM only.
     int64_t control_template_time_us;
@@ -37,7 +42,11 @@ radio_status radio_transport_status(void);
 esp_err_t radio_pair_start(const uint8_t controller[4], const uint8_t candidate[4]);
 esp_err_t radio_pair_cancel(void);
 esp_err_t radio_pair_save(void);
-// An empty request.state selects the learned template, or fails if none was heard.
+// Explicit save snapshots learned RAM state; import saves a validated exact frame.
+// NULL selects learned state. Clear also drops learned RAM state after successful commit.
+esp_err_t radio_state_save(const rf_frame *imported);
+esp_err_t radio_state_clear(void);
+// Empty request.state selects learned RAM, then saved state. Selection is snapshotted.
 esp_err_t radio_control_start(const rf_control_request *request);
 #ifdef __cplusplus
 }

@@ -137,7 +137,7 @@ static esp_err_t live_command(httpd_req_t *r)
     int mode, target, clock;
     bool valid = integer(j, "mode", 0, 3, &mode) && integer(j, "centi_c", 0, 3000, &target) &&
                  integer(j, "clock_seconds", 0, 86399, &clock);
-    // Omission selects the state learned over RF. Explicit invalid imports must
+    // Omission selects learned RAM state, then saved state. Explicit invalid imports must
     // fail, rather than silently falling back to a different template.
     if (valid && cJSON_GetObjectItemCaseSensitive(j, "state"))
         valid = rf_parse_hex(string(j, "state"), command.state.bytes,
@@ -151,11 +151,56 @@ static esp_err_t live_command(httpd_req_t *r)
         return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid target, mode, clock or radiator template");
     if (result != ESP_OK) {
         httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, "Command busy, radio unavailable, no saved pairing or no learned controller state; check radio status or import a template");
+        return httpd_resp_sendstr(r, "Command busy, radio unavailable, no saved pairing or no learned controller state or saved state; check radio status or import a template");
     }
     httpd_resp_set_status(r, "202 Accepted");
     httpd_resp_set_type(r, "application/json");
     return httpd_resp_sendstr(r, "{\"status\":\"queued\"}");
+}
+
+static esp_err_t controller_state_action(httpd_req_t *r)
+{
+    char body[768], type[40];
+    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
+        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
+    size_t used = 0;
+    while (used < r->content_len) {
+        int n = httpd_req_recv(r, body + used, r->content_len - used);
+        if (n <= 0) return ESP_FAIL;
+        used += (size_t)n;
+    }
+    body[used] = 0;
+    cJSON *j = cJSON_ParseWithOpts(body, NULL, true);
+    const char *action = string(j, "action");
+    esp_err_t result = ESP_ERR_INVALID_ARG;
+    if (action && !strcmp(action, "save")) result = radio_state_save(NULL);
+    else if (action && !strcmp(action, "clear")) result = radio_state_clear();
+    else if (action && !strcmp(action, "import")) {
+        rf_frame frame = {0};
+        if (rf_parse_hex(string(j, "state"), frame.bytes, sizeof(frame.bytes), &frame.size))
+            result = radio_state_save(&frame);
+    }
+    cJSON_Delete(j);
+    if (result == ESP_ERR_INVALID_ARG)
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid action or same-radiator controller-state frame");
+    if (result != ESP_OK) {
+        httpd_resp_set_status(r, "409 Conflict");
+        return httpd_resp_sendstr(r, "No saved pair, no learned state, or action busy; check radio status");
+    }
+    httpd_resp_set_status(r, "202 Accepted");
+    httpd_resp_set_type(r, "application/json");
+    return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");
+}
+
+static const char *store_result(radio_store_result result)
+{
+    switch (result) {
+        case RADIO_STORE_PENDING: return "pending";
+        case RADIO_STORE_OK: return "succeeded";
+        case RADIO_STORE_FAILED: return "failed";
+        default: return "not_attempted";
+    }
 }
 
 static void address_text(const uint8_t a[4], char out[9])
@@ -191,7 +236,15 @@ static esp_err_t radio_status_page(httpd_req_t *r)
     cJSON_AddStringToObject(command, "phase", rf_control_phase_name(s.control.phase));
     cJSON_AddNumberToObject(command, "error", s.control_error);
     cJSON_AddNumberToObject(command, "attempts", s.control.attempts);
-    cJSON_AddBoolToObject(command, "template_available", s.has_control_template);
+    cJSON_AddBoolToObject(command, "template_available", s.has_control_template || s.has_saved_template);
+    cJSON_AddStringToObject(command, "template_source", s.has_control_template ? "learned" :
+                           s.has_saved_template ? "saved" : "missing");
+    cJSON_AddBoolToObject(command, "learned_available", s.has_control_template);
+    cJSON_AddBoolToObject(command, "saved_available", s.has_saved_template);
+    cJSON_AddNumberToObject(command, "state_load_error", s.state_load_error);
+    cJSON_AddNumberToObject(command, "state_store_error", s.state_store_error);
+    cJSON_AddStringToObject(command, "save_status", store_result(s.state_save_result));
+    cJSON_AddStringToObject(command, "clear_status", store_result(s.state_clear_result));
     if (s.has_control_template)
         cJSON_AddNumberToObject(command, "template_age_ms", (now - s.control_template_time_us) / 1000);
     if (s.control.phase != RF_CONTROL_IDLE) {
@@ -251,6 +304,8 @@ void http_api_register(httpd_handle_t server)
     httpd_uri_t radio_info = {.uri = "/api/radio", .method = HTTP_GET, .handler = radio_status_page};
     httpd_uri_t pair = {.uri = "/api/pairing", .method = HTTP_POST, .handler = pairing_action};
     httpd_uri_t live = {.uri = "/api/command", .method = HTTP_POST, .handler = live_command};
+    httpd_uri_t state = {.uri = "/api/controller-state", .method = HTTP_POST, .handler = controller_state_action};
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &state));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &live));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &pair));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &radio_info));

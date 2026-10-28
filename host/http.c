@@ -5,12 +5,12 @@
 #include "simulation.h"
 #include <stdio.h>
 #include <string.h>
-static httpd_uri_t routes[4];
+static httpd_uri_t routes[5];
 static size_t route_count;
 static httpd_req_t request;
 esp_err_t httpd_register_uri_handler(httpd_handle_t server, const httpd_uri_t *route) {
     (void)server;
-    if (route_count == 4) return ESP_FAIL;
+    if (route_count == 5) return ESP_FAIL;
     routes[route_count++] = *route; return ESP_OK;
 }
 esp_err_t httpd_req_get_hdr_value_str(httpd_req_t *r, const char *name, char *out, size_t n) {

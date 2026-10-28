@@ -24,10 +24,11 @@ extern "C" radio_status radio_transport_status(void)
     return copy;
 }
 
-enum radio_action { PAIR_START, PAIR_CANCEL, PAIR_SAVE, CONTROL_START };
+enum radio_action { PAIR_START, PAIR_CANCEL, PAIR_SAVE, CONTROL_START, STATE_SAVE, STATE_CLEAR };
 struct radio_request { radio_action action; uint8_t controller[4], candidate[4]; rf_control_request control; };
 static QueueHandle_t radio_requests;
 static bool store_load_failed;
+static bool state_store_pending; // Protected by status_lock.
 static bool control_pending; // Protected by status_lock until the worker publishes active status.
 
 static esp_err_t enqueue_pair(const radio_request &request)
@@ -73,8 +74,9 @@ extern "C" esp_err_t radio_control_start(const rf_control_request *request)
     if (!request) return ESP_ERR_INVALID_ARG;
     rf_control_request resolved = *request;
     if (!resolved.state.size) {
-        if (!current.has_control_template) return ESP_ERR_INVALID_STATE;
-        resolved.state = current.control_template;
+        if (current.has_control_template) resolved.state = current.control_template;
+        else if (current.has_saved_template) resolved.state = current.saved_template;
+        else return ESP_ERR_INVALID_STATE;
     }
     rf_control check = {};
     if (!rf_control_start(&check, &resolved, current.pairing.controller,
@@ -92,6 +94,44 @@ extern "C" esp_err_t radio_control_start(const rf_control_request *request)
     portEXIT_CRITICAL(&status_lock);
     return ESP_ERR_TIMEOUT;
 }
+
+static esp_err_t enqueue_state(bool clear, const rf_frame *imported)
+{
+    radio_status current = radio_transport_status();
+    if (!current.ready || !current.pairing_saved || !radio_requests) return ESP_ERR_INVALID_STATE;
+    radio_request request = {};
+    request.action = clear ? STATE_CLEAR : STATE_SAVE;
+    if (!clear) {
+        if (imported) request.control.state = *imported;
+        else if (current.has_control_template) request.control.state = current.control_template;
+        else return ESP_ERR_INVALID_STATE;
+        rf_frame checked;
+        if (!rf_set_target(&checked, &request.control.state, RF_OFF, 0) ||
+            memcmp(request.control.state.bytes + 6, current.pairing.radiator, 4))
+            return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&status_lock);
+    bool busy = state_store_pending;
+    if (!busy) {
+        state_store_pending = true;
+        if (clear) status.state_clear_result = RADIO_STORE_PENDING;
+        else status.state_save_result = RADIO_STORE_PENDING;
+    }
+    portEXIT_CRITICAL(&status_lock);
+    if (busy) return ESP_ERR_INVALID_STATE;
+    if (xQueueSend(radio_requests, &request, 0) != pdPASS) {
+        portENTER_CRITICAL(&status_lock);
+        state_store_pending = false;
+        if (clear) status.state_clear_result = current.state_clear_result;
+        else status.state_save_result = current.state_save_result;
+        portEXIT_CRITICAL(&status_lock);
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
+}
+
+extern "C" esp_err_t radio_state_save(const rf_frame *imported) { return enqueue_state(false, imported); }
+extern "C" esp_err_t radio_state_clear(void) { return enqueue_state(true, nullptr); }
 
 static int transmit_frame(const rf_frame &frame, int &rx_result)
 {
@@ -146,7 +186,30 @@ struct radio_worker {
     void step() {
         radio_request request;
         if (xQueueReceive(radio_requests, &request, 0) == pdPASS) {
-            if (request.action == CONTROL_START && saved) {
+            if ((request.action == STATE_SAVE || request.action == STATE_CLEAR) && saved) {
+                paired_device device = {};
+                memcpy(device.controller, pair.controller, 4);
+                memcpy(device.radiator, pair.radiator, 4);
+                bool clear = request.action == STATE_CLEAR;
+                int result = device_store_save_state(&device, clear ? nullptr : &request.control.state);
+                portENTER_CRITICAL(&status_lock);
+                status.state_store_error = result;
+                (clear ? status.state_clear_result : status.state_save_result) =
+                    result == ESP_OK ? RADIO_STORE_OK : RADIO_STORE_FAILED;
+                if (result == ESP_OK) {
+                    status.state_load_error = 0;
+                    status.has_saved_template = !clear;
+                    status.saved_template = clear ? rf_frame{} : request.control.state;
+                    if (clear) {
+                        status.has_control_template = false;
+                        status.control_template = {};
+                        status.control_template_time_us = 0;
+                    }
+                }
+                state_store_pending = false;
+                portEXIT_CRITICAL(&status_lock);
+            }
+            else if (request.action == CONTROL_START && saved) {
                 if (rf_control_start(&control, &request.control, pair.controller, pair.radiator,
                                      esp_timer_get_time() / 1000)) control_error = 0;
                 portENTER_CRITICAL(&status_lock);
@@ -329,6 +392,10 @@ extern "C" void radio_transport_start(void)
         memcpy(status.pairing.controller, device.controller, 4);
         memcpy(status.pairing.radiator, device.radiator, 4);
         status.pairing_saved = true;
+        int state_result = device_store_load_state(&device, &status.saved_template);
+        status.has_saved_template = state_result == ESP_OK;
+        if (state_result != ESP_OK && state_result != ESP_ERR_NOT_FOUND)
+            status.state_load_error = state_result;
     } else if (load_result != ESP_ERR_NOT_FOUND) {
         status.pairing_error = load_result; store_load_failed = true;
     }

@@ -22,8 +22,8 @@ COMFORT = '38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049
 ECO = '38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494025703E100641919DA000000005B0078B2173B3BE9D4B021'
 
 
-def wrong_address(hex_frame, offset):
-    """Test-only corruption of address with fresh CRCs, not a packet oracle."""
+def changed_frame(hex_frame, offset):
+    """Test-only byte mutation with fresh CRCs, not a packet oracle."""
     f = bytearray.fromhex(hex_frame)
     f[offset] ^= 1
     def crc(data, reflected):
@@ -75,8 +75,158 @@ class App:
         return self.http('/api/command', {'mode': mode, 'centi_c': target, 'clock_seconds': 86399, **kw}, 202)
 
 
+def saved_state_workflow(directory):
+    storage = Path(directory) / 'saved-pair.bin'
+    legacy_pair = bytes.fromhex('01F1010203F1040506')
+    storage.write_bytes(legacy_pair)  # Exact existing pairing-only v1 format.
+    state_file = Path(str(storage) + '.state')
+    app = App(storage)
+    try:
+        s = app.advance(1000)
+        assert s['pairing']['saved'] and s['simulation_tx'] == []
+        assert s['command']['template_source'] == 'missing'
+        app.http('/api/command', {'mode': 0, 'centi_c': 2050, 'clock_seconds': 0}, 409)
+        app.http('/api/controller-state', {'action': 'save'}, 409)
+        for data in ({}, {'action': 'import'}, {'action': 'import', 'state': None}):
+            app.http('/api/controller-state', data, 400)
+        app.sim('fixture')
+        app.advance(1)
+        app.http('/api/controller-state', {'action': 'save'}, 202)
+        s = app.advance(1)
+        assert s['command']['save_status'] == 'succeeded'
+        assert s['command']['template_source'] == 'learned' and s['command']['saved_available']
+        assert 'observed' not in s and s['simulation_tx'] == []
+        saved = state_file.read_bytes()
+        assert saved == legacy_pair + bytes.fromhex(STATE)
+        assert storage.read_bytes() == legacy_pair
+        # Passive learning cannot write flash; every invalid import preserves it.
+        newer = changed_frame(STATE, 49)
+        app.sim('inject', frame=newer)
+        app.advance(1)
+        assert state_file.read_bytes() == saved
+        for frame in ('zz', STATE[:-2], STATE[:-2] + '00', changed_frame(STATE, 30),
+                      changed_frame(STATE, 9), REPORT):
+            app.http('/api/controller-state', {'action': 'import', 'state': frame}, 400)
+            assert state_file.read_bytes() == saved
+        assert app.http()['simulation_tx'] == []
+    finally:
+        app.stop()
+    app = App(storage)
+    try:
+        s = app.advance(1000)
+        c = s['command']
+        assert c['template_source'] == 'saved' and c['template_available']
+        assert not c['learned_available'] and 'template_age_ms' not in c
+        assert c['save_status'] == 'not_attempted' and c['phase'] == 'idle'
+        assert 'observed' not in s and s['simulation_tx'] == []
+        app.sim('scenario', name='silence')
+        app.command()
+        s = app.advance(100)
+        assert s['command']['phase'] == 'waiting_report' and s['simulation_tx'] == [POLL]
+        app.sim('inject', frame=REPORT)
+        s = app.advance(2)
+        assert s['command']['phase'] == 'waiting_readback' and s['simulation_tx'][-1] == COMFORT
+        assert app.advance(100)['command']['phase'] == 'waiting_readback'
+        matching = '23F1040506C6F1010203DF203000404B02A88A02B100E100641919DA000A000A0A47C783C11D'
+        app.sim('inject', frame=matching)
+        assert app.advance(1)['command']['phase'] == 'matched'
+        # A command owns its explicit override even when a new frame is learned
+        # while waiting for the fresh report. The override never reaches flash.
+        override = changed_frame(changed_frame(STATE, 31), 4)
+        app.command(state=override)
+        app.advance(1)
+        newer = changed_frame(STATE, 49)
+        app.sim('inject', frame=newer)
+        app.advance(1)
+        app.sim('inject', frame=REPORT)
+        s = app.advance(2)
+        sent = bytes.fromhex(s['simulation_tx'][-1])
+        assert sent[31:34] == bytes.fromhex(override)[31:34]
+        assert sent[49:51] == bytes.fromhex(override)[49:51]
+        assert sent[1:5] == bytes.fromhex('F1010203')  # Manual source behavior retained.
+        assert state_file.read_bytes() == saved
+        app.sim('inject', frame=matching)
+        app.advance(1)
+        # Next command selects newly learned RAM, without overwriting saved state.
+        app.command()
+        app.advance(1)
+        app.sim('inject', frame=REPORT)
+        s = app.advance(2)
+        assert bytes.fromhex(s['simulation_tx'][-1])[49:51] == bytes.fromhex(newer)[49:51]
+        assert state_file.read_bytes() == saved
+        assert s['command']['phase'] == 'waiting_readback'
+    finally:
+        app.stop()  # Restart during delivery must not replay it.
+    app = App(storage)
+    try:
+        s = app.advance(600000)
+        assert s['command']['phase'] == 'idle' and s['command']['template_source'] == 'saved'
+        assert s['simulation_tx'] == [] and 'observed' not in s
+        # Import-and-save accepts the historic manual source policy, without RX/TX.
+        imported = changed_frame(changed_frame(STATE, 4), 31)
+        app.http('/api/controller-state', {'action': 'import', 'state': imported}, 202)
+        s = app.advance(1)
+        assert s['command']['save_status'] == 'succeeded' and s['simulation_tx'] == []
+        assert not s['command']['learned_available'] and 'observed' not in s
+        assert state_file.read_bytes() == legacy_pair + bytes.fromhex(imported)
+    finally:
+        app.stop()
+    app = App(storage)
+    try:
+        assert app.http()['command']['template_source'] == 'saved'
+        app.sim('scenario', name='silence')
+        app.command()
+        app.advance(1)
+        app.sim('inject', frame=REPORT)
+        s = app.advance(2)
+        assert bytes.fromhex(s['simulation_tx'][-1])[31:34] == bytes.fromhex(imported)[31:34]
+        assert bytes.fromhex(s['simulation_tx'][-1])[1:5] == bytes.fromhex('F1010203')
+        app.sim('fixture')
+        app.advance(1)
+        tx = app.http()['simulation_tx']
+        app.http('/api/controller-state', {'action': 'clear'}, 202)
+        s = app.advance(1)
+        assert s['command']['clear_status'] == 'succeeded'
+        assert s['command']['template_source'] == 'missing' and s['pairing']['saved']
+        assert s['command']['phase'] == 'waiting_readback'  # Active snapshot unchanged.
+        assert s['simulation_tx'] == tx and storage.read_bytes() == legacy_pair
+    finally:
+        app.stop()
+    app = App(storage)
+    try:
+        s = app.advance(1000)
+        assert s['pairing']['saved'] and s['command']['template_source'] == 'missing'
+        assert s['simulation_tx'] == [] and s['command']['phase'] == 'idle'
+        app.http('/api/command', {'mode': 0, 'centi_c': 2050, 'clock_seconds': 0}, 409)
+    finally:
+        app.stop()
+    # Unknown, malformed, CRC-corrupt and differently paired state remain visible
+    # on disk. The separate pairing record still loads and is never rewritten.
+    for bad in (b'\x63' + saved[1:], saved[:-1], saved[:-1] + bytes([saved[-1] ^ 1]),
+                saved[:4] + bytes([saved[4] ^ 1]) + saved[5:]):
+        state_file.write_bytes(bad)
+        app = App(storage)
+        try:
+            s = app.advance(1000)
+            assert s['pairing']['saved'] and s['command']['state_load_error']
+            assert s['command']['template_source'] == 'missing' and s['simulation_tx'] == []
+            assert storage.read_bytes() == legacy_pair and state_file.read_bytes() == bad
+        finally:
+            app.stop()
+    storage.write_bytes(b'\x63' + legacy_pair[1:])
+    app = App(storage)
+    try:
+        s = app.advance(1000)
+        assert not s['pairing']['saved'] and s['pairing']['error'] and s['simulation_tx'] == []
+        app.http('/api/pairing', {'action': 'start', 'source': 'F1010203', 'destination': 'F1100001'}, 409)
+        assert storage.read_bytes() == b'\x63' + legacy_pair[1:]
+    finally:
+        app.stop()
+
+
 def main():
     with tempfile.TemporaryDirectory() as directory:
+        saved_state_workflow(directory)
         storage = Path(directory) / 'pairing.bin'
         app = App(storage)
         try:
@@ -104,7 +254,7 @@ def main():
             assert storage.read_bytes() == bytes.fromhex('01F1010203F1040506')
             response = app.http('/api/command', {'mode': 0, 'centi_c': 2050, 'clock_seconds': 0}, 409)
             assert 'no learned controller state' in response
-            for f in (wrong_address(STATE, 4), wrong_address(STATE, 9), STATE[:-2] + '00'):
+            for f in (changed_frame(STATE, 4), changed_frame(STATE, 9), STATE[:-2] + '00'):
                 app.sim('inject', frame=f)
                 assert not app.advance(1)['command']['template_available']
             tx = app.http()['simulation_tx']
@@ -135,7 +285,7 @@ def main():
             # Valid wrong-address or corrupt reports cannot update paired observation.
             previous = s['observed'].copy()
             valid, invalid = s['valid_frames'], s['invalid_frames']
-            for f in (wrong_address(REPORT, 4), wrong_address(REPORT, 9), REPORT[:-2] + '00'):
+            for f in (changed_frame(REPORT, 4), changed_frame(REPORT, 9), REPORT[:-2] + '00'):
                 app.sim('inject', frame=f)
                 s = app.advance(1)
                 assert s['observed']['target_c'] == previous['target_c']
@@ -221,7 +371,7 @@ def main():
                 time.sleep(0.05)
         finally:
             app.stop()
-    print('HTTP simulation: pairing, fixture learning, independent TX vectors, requested/readback, modes, silence, ACK-only, retry bound, delayed responses, invalid traffic, manual import and process restart: passed')
+    print('HTTP simulation: saved state workflow/restarts/selection/clear/corruption, pairing, fixture learning, independent TX vectors, requested/readback, modes, silence, ACK-only, retry bound, delayed responses, invalid traffic, manual import and process restart: passed')
 
 
 if __name__ == '__main__':
