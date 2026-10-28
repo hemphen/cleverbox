@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT
+#ifdef CLEVERBOX_HOST
+#include "platform.h"
+#else
 #include "idf_hal.h"
+#endif
 #include "radio_transport.h"
 #include "esp_log.h"
 #include "device_store.h"
@@ -130,8 +134,8 @@ static bool receive_count(uint8_t &count)
     return false;
 }
 
-static void receive_task(void *)
-{
+// One worker iteration is shared by FreeRTOS and the host's controllable clock.
+struct radio_worker {
     rf_frame frame = {};
     int64_t started = 0;
     rf_pairing pair = status.pairing;
@@ -139,7 +143,7 @@ static void receive_task(void *)
     int pair_error = status.pairing_error;
     rf_control control = {};
     int control_error = 0;
-    for (;;) {
+    void step() {
         radio_request request;
         if (xQueueReceive(radio_requests, &request, 0) == pdPASS) {
             if (request.action == CONTROL_START && saved) {
@@ -187,7 +191,7 @@ static void receive_task(void *)
             status.pairing = pair; status.pairing_saved = saved; status.pairing_error = pair_error;
             status.control = control.status; status.control_error = control_error;
             portEXIT_CRITICAL(&status_lock);
-            vTaskDelete(nullptr); return;
+            return;
         }
         uint8_t count = 0;
         bool stable = receive_count(count);
@@ -294,7 +298,6 @@ static void receive_task(void *)
                 status.pairing = pair; status.pairing_saved = saved; status.pairing_error = result;
                 status.control = control.status; status.control_error = result;
                 portEXIT_CRITICAL(&status_lock);
-                vTaskDelete(nullptr);
                 return;
             }
             frame = {};
@@ -304,6 +307,15 @@ static void receive_task(void *)
         status.pairing = pair; status.pairing_saved = saved; status.pairing_error = pair_error;
         status.control = control.status; status.control_error = control_error;
         portEXIT_CRITICAL(&status_lock);
+    }
+};
+
+static void receive_task(void *)
+{
+    radio_worker worker;
+    for (;;) {
+        worker.step();
+        if (!radio_transport_status().ready) { vTaskDelete(nullptr); return; }
         vTaskDelay(1);
     }
 }

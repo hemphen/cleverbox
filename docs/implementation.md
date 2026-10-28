@@ -2,33 +2,23 @@
 
 ## Product behaviour
 
-The ESP32-C6 runs the complete application. The CC1101 supplies bidirectional
-radiator RF; Wi-Fi carries Matter to the home controller. Home Assistant records
-received readings and runs schedules and automations. Cleverbox holds current
-device state and persistent inclusion data, not historical readings.
+The ESP32-C6 runs the appliance; the CC1101 supplies bidirectional radiator RF.
+Local HTTP is the first setup/control interface. Home Assistant will record
+readings and run schedules/automations through MQTT with discovery. Matter is an
+optional later interface. Cleverbox holds current device state and saved setup,
+not historical readings.
 
-Use Espressif ESP-IDF + ESP-Matter in C/C++. Select and pin a compatible release
-pair at the first firmware milestone, with a lockfile and reproducible build
-instructions. Do not add a Python daemon or a Node.js bridge to the appliance.
-
-Start with one Matter bridge and one heating thermostat endpoint. Expand to
-multiple endpoints only after the one-radiator path works. A stable radiator
-identity maps to a stable endpoint, persisted across power cycles.
-
-| Matter-facing value | Implementation rule |
-| --- | --- |
-| Local temperature | Radiator measurement; unavailable sentinel remains unavailable |
-| Heating target | Translate units and enforce implemented bounds; track requested and observed values separately |
-| System mode | Expose only implemented radiator mappings; do not equate Eco, Comfort and Auto without an explicit mapping |
-| Reachability | Based on radio liveness, not merely Wi-Fi connection |
-| Heating activity | Omit optional reporting until supported by the reference and implementation |
+Use C/C++, ESP-IDF and RadioLib. Keep the host simulation small and opt-in; it
+runs the same codec, pairing, command and receive handling without board hardware.
+No Python daemon or Node.js bridge is required by the intended physical appliance.
+Stable radiator identities and requested/observed separation apply to every interface.
 
 Use the public [RF specification](https://github.com/hemphen/clevertouch-protocol/blob/main/docs/radiator-rf/specification.md)
 and [shared values](https://github.com/hemphen/clevertouch-protocol/blob/main/docs/common.md)
 as the implementation contract. Record the source commit used when adding the
 codec and tests, without copying the specification into this repository.
 
-Matter command handling must distinguish acceptance for delivery from confirmed
+Command handling must distinguish acceptance for delivery from confirmed
 radiator state. Bound retries and reconcile later reports; avoid claiming that
 a setpoint write proves heating output changed.
 
@@ -36,37 +26,33 @@ a setpoint write proves heating output changed.
 
 Use the [libraries and component boundaries](libraries.md).
 
-1. **Local HTTP and board bring-up.** Serve the pairing/control page without
-   Matter. First exercise protocol frame previews, then establish the sourced
-   CC1101 pin map, read its identity and receive frames. Use the same command
-   handling for HTTP and the later Matter interface.
-2. **Radiator communication.** Implement the portable protocol component and
-   Elecram transport adapter with framing, checksums, decoding, controller messages
-   and the documented inclusion exchange. Keep chip-specific behaviour outside
-   the portable codec. Store pairing state and test the codec with synthetic
-   reference vectors. Demonstrate a target change on one radiator with the
-   Touch E3 disconnected and observe its resulting state.
-3. **Matter integration.** Commission over Wi-Fi into HA; expose temperature and
-   heating target, then the supported modes. Persist Matter fabric and endpoint
-   identity. Keep radio work outside the Matter event loop.
-4. **Useful appliance.** Add explicit inclusion/removal and factory-reset controls,
-   documented button behaviour and status indication. Test two radiators,
-   individual addressing, power cycles and unavailable devices.
-5. **Installation and endurance.** Write the actual installation steps, publish
-   a buildable firmware version, and test a sustained run with HA/network outages,
-   reconnects and repeated commands. Add upgrade handling once the storage layout
-   is established; do not reset pairing as a side effect of normal updates.
+1. **One-radiator HTTP application.** Portable codec, Elecram transport, explicit
+   pairing/persistence and report-driven commands are implemented. Passive state
+   learning is RAM only; manual imports remain. The host application now exercises
+   these paths with one deterministic radiator and an explicit synthetic controller
+   fixture; see [simulation](simulation.md). Hardware acceptance remains pending.
+2. **Registry and saved setup.** Support multiple radiators with stable identities,
+   explicit inclusion/removal and saved setup state. Define learned-state storage
+   policy here; simulation does not persist it ahead of that decision.
+3. **Home network and device time.** Add home Wi-Fi setup and device-managed clock
+   with explicit timezone behavior. Current commands use the browser clock.
+4. **MQTT and Home Assistant discovery.** Expose measurements, targets, supported
+   modes and honest availability through the existing command handling. Test
+   network loss/reconnect without arbitrary settings changes.
+5. **Installation and endurance.** Validate physical pairing/control, power cycles,
+   multiple devices and continued operation without HA/Touch E3. Publish installation
+   and upgrade handling that preserves setup. Matter may be added later if useful.
 
 Each milestone should end in a small demonstrable result. No placeholder features
 or broad framework are needed to start.
 
 ## Acceptance for the first prototype
 
-- HA discovers one bridged thermostat after commissioning.
+- HA discovers radiators through MQTT after the integration milestone.
 - Its measured temperature follows radiator reports.
 - A target change reaches that radiator and its observed state converges.
 - Unavailable/stale data is not shown as fresh or confirmed.
-- Restarting Cleverbox retains pairing and the same Matter endpoint.
+- Restarting Cleverbox retains pairing and stable radiator identities.
 - HA and Wi-Fi loss do not trigger arbitrary new setpoints or inclusion.
 - Continued heating behaviour without HA and without Touch E3 is observed and
   described accurately; thermostat ownership is not invented by this project.
@@ -76,8 +62,8 @@ Passing software tests does not imply that these physical checks have passed.
 
 ## Later, only when needed
 
-Matter-over-Thread can be an alternative firmware/configuration on this board.
-Do not implement simultaneous Wi-Fi/Thread operation in the first version.
+Matter over Wi-Fi or Thread remains optional later. Do not add either stack to
+the current HTTP/setup milestones.
 The local HTTP interface remains available for setup and testing.
 
 Weekly schedules belong in HA. Cleverbox has no scheduler or weekly-program

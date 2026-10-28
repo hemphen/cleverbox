@@ -2,9 +2,10 @@
 
 ## Build this appliance
 
-Cleverbox implements a Matter-over-Wi-Fi radiator bridge on the Elecram
+Cleverbox implements a local radiator bridge targeting the Elecram
 ESP32-C6 + CC1101 Sub-GHz 855–925 MHz board. Keep changes specific to that
-hardware and purpose. Read README.md, docs/implementation.md and docs/libraries.md first.
+hardware and purpose, with a small opt-in host simulation. Read README.md,
+docs/implementation.md and docs/libraries.md first.
 
 Treat the protocol descriptions in hemphen/clevertouch-protocol as the working
 contract. Use hemphen/clevertouch-radio for implementation references when needed.
@@ -22,8 +23,9 @@ back to the source project. Do not expand this repository into a research archiv
 
 - Do not duplicate protocol specifications, captures, conversation history or
   general Matter/ESP-IDF documentation.
-- Use C/C++, ESP-IDF, ESP-Matter and RadioLib with Matter over Wi-Fi.
-  Pin compatible versions in the first build. Use MIT for project code.
+- Use C/C++, ESP-IDF and RadioLib for firmware. Keep the host adapter small.
+  Add MQTT/HA discovery after setup/network milestones; Matter is optional later.
+  Pin dependencies when introduced. Use MIT for project code.
 - Build only components required by the current milestone. Avoid speculative
   abstractions for other hardware, transports or providers.
 - Use the libraries and component boundaries in docs/libraries.md. Keep one
@@ -33,8 +35,13 @@ back to the source project. Do not expand this repository into a research archiv
 - Make focused commits. Update documentation for resulting behaviour, not the
   chronology of attempts. Remove abandoned alternatives.
 
-Build and test the local HTTP interface before adding Matter. Both interfaces
-must use the same protocol component and command handling.
+Build and test local HTTP first, then multiple radiators, saved setup state,
+home Wi-Fi/device time, then MQTT with HA discovery. Keep Matter optional later.
+All interfaces must use the same protocol component and command handling.
+Host simulation must reuse production receive/learning and state machines; keep
+synthetic controller fixtures explicit and separate from radiator reports. Never
+use synthetic 97/5B values as physical firmware defaults or persist learned state
+until the registry/setup milestone explicitly includes it.
 
 ## Scheduling
 
@@ -50,10 +57,10 @@ operation; even then, expose that operation rather than execute schedules here.
   manufacturer firmware and record its source and board revision.
 - Separate requested settings from radiator-reported state. A transmitted packet
   or ack-shaped reply alone must not be labelled confirmed application.
-- Preserve stable Matter endpoint identities across restarts. Report stale or
+- Preserve stable radiator identities across restarts. Report stale or
   unavailable state honestly; do not invent heating activity or energy readings.
 - No automatic inclusion or unsolicited settings changes at boot.
-- Use bounded queues, timeouts and retries; avoid blocking the Matter event loop.
+- Use bounded queues, timeouts and retries; avoid blocking network/event loops.
 - Test codec behaviour with synthetic vectors from the public specification.
   Test state transitions and error paths that affect command delivery.
 - State exactly what was built, tested in software and tested on hardware.

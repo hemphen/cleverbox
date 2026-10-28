@@ -1,34 +1,44 @@
 # Cleverbox
 
-A small, local Matter bridge for Purmo/LVI radiators, built specifically for the
-Elecram Sub-GHz 855–925 MHz Bridge (ESP32-C6 + CC1101).
+A small, local bridge for Purmo/LVI radiators, targeting the Elecram Sub-GHz
+855–925 MHz Bridge (ESP32-C6 + CC1101).
 
-**Status: CC1101 reception and explicit one-radiator pairing with NVS persistence.
-HTTP target/mode commands use learned or imported controller state and fresh readback.
-Matter is not implemented. No hardware test yet.**
+**Status: locally runnable HTTP application with simulated RF traffic; physical
+firmware supports reception, explicit one-radiator pairing with NVS persistence,
+and report-driven target/mode commands. No hardware test yet.**
+
+## Run locally without hardware
+
+With a C/C++17 compiler, Make, Python 3, pkg-config and cJSON development package
+installed, run from the repository root:
+
+```sh
+make simulate
+```
+
+Open **http://127.0.0.1:8080**. Pair the invented radiator, try sending before
+learning state, inject the separate **synthetic controller-state fixture**, then
+change target/mode and observe decoded readback. Choose delayed responses to see
+the requested settings before matching readback. See the
+[startup prerequisites, walkthrough and limitations](docs/simulation.md).
+
+Simulation uses the production codec, pairing/command state machines, receive
+handling and page. It checks application behavior against protocol assumptions;
+it does **not** prove RF reception, transmission compatibility, capture-free setup
+or heating behavior.
 
 Manual template input is optional once a matching controller-state frame has been
-heard for the saved pair (RAM only). Fully template-free construction remains
-blocked by unresolved protocol fields; see the [field assessment](docs/controller-state.md).
+heard for the saved pair (RAM only). Fully independent construction remains
+blocked by unresolved fields `97` and `5B`; synthetic bytes are not physical-device
+defaults. See the [field assessment](docs/controller-state.md).
 
-Cleverbox will translate Matter thermostat commands into radiator RF messages
-and report radiator state back over Wi-Fi. Home Assistant supplies dashboards,
-history, schedules, automations and notifications through its standard Matter
-integration. No Touch E3, provider account or cloud service is intended to be
-required in normal operation.
+## Product direction
 
-## First useful version
-
-- One Elecram board, powered through USB-C.
-- A local HTTP start page for pairing and command tests, before Matter.
-- Local inclusion and control of one radiator, then multiple radiators.
-- A Matter bridge with a stable thermostat endpoint for each radiator.
-- Measured temperature, target setpoint and only the operating modes we implement.
-- Persistent pairing and settings; honest availability and command state.
-- Commissioning into Home Assistant. No Thread border router required.
-
-The radiator protocol remains proprietary; Matter is the standard interface
-towards the home. A host running radiatord is not required by the intended product.
+Local HTTP setup/control comes first, followed by multiple radiators, saved setup
+state, home Wi-Fi/device time, then MQTT with Home Assistant discovery. Matter is
+an optional later interface. Interfaces will share the same command handling.
+Home Assistant supplies history, schedules, automations and notifications.
+No provider account or cloud service is intended to be required in normal operation.
 
 ## Scope
 
@@ -40,7 +50,7 @@ a prerequisite programme to re-establish every protocol claim.
 Thread is a possible later alternative on the same hardware, not part of the
 first build. Ethernet/PoE, Z-Wave, other boards, cloud fallback, an onboard history
 database and a schedule engine are outside this implementation. Local HTTP is
-the first control interface; Matter will use the same command handling.
+the first control interface; MQTT and optional Matter will use the same command handling.
 
 ## Working here
 
