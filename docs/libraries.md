@@ -1,12 +1,13 @@
 # Libraries
 
-Use C/C++ with ESP-IDF, ESP-Matter and RadioLib. Use ESP-IDF's HTTP
-server and RadioLib transport; add Matter over Wi-Fi afterward.
+Use C/C++ with ESP-IDF and RadioLib. Use ESP-IDF's HTTP server and RadioLib
+transport. MQTT/HA discovery follows setup and home-network/time milestones;
+ESP-Matter is an optional later dependency.
 
 | Dependency | Use |
 | --- | --- |
 | [ESP-IDF](https://github.com/espressif/esp-idf) | FreeRTOS, SPI/GPIO, Wi-Fi, HTTP server, NVS and timers |
-| [ESP-Matter](https://github.com/espressif/esp-matter) | Matter commissioning, bridge lifecycle and thermostat endpoints |
+| Optional later: [ESP-Matter](https://github.com/espressif/esp-matter) | Matter commissioning, bridge lifecycle and thermostat endpoints |
 | [RadioLib](https://github.com/jgromes/RadioLib) | CC1101 driver through its native ESP-IDF integration |
 
 The stage-1 HTTP draft targets ESP-IDF v5.5.1. RadioLib 7.3.0 is pinned to commit
@@ -21,8 +22,8 @@ The RX and TX profiles still need physical board acceptance.
   hardware and buildable in host tests.
 - **radio_transport:** Elecram pin configuration, RadioLib integration, interrupts,
   queues and timed exchanges.
-- **device_store:** NVS-backed pairing data and stable Matter endpoint identities.
-- **matter_bridge:** thermostat attributes and commands mapped to radiator operations.
+- **device_store:** NVS-backed pairing data and stable radiator identities.
+- **matter_bridge (optional later):** thermostat attributes and commands mapped to radiator operations.
 
 Keep one codec and one set of protocol values. Reuse these components throughout
 the application. Follow the external protocol specification rather than copying
@@ -35,4 +36,5 @@ codes are schedule phases, not a direct mapping to Matter Auto mode.
 
 HTTP, the host-tested codec/pairing/command logic, RadioLib RX/TX adapter and
 one-radiator NVS store are present.
-ESP-Matter is selected but not yet imported.
+ESP-Matter is not imported. The host-only platform/HTTP/NVS adapters are described
+in [simulation](simulation.md); they are not part of the physical firmware.

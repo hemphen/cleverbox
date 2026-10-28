@@ -12,7 +12,16 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685
 </style>
 <h1>Cleverbox</h1>
 <p>Local setup · Radio receiver</p>
-<p>Pairing and the live command button transmit RF frames. Preview buttons prepare frames only.</p>
+<p id="trafficNotice">Pairing and the live command button transmit RF frames. Preview buttons prepare frames only.</p>
+<section id="simulationPanel" hidden>
+<h2>SIMULATION · no physical radio</h2>
+<p>One invented radiator: F1040506. The fixture below stands in for an original controller;
+this does not establish capture-free setup. No heating or RF compatibility is tested.</p>
+<label>Responses <select id="simulationScenario"><option value="normal">Normal</option><option value="delayed">Delayed (2.5 seconds)</option><option value="silence">Silence</option><option value="ack_only">ACK only after state TX</option></select></label>
+<button id="simulationApply">Apply response scenario</button>
+<button id="simulationFixture">Inject synthetic controller-state fixture</button>
+<p id="simulationAction" role="status"></p>
+</section>
 <section>
 <h2>Radio receiver</h2>
 <p id="radioStatus" role="status">Checking radio…</p>
@@ -58,6 +67,7 @@ The radiator supplies its actual address in the reply. One saved radiator is sup
 <section><h2>Result</h2><pre id="result" role="status" aria-live="polite">No command prepared.</pre></section>
 <script>
 const field=id=>document.getElementById(id);
+let simulationConfigured=false;
 const modes={0:'Comfort',1:'Off',2:'Frost',3:'Eco',4:'Boost',8:'Program Comfort',11:'Program Eco'};
 async function refreshRadio(){
   try {
@@ -67,6 +77,14 @@ async function refreshRadio(){
     field('radioStatus').textContent=data.ready
       ? 'Listening · '+data.valid_frames+' valid frames'
       : 'Radio unavailable · error '+data.error;
+    field('simulationPanel').hidden=data.simulation!==true;
+    if(data.simulation===true){
+      field('trafficNotice').textContent='SIMULATION ONLY · all transmitted and received bytes stay on this computer. Clock runs at real speed.';
+      if(!simulationConfigured){
+        field('source').value='F1010203'; field('destination').value='F1100001';
+        field('simulationScenario').value=data.scenario; simulationConfigured=true;
+      }
+    }
     const pair=data.pairing;
     if(pair){
       const active=['offer','waiting_reply','bind','waiting_ack'].includes(pair.phase);
@@ -111,6 +129,17 @@ async function refreshRadio(){
   setTimeout(refreshRadio,2000);
 }
 refreshRadio();
+async function simulationAction(body){
+  try {
+    const response=await fetch('/api/simulation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok) throw new Error(await response.text());
+    field('simulationAction').textContent=body.action==='fixture'
+      ? 'Synthetic controller-state fixture queued through reception. This is original-controller stand-in traffic, not a radiator report.'
+      : 'Response scenario applied. Queued simulated responses cleared.';
+  } catch(error){field('simulationAction').textContent=error.message;}
+}
+field('simulationFixture').addEventListener('click',()=>simulationAction({action:'fixture'}));
+field('simulationApply').addEventListener('click',()=>simulationAction({action:'scenario',name:field('simulationScenario').value}));
 field('sendTarget').addEventListener('click',async()=>{
   const button=field('sendTarget'); button.disabled=true;
   const now=new Date();

@@ -33,6 +33,7 @@ async function main() {
   vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
   await new Promise(setImmediate);
   assert.match(fields.templateStatus.textContent, /No controller state learned/);
+  assert.equal(fields.simulationPanel.hidden, true);
   fields.mode.value = '3'; fields.temperature.value = '15.5';
   await fields.sendTarget.handlers.click();
   assert.deepEqual(lastRequest, {url: '/api/command', body: {mode: 3, centi_c: 1550, clock_seconds: 45296}});
@@ -55,6 +56,18 @@ async function main() {
   responseOK = false;
   await fields.sendTarget.handlers.click();
   assert.equal(fields.commandAction.textContent, 'No learned controller state');
+  data.simulation = true; data.scenario = 'delayed';
+  await vm.runInContext('refreshRadio()', context);
+  assert.equal(fields.simulationPanel.hidden, false);
+  assert.match(fields.trafficNotice.textContent, /SIMULATION ONLY/);
+  assert.equal(fields.source.value, 'F1010203');
+  assert.equal(fields.destination.value, 'F1100001');
+  responseOK = true;
+  await fields.simulationFixture.handlers.click();
+  assert.deepEqual(lastRequest, {url: '/api/simulation', body: {action: 'fixture'}});
+  assert.match(fields.simulationAction.textContent, /not a radiator report/);
+  await fields.simulationApply.handlers.click();
+  assert.deepEqual(lastRequest, {url: '/api/simulation', body: {action: 'scenario', name: 'delayed'}});
   console.log('UI learned/missing state, optional import, preview, admission and error rendering: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

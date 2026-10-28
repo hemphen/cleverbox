@@ -42,3 +42,36 @@ test:
 	  build/transport_protocol.o build/transport_pairing.o build/transport_control.o -o build/test_admission
 	./build/test_admission
 	node firmware/main/test_ui.js
+
+# Host simulation needs cJSON development headers/library (e.g. libcjson-dev).
+HOST_CFLAGS = -std=c11 -Wall -Wextra -Werror -pedantic -g -fPIC -MMD -MP -DCLEVERBOX_HOST \
+  -Ihost/include -Ifirmware/main -Ifirmware/components/radio_transport \
+  -Ifirmware/components/radio_transport/include -Ifirmware/components/device_store/include \
+  -Ifirmware/components/radiator_protocol/include $(shell pkg-config --cflags libcjson)
+HOST_CSOURCES = firmware/components/radiator_protocol/radiator_protocol.c \
+  firmware/components/radiator_protocol/radiator_pairing.c \
+  firmware/components/radiator_protocol/radiator_control.c \
+  firmware/components/device_store/device_store.c firmware/main/http_api.c host/http.c host/storage.c
+HOST_OBJECTS = $(patsubst %.c,build/host/%.o,$(HOST_CSOURCES))
+
+build/host/%.o: %.c $(wildcard host/include/*.h) firmware/main/http_api.h
+	@mkdir -p $(@D)
+	$(CC) $(HOST_CFLAGS) -c $< -o $@
+
+build/host/simulation.o: host/simulation.cpp host/include/platform.h host/include/simulation.h \
+  firmware/components/radio_transport/radio_transport.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(filter-out -std=c11,$(HOST_CFLAGS)) -std=c++17 -c $< -o $@
+
+build/host/libcleverbox.so: $(HOST_OBJECTS) build/host/simulation.o
+	$(CXX) -shared $^ $(shell pkg-config --libs libcjson) -o $@
+
+.PHONY: host simulate test-http
+host: build/host/libcleverbox.so
+simulate: host
+	python3 host/serve.py
+
+test-http: host
+	python3 host/test_http.py
+
+-include $(HOST_OBJECTS:.o=.d) build/host/simulation.d

@@ -1,5 +1,8 @@
 # Firmware
 
+For the application on a development computer without board hardware, see
+[local HTTP simulation](../docs/simulation.md) (`make simulate` at the root).
+
 The HTTP control prototype uses ESP-IDF **v5.5.1**, its HTTP server and the portable C protocol
 component. The fixed Elecram board wiring is documented in [hardware](../docs/hardware.md).
 The page remains available if radio initialization fails.
