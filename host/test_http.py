@@ -4,6 +4,7 @@
 import json
 from pathlib import Path
 import subprocess
+import socket
 import sys
 import tempfile
 import time
@@ -197,6 +198,23 @@ def main():
             app.http('/api/simulation', {'action': 'advance', 'ms': 1000}, 400)
             app.http('/api/simulation', {'action': 'inject', 'frame': REPORT}, 400)
             app.http('/api/pairing', {'action': 'start', 'source': 'F1010203', 'destination': 'F1100001'}, 202)
+            # An accepted connection must not stall other clients or clock work.
+            # Exercise idle sockets, incomplete headers and incomplete POST bodies.
+            for partial in (b'', b'GET /api/radio HTTP/1.0\r\n',
+                            b'POST /api/command HTTP/1.0\r\nContent-Length: 20\r\n'
+                            b'Content-Type: application/json\r\n\r\n{'):
+                before = app.http()['simulation_time_ms']
+                port = int(app.url.rsplit(':', 1)[1])
+                with socket.create_connection(('127.0.0.1', port), timeout=2) as idle:
+                    if partial:
+                        idle.sendall(partial)
+                    time.sleep(0.05)  # Let the single-threaded server accept it.
+                    started = time.monotonic()
+                    with urllib.request.urlopen(app.url + '/api/radio', timeout=2) as response:
+                        status = json.load(response)
+                    assert time.monotonic() - started < 2
+                    assert status['simulation_time_ms'] > before
+                assert app.http()['ready']
             deadline = time.monotonic() + 5
             while not app.http()['pairing']['saved']:
                 assert time.monotonic() < deadline, 'Interactive clock failed to complete pairing'

@@ -37,6 +37,10 @@ def main():
             last += ms / 1000
 
     class Handler(BaseHTTPRequestHandler):
+        # Bound accepted-client reads/writes so an idle or incomplete request
+        # cannot indefinitely stop the single owner of the simulation clock.
+        timeout = 0.5
+
         def reply(self, code, data, kind='text/plain'):
             if isinstance(data, str):
                 data = data.encode()

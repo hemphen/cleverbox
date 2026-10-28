@@ -14,7 +14,9 @@ make simulate
 ```
 
 Open **http://127.0.0.1:8080**. The application binds only to loopback. Stop with
-Ctrl-C, and run the same command to restart. Only one process should use a given
+Ctrl-C, and run the same command to restart. Accepted connections have a 0.5-second socket inactivity timeout so idle or
+incomplete requests cannot indefinitely stop HTTP service and the simulated clock.
+Application access remains single-threaded. Only one process should use a given
 storage file. To change the port/storage path after building, run
 `python3 host/serve.py --port 8081 --storage local/another-pairing.bin`.
 
