@@ -41,11 +41,15 @@ The radiator supplies its actual address in the reply. One saved radiator is sup
 </section>
 <section>
 <h2>Set temperature and mode</h2>
-<label>Controller-state frame <textarea id="state" spellcheck="false" placeholder="Paste a complete 59-byte controller-state frame as hex"></textarea></label>
-<small>For live commands, use a controller-state template captured for this radiator. Opaque fields are preserved; addresses, clock and report-derived values are refreshed.</small>
+<p id="templateStatus" role="status">Checking learned controller state…</p>
+<small>Live commands use the latest controller state heard for the saved pair. A fresh radiator report is still required. Learning sends nothing and lasts until reboot; disconnect the original controller before command tests.</small>
+<details><summary>Manual template import and preview</summary>
+<label>Controller-state frame <textarea id="state" spellcheck="false" placeholder="Optional for live control; required for target preview"></textarea></label>
+<small>Fallback: a complete CRC-valid 59-byte frame for this radiator. An entered template overrides the learned state. Opaque fields are preserved, not guessed.</small>
+<button data-command="target">Preview imported change</button>
+</details>
 <label>Mode <select id="mode"><option value="0">Comfort</option><option value="3">Eco</option><option value="2">Frost</option><option value="1">Off</option></select></label>
 <label>Target °C <input id="temperature" type="number" min="5" max="30" step="0.5" value="20"></label>
-<button data-command="target">Preview change</button>
 <button id="sendTarget" disabled>Send to paired radiator</button>
 <p id="commandStatus" role="status" aria-live="polite">No live command requested.</p>
 <p id="commandAction" role="status"></p>
@@ -77,6 +81,9 @@ async function refreshRadio(){
     }
     const command=data.command;
     if(command){
+      field('templateStatus').textContent=command.template_available
+        ? 'Controller state learned '+(command.template_age_ms/1000).toFixed(1)+' s ago (RAM only).'
+        : 'No controller state learned. Listen to the original controller using the saved addresses, or import a same-radiator template. Unresolved fields prevent template-free control.';
       const active=['poll','waiting_report','sending','waiting_readback'].includes(command.phase);
       field('sendTarget').disabled=!data.ready||!pair?.saved||active;
       field('commandStatus').textContent=command.phase==='idle' ? 'No live command requested.'
@@ -107,9 +114,11 @@ refreshRadio();
 field('sendTarget').addEventListener('click',async()=>{
   const button=field('sendTarget'); button.disabled=true;
   const now=new Date();
-  const body={state:field('state').value.trim(),mode:Number(field('mode').value),
+  const body={mode:Number(field('mode').value),
     centi_c:Math.round(Number(field('temperature').value)*100),
     clock_seconds:now.getHours()*3600+now.getMinutes()*60+now.getSeconds()};
+  const state=field('state').value.trim();
+  if(state) body.state=state;
   try {
     const response=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!response.ok) throw new Error(await response.text());

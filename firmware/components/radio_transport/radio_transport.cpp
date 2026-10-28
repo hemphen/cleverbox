@@ -66,11 +66,17 @@ extern "C" esp_err_t radio_control_start(const rf_control_request *request)
     radio_status current = radio_transport_status();
     if (!current.ready || !current.pairing_saved || !radio_requests ||
         rf_control_active(&current.control)) return ESP_ERR_INVALID_STATE;
+    if (!request) return ESP_ERR_INVALID_ARG;
+    rf_control_request resolved = *request;
+    if (!resolved.state.size) {
+        if (!current.has_control_template) return ESP_ERR_INVALID_STATE;
+        resolved.state = current.control_template;
+    }
     rf_control check = {};
-    if (!request || !rf_control_start(&check, request, current.pairing.controller,
+    if (!rf_control_start(&check, &resolved, current.pairing.controller,
                                      current.pairing.radiator, esp_timer_get_time() / 1000))
         return ESP_ERR_INVALID_ARG;
-    radio_request queued = {}; queued.action = CONTROL_START; queued.control = *request;
+    radio_request queued = {}; queued.action = CONTROL_START; queued.control = resolved;
     portENTER_CRITICAL(&status_lock);
     bool busy = control_pending || rf_control_active(&status.control) || !status.ready;
     if (!busy) control_pending = true;
@@ -229,11 +235,25 @@ static void receive_task(void *)
                     bool paired_report = saved && decoded &&
                         !memcmp(report.source, pair.radiator, 4) &&
                         !memcmp(report.destination, pair.controller, 4);
+                    // 97 and 5B have no established construction rule. Learn the
+                    // unchanged state only from this saved controller/radiator pair.
+                    // rf_set_target validates the complete layout and both CRCs;
+                    // its modified output is deliberately discarded.
+                    rf_frame checked_state = {};
+                    bool control_template = saved && valid &&
+                        !memcmp(frame.bytes + 1, pair.controller, 4) &&
+                        !memcmp(frame.bytes + 6, pair.radiator, 4) &&
+                        rf_set_target(&checked_state, &frame, RF_OFF, 0);
                     if (paired_report) {
                         rf_control_receive(&control, now / 1000, &frame);
                         if (control.status.phase == RF_CONTROL_MATCHED) control_error = 0;
                     }
                     portENTER_CRITICAL(&status_lock);
+                    if (control_template) {
+                        status.has_control_template = true;
+                        status.control_template = frame;
+                        status.control_template_time_us = now;
+                    }
                     if (paired_report) {
                         status.has_paired_report = true;
                         status.paired_report = report;

@@ -41,7 +41,7 @@ The bind preview uses the entered destination. The separate pairing flow below
 uses the responding radiator's address automatically; candidate enumeration is
 not implemented.
 
-Target changes require a complete CRC-valid 59-byte controller-state frame:
+Target **previews** require a complete CRC-valid 59-byte controller-state frame:
 
 ```text
 {"command":"target","state":"<controller-state hex>","mode":0,"centi_c":2050}
@@ -56,7 +56,8 @@ No schedules, Boost duration or inferred heating-duty control are implemented.
 
 ## Tests and next step
 
-Run `make test` at the repository root for the portable codec. Tests use
+Run `make test` at the repository root (C/C++ compiler and Node.js required) for
+the codec, pairing, persistence, command/admission and UI tests. Tests use
 synthetic vectors from clevertouch-protocol revision
 `b70fab79300544a62ee2606bd4055cdb81763fd4`.
 CI also builds the ESP32-C6 firmware using the pinned ESP-IDF image.
@@ -167,20 +168,35 @@ power cycle and firmware upgrades still need the board test.
 ## Live target/mode commands
 
 With a saved pairing, use **Send to paired radiator** to queue an immediate
-Comfort, Off, Frost or Eco command. The template field remains required for this
-bench version: supply a CRC-valid 59-byte controller-state frame previously
-received for this same radiator. Its destination must equal the saved radiator
-address; the old controller source is replaced by Cleverbox's saved address.
-Do not use another radiator's template. Undocumented configuration fields remain
-opaque rather than being populated with invented defaults. Templates and pending
-commands are held in RAM only; reboot never replays a requested setting.
+Comfort, Off, Frost or Eco command. Manual template input is optional: the receiver
+remembers the latest CRC-valid 59-byte controller state whose source and destination
+match the saved controller/radiator addresses. Learning only listens; it never
+queues a command. The page shows whether a state has been learned and its age.
+There is no arbitrary expiry for opaque configuration; that age is not a fresh
+radiator report or evidence of reachability. Learning requires the original
+controller to transmit using the saved source address. Disconnect it before
+testing Cleverbox control to avoid competing controllers.
+
+If no matching state has been heard, commands without an import fail with 409.
+The manual import under **Manual template import and preview** remains a fallback:
+supply a CRC-valid state for this same radiator. Its destination must equal the
+saved radiator address; an old controller source is replaced by Cleverbox's saved
+address. An entered import overrides learned state for that command only; invalid
+imports fail rather than falling back. Do not use another radiator's template.
+Templates and pending commands are RAM only; reboot clears learned state and
+never replays a setting. Import again or listen again after reboot.
+
+This removes mandatory pasting, not protocol template dependence. In particular,
+`97` and `5B` have no established construction rules or transmitter defaults.
+The [field assessment](../docs/controller-state.md) identifies the exact blockers,
+source revisions and assumptions. Synthetic example bytes are not device defaults.
 
 The browser supplies its current local clock (seconds since midnight). After an
 initial poll, the worker waits for a new radiator report addressed to the saved
 controller. Each state transmission refreshes the temperature echo (including
 unavailable), copies that report's raw E1 values, zeros DA as in the documented
 controller states, updates the clock by elapsed monotonic time, sets target/mode
-and recalculates both CRCs. Other fields are preserved from the template. Echoing
+and recalculates both CRCs. Other fields are preserved from the learned/imported state. Echoing
 E1 and preserving the opaque controller fields are prototype assumptions; this
 implements no new thermostat/PID loop and does not prove continued heating control.
 Touch E3 is not contacted during this exchange.
@@ -188,16 +204,19 @@ Touch E3 is not contacted during this exchange.
 `POST /api/command` takes JSON:
 
 ```text
-{"state":"<same-radiator controller-state hex>","mode":0,"centi_c":2050,"clock_seconds":43200}
+{"mode":0,"centi_c":2050,"clock_seconds":43200}
 ```
 
+Omit `state` to select learned state; optionally add
+`"state":"<same-radiator controller-state hex>"` for the old import behavior.
+An explicitly empty, null, non-string, malformed or invalid frame is rejected.
 202 means queued; 400 means invalid data/template; 409 means busy, radio
-unavailable or no saved pairing. HTTP and future Matter command handling share
+unavailable, no saved pairing or no learned state. HTTP and future Matter command handling share
 the portable command state machine. Target limits/quantization are the same as
 for previews. Off transmits raw 320 and is shown as a requested target of 0 °C.
 
 `/api/radio` separates `command` (requested target/mode, phase, state-TX attempt
-count, error and last matching report age) from `observed` (latest paired-radiator
+count, error, `template_available`, optional `template_age_ms` and last matching report age) from `observed` (latest paired-radiator
 temperature/target/mode, report age and stale flag). A transmitted state or short
 ack does not count as applied. Only a later CRC-valid radiator report with the
 right source/destination and matching encoded target/mode sets `matched`. That
@@ -217,10 +236,12 @@ Commands are not persisted, scheduled or resumed after restart.
 
 ### Live-control board acceptance (pending)
 
-1. Before disconnecting Touch E3, obtain a controller-state template for the test
-   radiator. Keep private frame data outside the repository. Complete pairing and
-   disconnect Touch E3 for the live command test.
-2. Send a changed target with the template. Observe poll → new report → state TX →
+1. Complete pairing, then listen for a state from the original controller with
+   the saved source address to this radiator. Check the learned-state status and
+   age; alternatively import a same-radiator frame. Keep private data outside the
+   repository. Disconnect Touch E3 for the live command test.
+2. Send a changed target with the import empty to exercise learned state (also
+   check the import fallback separately). Observe poll → new report → state TX →
    readback, and check the radiator-reported target/mode. Check Comfort, Eco, Frost
    and Off individually; independently observe actual heating behaviour.
 3. Confirm a nonresponding radiator reaches timeout and old observations age into

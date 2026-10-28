@@ -26,8 +26,46 @@ static void start(rf_control *c)
     assert(rf_control_start(c, &r, controller, radiator, 1000));
     rf_control_sent(c, 1000, true);
 }
+
+static void expect_frame(const rf_frame *actual, const char *expected_hex)
+{
+    rf_frame expected = parse(expected_hex);
+    assert(actual->size == 59 && actual->bytes[0] == 0x38);
+    assert(actual->size == expected.size && !memcmp(actual->bytes, expected.bytes, expected.size));
+}
+
+static void complete_state_vectors(void)
+{
+    rf_frame state = parse(state_hex), report = parse(report_hex), out;
+    // The specification's complete synthetic state: all bytes, both CRCs.
+    assert(rf_live_state(&out, &state, &report, controller, radiator, RF_COMFORT, 2100, 43200));
+    expect_frame(&out, state_hex);
+    // Independently assembled from the fixed record order in protocol b70fab79,
+    // with CRCs calculated by clevertouch-radio 7706b90c radiatord/decoder.py
+    // crc16 (not this codec). Raw words = 320 + 18*C: 410,689,860,320,446,599.
+    // Clock 23:59:59 = 17 3B 3B; 97/5B and other opaque values are fixture data,
+    // NOT adopted defaults. See docs/controller-state.md for the byte mapping.
+    static const struct { rf_mode mode; int target; const char *hex; } vectors[] = {
+        {RF_COMFORT, 500, "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494019A00E100641919DA000000005B0078B2173B3B4F1FC430"},
+        {RF_COMFORT, 2050, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402B100E100641919DA000000005B0078B2173B3B26CE6271"},
+        {RF_COMFORT, 3000, "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494035C00E100641919DA000000005B0078B2173B3B826413A3"},
+        {RF_OFF, 0, "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494014001E100641919DA000000005B0078B2173B3B7DE8F50D"},
+        {RF_FROST, 700, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049401BE02E100641919DA000000005B0078B2173B3B9450290A"},
+        {RF_ECO, 1550, "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494025703E100641919DA000000005B0078B2173B3BE9D4B021"},
+    };
+    for (size_t i = 0; i < sizeof(vectors) / sizeof(vectors[0]); ++i) {
+        assert(rf_live_state(&out, &state, &report, controller, radiator,
+                             vectors[i].mode, vectors[i].target, 86399));
+        expect_frame(&out, vectors[i].hex);
+    }
+    rf_frame empty = {0};
+    assert(!rf_live_state(&out, &empty, &report, controller, radiator, RF_COMFORT, 2000, 0));
+    assert(!rf_live_state(&out, &state, &empty, controller, radiator, RF_COMFORT, 2000, 0));
+    assert(!rf_live_state(&out, &state, &report, controller, radiator, RF_COMFORT, 3001, 0));
+}
 int main(void)
 {
+    complete_state_vectors();
     rf_frame report = parse(report_hex), out;
     rf_control_request r = request();
     rf_control c = {0};
@@ -106,6 +144,7 @@ int main(void)
     assert(updated.bytes[35] == 1 && updated.bytes[36] == 0x40 && updated.bytes[37] == 1);
     assert(!memcmp(updated.bytes + 39, fresh.bytes + 23, 4));
     assert(updated.bytes[52] == 3 && updated.bytes[53] == 25 && updated.bytes[54] == 45);
+    expect_frame(&updated, "38F1010203C6F10405064500004B084C3B004C00008E000084CC000000009720300494014001E100373764DA000000005B0078B203192D3A8CFC68");
     assert(!rf_live_state(&updated, &r.state, &fresh, controller, radiator, RF_ECO, 2000, 86400));
     assert(!rf_live_state(&updated, &r.state, &wrong_dest, controller, radiator, RF_ECO, 2000, 0));
     start(&c); rf_control_receive(&c, 1100, &report); rf_control_sent(&c, 1200, true);
@@ -124,6 +163,7 @@ int main(void)
     const uint8_t new_controller[4] = {0xf1,7,8,9}; r = request();
     assert(rf_live_state(&updated, &r.state, &readdressed_report, new_controller, radiator, RF_COMFORT, 2050, 0));
     assert(!memcmp(updated.bytes + 1, new_controller, 4) && !memcmp(updated.bytes + 6, radiator, 4));
+    expect_frame(&updated, "38F1070809C6F10405064500004B02A83B004C00008E000084CC00000000972030049402B100E100641919DA000000005B0078B2000000B1BED423");
     static const char *mode_reports[] = {
         "23F1040506C6F1010203DF203000404B02A88A02B100E100641919DA000A000A0A47C783C11D",
         "23F1040506C6F1010203DF203000404B02A88A014001E100641919DA000A000A0A4776324BA1",
