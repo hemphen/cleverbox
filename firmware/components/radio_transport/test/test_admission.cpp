@@ -6,6 +6,9 @@
 extern "C" esp_err_t device_store_load(paired_device *) { return ESP_ERR_NOT_FOUND; }
 extern "C" esp_err_t device_store_save(const paired_device *) { return ESP_OK; }
 
+extern "C" esp_err_t device_store_load_state(const paired_device *, rf_frame *) { return ESP_ERR_NOT_FOUND; }
+extern "C" esp_err_t device_store_save_state(const paired_device *, const rf_frame *) { return ESP_OK; }
+
 static rf_control_request command;
 struct stop_worker {};
 static unsigned checks;
@@ -24,7 +27,7 @@ static void reset()
     const uint8_t controller[4] = {0xf1,1,2,3}, radiator[4] = {0xf1,4,5,6};
     memcpy(status.pairing.controller, controller, 4);
     memcpy(status.pairing.radiator, radiator, 4);
-    control_pending = queue_full = false;
+    control_pending = state_store_pending = queue_full = false;
     dequeue_hook = transmit_hook = delay_hook = nullptr;
     transmit_result = 0; test_now_us = 1000000; checks = 0;
     incoming_size = incoming_used = 0;
@@ -87,6 +90,16 @@ int main()
     assert(status.has_control_template && status.control_template_time_us == test_now_us);
     assert(!memcmp(status.control_template.bytes, state.bytes, state.size));
     assert(status.control.phase == RF_CONTROL_IDLE && !status.has_paired_report);
+    // Saving also owns its admission snapshot, and never asks the radio to TX.
+    assert(radio_state_save(nullptr) == ESP_OK);
+    assert(status.state_save_result == RADIO_STORE_PENDING);
+    rf_frame original = status.control_template;
+    status.control_template.bytes[31] ^= 1;
+    radio_worker save_worker;
+    save_worker.step();
+    assert(status.state_save_result == RADIO_STORE_OK && status.has_saved_template);
+    assert(!memcmp(status.saved_template.bytes, original.bytes, original.size));
+    status.control_template = original;
     command.state = bad;
     assert(radio_control_start(&command) == ESP_ERR_INVALID_ARG); // Never hide a bad import with learned state.
     command.state = {};

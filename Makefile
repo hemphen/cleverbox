@@ -15,6 +15,8 @@ test:
 	$(CC) -std=c11 -Wall -Wextra -Werror -pedantic -g \
 	  -Ifirmware/components/device_store/include \
 	  -Ifirmware/components/device_store/test/stubs \
+	  -Ifirmware/components/radiator_protocol/include \
+	  firmware/components/radiator_protocol/radiator_protocol.c \
 	  firmware/components/device_store/device_store.c \
 	  firmware/components/device_store/test/test_store.c -o build/test_store
 	./build/test_store

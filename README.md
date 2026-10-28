@@ -5,7 +5,7 @@ A small, local bridge for Purmo/LVI radiators, targeting the Elecram Sub-GHz
 
 **Status: locally runnable HTTP application with simulated RF traffic; physical
 firmware supports reception, explicit one-radiator pairing with NVS persistence,
-and report-driven target/mode commands. No hardware test yet.**
+explicit controller-state saving and report-driven target/mode commands. No hardware test yet.**
 
 ## Run locally without hardware
 
@@ -17,8 +17,9 @@ make simulate
 ```
 
 Open **http://127.0.0.1:8080**. Pair the invented radiator, try sending before
-learning state, inject the separate **synthetic controller-state fixture**, then
-change target/mode and observe decoded readback. Choose delayed responses to see
+learning state, inject the separate **synthetic controller-state fixture**,
+explicitly save it, restart, then change target/mode without injecting it again.
+Observe decoded readback. Choose delayed responses to see
 the requested settings before matching readback. See the
 [startup prerequisites, walkthrough and limitations](docs/simulation.md).
 
@@ -28,14 +29,17 @@ it does **not** prove RF reception, transmission compatibility, capture-free set
 or heating behavior.
 
 Manual template input is optional once a matching controller-state frame has been
-heard for the saved pair (RAM only). Fully independent construction remains
+heard for the saved pair or explicitly saved/imported. Passive learning stays in
+RAM; explicit saving retains validated state across restart. Fully independent
+construction remains
 blocked by unresolved fields `97` and `5B`; synthetic bytes are not physical-device
 defaults. See the [field assessment](docs/controller-state.md).
 
 ## Product direction
 
-Local HTTP setup/control comes first, followed by multiple radiators, saved setup
-state, home Wi-Fi/device time, then MQTT with Home Assistant discovery. Matter is
+Local HTTP setup/control comes first, followed by saved one-radiator setup, a
+registry and independent per-radiator delivery, home Wi-Fi/device time, then MQTT
+with Home Assistant discovery. Matter is
 an optional later interface. Interfaces will share the same command handling.
 Home Assistant supplies history, schedules, automations and notifications.
 No provider account or cloud service is intended to be required in normal operation.

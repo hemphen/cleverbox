@@ -180,14 +180,17 @@ radiator report or evidence of reachability. Learning requires the original
 controller to transmit using the saved source address. Disconnect it before
 testing Cleverbox control to avoid competing controllers.
 
-If no matching state has been heard, commands without an import fail with 409.
+Explicitly save learned state or import-and-save to keep a fallback across restart.
+The [storage policy](../docs/controller-state.md#explicit-one-radiator-storage)
+describes compatibility, validation and failure handling. If no learned or saved
+state exists, commands without an import fail with 409.
 The manual import under **Manual template import and preview** remains a fallback:
 supply a CRC-valid state for this same radiator. Its destination must equal the
 saved radiator address; an old controller source is replaced by Cleverbox's saved
 address. An entered import overrides learned state for that command only; invalid
 imports fail rather than falling back. Do not use another radiator's template.
-Templates and pending commands are RAM only; reboot clears learned state and
-never replays a setting. Import again or listen again after reboot.
+Reboot clears learned RAM state, observations and pending commands, but loads the
+explicitly saved fallback. It never polls or replays a setting at boot.
 
 This removes mandatory pasting, not protocol template dependence. In particular,
 `97` and `5B` have no established construction rules or transmitter defaults.
@@ -199,7 +202,7 @@ initial poll, the worker waits for a new radiator report addressed to the saved
 controller. Each state transmission refreshes the temperature echo (including
 unavailable), copies that report's raw E1 values, zeros DA as in the documented
 controller states, updates the clock by elapsed monotonic time, sets target/mode
-and recalculates both CRCs. Other fields are preserved from the learned/imported state. Echoing
+and recalculates both CRCs. Other fields are preserved from the selected learned/imported/saved state. Echoing
 E1 and preserving the opaque controller fields are prototype assumptions; this
 implements no new thermostat/PID loop and does not prove continued heating control.
 Touch E3 is not contacted during this exchange.
@@ -210,11 +213,11 @@ Touch E3 is not contacted during this exchange.
 {"mode":0,"centi_c":2050,"clock_seconds":43200}
 ```
 
-Omit `state` to select learned state; optionally add
+Omit `state` to select learned RAM state, then saved state; optionally add
 `"state":"<same-radiator controller-state hex>"` for the old import behavior.
 An explicitly empty, null, non-string, malformed or invalid frame is rejected.
 202 means queued; 400 means invalid data/template; 409 means busy, radio
-unavailable, no saved pairing or no learned state. HTTP and future Matter command handling share
+unavailable, no saved pairing or no learned/saved state. HTTP and future Matter command handling share
 the portable command state machine. Target limits/quantization are the same as
 for previews. Off transmits raw 320 and is shown as a requested target of 0 °C.
 
@@ -237,6 +240,27 @@ old pre-command observations and short acknowledgements cannot complete it.
 The stale flag uses a five-minute UI threshold, not a claimed protocol heartbeat.
 Commands are not persisted, scheduled or resumed after restart.
 
+### Explicit controller-state API
+
+`POST /api/controller-state` takes small JSON requests:
+
+| Request | Effect |
+| --- | --- |
+| `{"action":"save"}` | Snapshot and save latest learned state. |
+| `{"action":"import","state":"<hex>"}` | Validate and save a same-radiator frame; preserve original source. |
+| `{"action":"clear"}` | Clear saved and learned state after commit; retain pairing and active command snapshot. |
+
+These actions do not request RF transmission. 202 means queued, not committed;
+400 means invalid action/frame and 409 means no pair/state or unavailable/busy.
+Read `/api/radio`'s `command.save_status`/`clear_status` (`not_attempted`, `pending`,
+`succeeded`, `failed`) and `state_store_error` for the outcome. An explicit retry
+uses the same action. `template_source` is `missing`, `learned` or `saved`;
+`learned_available`/`saved_available` show both caches. `template_available` remains
+compatible and now includes saved fallback. `template_age_ms` exists only for a
+learned frame; saved state has no invented capture age. `state_load_error` reports
+invalid saved state independently of pairing. These are configuration fields,
+not observations or evidence of radiator reachability.
+
 ### Live-control board acceptance (pending)
 
 1. Complete pairing, then listen for a state from the original controller with
@@ -250,8 +274,10 @@ Commands are not persisted, scheduled or resumed after restart.
 3. Confirm a nonresponding radiator reaches timeout and old observations age into
    stale. Restore reception and check that late reports update observed values
    without restarting timed-out sends.
-4. Reboot with a command pending: pairing must remain, command phase must be idle,
-   and no target/mode command may be sent automatically. Repeat with HA/Wi-Fi absent;
+4. Explicitly save learned state, reboot and check saved fallback without another
+   capture. Validate physical flash retention and report-driven delivery on the board.
+5. Reboot with a command pending: pairing and saved fallback must remain, command
+   phase must be idle, and no target/mode command may be sent automatically. Repeat with HA/Wi-Fi absent;
    continued thermostat behaviour must be observed rather than assumed.
 
 Host command tests cover fresh fields/CRCs, clock rollover, addressing, unsupported

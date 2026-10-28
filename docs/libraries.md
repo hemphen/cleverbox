@@ -22,7 +22,7 @@ The RX and TX profiles still need physical board acceptance.
   hardware and buildable in host tests.
 - **radio_transport:** Elecram pin configuration, RadioLib integration, interrupts,
   queues and timed exchanges.
-- **device_store:** NVS-backed pairing data and stable radiator identities.
+- **device_store:** NVS-backed pairing data, explicit one-radiator controller state and stable identities.
 - **matter_bridge (optional later):** thermostat attributes and commands mapped to radiator operations.
 
 Keep one codec and one set of protocol values. Reuse these components throughout

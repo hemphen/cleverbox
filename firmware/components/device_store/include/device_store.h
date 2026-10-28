@@ -2,6 +2,7 @@
 #pragma once
 #include "esp_err.h"
 #include <stdint.h>
+#include "radiator_protocol.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -9,6 +10,11 @@ typedef struct { uint8_t controller[4], radiator[4]; } paired_device;
 // ESP_ERR_NOT_FOUND means no saved pairing. Other errors must be shown.
 esp_err_t device_store_load(paired_device *device);
 esp_err_t device_store_save(const paired_device *device);
+// Separate versioned record; the original pairing key is never rewritten.
+// NULL state explicitly clears saved state. Load returns NOT_FOUND for a tombstone.
+// Imported source is retained; destination must match the paired radiator.
+esp_err_t device_store_load_state(const paired_device *device, rf_frame *state);
+esp_err_t device_store_save_state(const paired_device *device, const rf_frame *state);
 #ifdef __cplusplus
 }
 #endif

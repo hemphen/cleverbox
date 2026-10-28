@@ -35,13 +35,13 @@ back to the source project. Do not expand this repository into a research archiv
 - Make focused commits. Update documentation for resulting behaviour, not the
   chronology of attempts. Remove abandoned alternatives.
 
-Build and test local HTTP first, then multiple radiators, saved setup state,
-home Wi-Fi/device time, then MQTT with HA discovery. Keep Matter optional later.
+Build and test local HTTP first, then saved one-radiator setup, a registry and
+independent per-radiator delivery, home Wi-Fi/device time, then MQTT with HA discovery. Keep Matter optional later.
 All interfaces must use the same protocol component and command handling.
 Host simulation must reuse production receive/learning and state machines; keep
 synthetic controller fixtures explicit and separate from radiator reports. Never
-use synthetic 97/5B values as physical firmware defaults or persist learned state
-until the registry/setup milestone explicitly includes it.
+use synthetic 97/5B values as physical firmware defaults. Controller state is
+persisted only by explicit save/import actions; passive learning never writes flash.
 
 ## Scheduling
 

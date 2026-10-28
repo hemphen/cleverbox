@@ -51,11 +51,17 @@ The radiator supplies its actual address in the reply. One saved radiator is sup
 <section>
 <h2>Set temperature and mode</h2>
 <p id="templateStatus" role="status">Checking learned controller state…</p>
-<small>Live commands use the latest controller state heard for the saved pair. A fresh radiator report is still required. Learning sends nothing and lasts until reboot; disconnect the original controller before command tests.</small>
+<small>Selection: per-command import, then latest learned RAM state, then saved state. A fresh radiator report is always required. Learning and storage actions send nothing. Saved opaque fields may drift; saving does not prove indefinite validity. Disconnect the original controller before command tests.</small>
+<button id="saveState" disabled>Save learned state / retry</button>
+<button id="clearState" disabled>Clear saved and learned state</button>
+<p id="stateStorageStatus" role="status"></p>
+<p id="stateAction" role="status"></p>
 <details><summary>Manual template import and preview</summary>
 <label>Controller-state frame <textarea id="state" spellcheck="false" placeholder="Optional for live control; required for target preview"></textarea></label>
 <small>Fallback: a complete CRC-valid 59-byte frame for this radiator. An entered template overrides the learned state. Opaque fields are preserved, not guessed.</small>
 <button data-command="target">Preview imported change</button>
+<button id="importState" disabled>Import and save / retry</button>
+<small>Import-and-save retains the frame's source address; live transmission uses the paired controller address. Successful clear keeps pairing and drops RAM state; an already admitted command keeps its snapshot. Save/import never starts a command. Clear the input after saving to use automatic selection.</small>
 </details>
 <label>Mode <select id="mode"><option value="0">Comfort</option><option value="3">Eco</option><option value="2">Frost</option><option value="1">Off</option></select></label>
 <label>Target °C <input id="temperature" type="number" min="5" max="30" step="0.5" value="20"></label>
@@ -99,9 +105,18 @@ async function refreshRadio(){
     }
     const command=data.command;
     if(command){
-      field('templateStatus').textContent=command.template_available
-        ? 'Controller state learned '+(command.template_age_ms/1000).toFixed(1)+' s ago (RAM only).'
-        : 'No controller state learned. Listen to the original controller using the saved addresses, or import a same-radiator template. Unresolved fields prevent template-free control.';
+      const source=command.template_source??(command.template_available?'learned':'missing');
+      field('templateStatus').textContent=source==='learned'
+        ? 'Controller state learned '+(command.template_age_ms/1000).toFixed(1)+' s ago (RAM only).'+(command.saved_available?' Saved fallback also available.':'')
+        : source==='saved' ? 'Saved controller state available. Capture age unknown; no fresh observation since restart is implied.'
+        : 'No controller state learned or saved. Listen to the original controller using the saved addresses, or import a same-radiator template. Unresolved fields prevent template-free control.';
+      field('saveState').disabled=!pair?.saved||!command.learned_available||command.save_status==='pending';
+      field('importState').disabled=!pair?.saved||command.save_status==='pending';
+      field('clearState').disabled=!pair?.saved||command.clear_status==='pending';
+      field('stateStorageStatus').textContent='Latest explicit save: '+(command.save_status??'not_attempted')
+        +' · clear: '+(command.clear_status??'not_attempted')
+        +(command.state_load_error?' · Saved state could not be loaded: '+command.state_load_error:'')
+        +(command.state_store_error?' · Storage operation failed: '+command.state_store_error+'; previous usable state retained. Retry explicitly.':'');
       const active=['poll','waiting_report','sending','waiting_readback'].includes(command.phase);
       field('sendTarget').disabled=!data.ready||!pair?.saved||active;
       field('commandStatus').textContent=command.phase==='idle' ? 'No live command requested.'
@@ -140,6 +155,18 @@ async function simulationAction(body){
 }
 field('simulationFixture').addEventListener('click',()=>simulationAction({action:'fixture'}));
 field('simulationApply').addEventListener('click',()=>simulationAction({action:'scenario',name:field('simulationScenario').value}));
+async function controllerStateAction(action){
+  const body={action};
+  if(action==='import') body.state=field('state').value.trim();
+  try {
+    const response=await fetch('/api/controller-state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok) throw new Error(await response.text());
+    field('stateAction').textContent='Storage action queued; check latest save/clear result. No command requested.';
+  } catch(error){field('stateAction').textContent=error.message;}
+}
+field('saveState').addEventListener('click',()=>controllerStateAction('save'));
+field('importState').addEventListener('click',()=>controllerStateAction('import'));
+field('clearState').addEventListener('click',()=>controllerStateAction('clear'));
 field('sendTarget').addEventListener('click',async()=>{
   const button=field('sendTarget'); button.disabled=true;
   const now=new Date();

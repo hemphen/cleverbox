@@ -31,24 +31,34 @@ storage file. To change the port/storage path after building, run
 3. Click **Inject synthetic controller-state fixture**. Wait for the learned-state
    indication. This is a separate original-controller stand-in, **not a radiator
    report**. It passes through the normal receive/learning path and sends nothing.
-4. Select **Delayed (2.5 seconds)** and click **Apply response scenario**. Choose a
+4. Click **Save learned state / retry** and wait for **Latest explicit save:
+   succeeded**. Stop with Ctrl-C and run `make simulate` again. The page now shows
+   **Saved controller state available**, unknown capture age, no observation and
+   idle command status. Do not inject another fixture or paste a frame.
+5. Select **Delayed (2.5 seconds)** and click **Apply response scenario**. Choose a
    new target and mode, leaving the import empty, then send. The command area shows
    the requested settings, the old decoded observation arrives after the poll,
    and a later decoded report matches the new settings. The two displays remain
    separate. Receive diagnostics include the last 16 transmitted packets.
-5. Select **Silence** and apply it, then send. The command times out after 150 real
+6. Select **Silence** and apply it, then send. The command times out after 150 real
    seconds without a state transmission. **ACK only after state TX** supplies the
    initial report, acknowledges the subsequent state, but gives no matching
    readback: that command also times out and never becomes matched.
-6. Restart while a command is pending. Pairing remains; command status is idle,
+7. Restart while a command is pending. Pairing remains; command status is idle,
    observations and learned state are empty, and diagnostics contain no TX.
-   Inject the fixture again or manually import same-radiator state before sending.
+   Saved state remains usable without another fixture/import. No pending command
+   resumes. **Clear saved and learned state** leaves pairing and makes state
+   missing; learning again remains possible.
 
 Pairing is saved to `local/simulation-pairing.bin`, using the production
-`device_store` versioned nine-byte record through a file-backed NVS subset.
-To repeat from empty storage, stop the app and explicitly remove that file.
-Corrupt/unknown records block new pairing rather than silently resetting it.
-Learned controller state, requested commands and observations are RAM only.
+`device_store` unchanged versioned nine-byte pairing record through a file-backed
+NVS subset. Explicit controller state is a separate versioned record at
+`local/simulation-pairing.bin.state`; existing pairing-only files still work.
+To repeat from empty storage, stop the app and explicitly remove both files.
+Corrupt/unknown pairing records block new pairing rather than silently resetting
+it; invalid controller-state records report a separate load error and retain pairing.
+Passive learned state, requested commands and observations are RAM only; the
+explicitly saved controller-state fallback survives process restart.
 The simulated radiator starts at 21 °C target/Comfort on each process start;
 measured temperature is fixed at approximately 20 °C. Settings are not saved.
 
@@ -57,7 +67,7 @@ measured temperature is fixed at approximately 20 °C. Settings are not saved.
 - The **production** C codec, pairing and command state machines, and transport
   admission/receive worker run unchanged in behavior. The worker now exposes one
   iteration for both its FreeRTOS loop and the host's single-threaded event loop.
-- The four HTTP API handlers were moved from `main.c` to `http_api.c`. Both builds
+- The HTTP API handlers were moved from `main.c` to `http_api.c`. Both builds
   compile those same handlers and use the same page. The host HTTP shim implements
   only their request/response calls; Python handles loopback sockets and page
   delivery, never protocol decoding, pairing or command decisions.
@@ -97,7 +107,9 @@ Injected bytes enter the same FIFO as simulator responses; invalid CRCs and wron
 addresses are rejected by production receive/application handling.
 
 The black-box tests cover empty-storage pairing, missing state, separate learning,
-manual import, requested versus decoded readback, normal/delayed/silent/ACK-only
+manual import, explicit save/import/clear, saved-state restart, temporary override,
+RAM precedence without flash overwrite, pairing-only compatibility, visible corrupt
+storage, requested versus decoded readback, normal/delayed/silent/ACK-only
 traffic, the two-attempt bound, corrupt and wrong-address traffic, persistence and
 restart without TX. Literal expected offer/bind/poll and complete live-state/report
 vectors come from the existing independent reference vectors, not simulator output.
