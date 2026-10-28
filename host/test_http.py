@@ -79,7 +79,7 @@ def saved_state_workflow(directory):
     storage = Path(directory) / 'saved-pair.bin'
     legacy_pair = bytes.fromhex('01F1010203F1040506')
     storage.write_bytes(legacy_pair)  # Exact existing pairing-only v1 format.
-    state_file = Path(str(storage) + '.state')
+    state_file = Path(str(storage) + '.registry')
     app = App(storage)
     try:
         s = app.advance(1000)
@@ -97,7 +97,7 @@ def saved_state_workflow(directory):
         assert s['command']['template_source'] == 'learned' and s['command']['saved_available']
         assert 'observed' not in s and s['simulation_tx'] == []
         saved = state_file.read_bytes()
-        assert saved == legacy_pair + bytes.fromhex(STATE)
+        assert saved[0] == 1 and int.from_bytes(saved[1:3], 'little') == 1 and saved.endswith(bytes.fromhex(STATE))
         assert storage.read_bytes() == legacy_pair
         # Passive learning cannot write flash; every invalid import preserves it.
         newer = changed_frame(STATE, 49)
@@ -168,7 +168,7 @@ def saved_state_workflow(directory):
         s = app.advance(1)
         assert s['command']['save_status'] == 'succeeded' and s['simulation_tx'] == []
         assert not s['command']['learned_available'] and 'observed' not in s
-        assert state_file.read_bytes() == legacy_pair + bytes.fromhex(imported)
+        assert state_file.read_bytes().endswith(bytes.fromhex(imported))
     finally:
         app.stop()
     app = App(storage)
@@ -202,8 +202,11 @@ def saved_state_workflow(directory):
         app.stop()
     # Unknown, malformed, CRC-corrupt and differently paired state remain visible
     # on disk. The separate pairing record still loads and is never rewritten.
-    for bad in (b'\x63' + saved[1:], saved[:-1], saved[:-1] + bytes([saved[-1] ^ 1]),
-                saved[:4] + bytes([saved[4] ^ 1]) + saved[5:]):
+    legacy_saved=legacy_pair + bytes.fromhex(STATE)
+    for bad in (b'\x63' + legacy_saved[1:], legacy_saved[:-1], legacy_saved[:-1] + bytes([legacy_saved[-1] ^ 1]),
+                legacy_saved[:4] + bytes([legacy_saved[4] ^ 1]) + legacy_saved[5:]):
+        Path(str(storage)+'.registry').unlink(missing_ok=True)
+        state_file=Path(str(storage)+'.state')
         state_file.write_bytes(bad)
         app = App(storage)
         try:
@@ -213,6 +216,7 @@ def saved_state_workflow(directory):
             assert storage.read_bytes() == legacy_pair and state_file.read_bytes() == bad
         finally:
             app.stop()
+    Path(str(storage)+'.registry').unlink(missing_ok=True)
     storage.write_bytes(b'\x63' + legacy_pair[1:])
     app = App(storage)
     try:
@@ -251,7 +255,7 @@ def main():
             s = app.advance(2000)
             assert s['pairing']['saved'] and s['pairing']['radiator'] == 'F1040506'
             assert s['simulation_tx'][-2:] == [OFFER, BIND]
-            assert storage.read_bytes() == bytes.fromhex('01F1010203F1040506')
+            assert Path(str(storage)+'.registry').exists()
             response = app.http('/api/command', {'mode': 0, 'centi_c': 2050, 'clock_seconds': 0}, 409)
             assert 'no learned controller state' in response
             for f in (changed_frame(STATE, 4), changed_frame(STATE, 9), STATE[:-2] + '00'):

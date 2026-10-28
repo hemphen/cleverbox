@@ -29,21 +29,25 @@ Use the [libraries and component boundaries](libraries.md).
 1. **One-radiator HTTP application.** Portable codec, Elecram transport, explicit
    pairing/persistence and report-driven commands are implemented. Passive state
    learning is RAM only; manual imports remain. The host application now exercises
-   these paths with one deterministic radiator and an explicit synthetic controller
-   fixture; see [simulation](simulation.md). Hardware acceptance remains pending.
+   these paths with two deterministic radiators and explicit synthetic controller
+   fixtures; see [simulation](simulation.md). Hardware acceptance remains pending.
 2. **Saved one-radiator setup.** Explicitly save learned state or import-and-save
    a validated same-radiator frame. Implemented with a separate versioned NVS
    record, preserving existing pairing. Restart restores configuration only;
    delivery still requires a fresh report. See [storage policy](controller-state.md).
-3. **Registry and independent per-radiator delivery.** Next: multiple stable
-   identities, explicit inclusion/removal and independent command routing/delivery.
-   Keep the current one-radiator store small until this milestone.
-4. **Home network and device time.** Add home Wi-Fi setup and device-managed clock
+3. **Persistent registry with serialized delivery.** Implemented: bounded capacity,
+   stable identities/names, explicit HTTP routing, inclusion/removal, per-radiator
+   observations/results and legacy migration. One pairing or command exchange
+   globally; other exchanges return busy. See [registry](registry.md).
+4. **Independent per-radiator delivery.** Next: allow independent progress while
+   another radiator waits, building on current per-record ownership. No backlog
+   or concurrent exchange scheduling is implemented yet.
+5. **Home network and device time.** Add home Wi-Fi setup and device-managed clock
    with explicit timezone behavior. Current commands use the browser clock.
-5. **MQTT and Home Assistant discovery.** Expose measurements, targets, supported
+6. **MQTT and Home Assistant discovery.** Expose measurements, targets, supported
    modes and honest availability through the existing command handling. Test
    network loss/reconnect without arbitrary settings changes.
-6. **Installation and endurance.** Validate physical pairing/control, power cycles,
+7. **Installation and endurance.** Validate physical pairing/control, power cycles,
    multiple devices and continued operation without HA/Touch E3. Publish installation
    and upgrade handling that preserves setup. Matter may be added later if useful.
 

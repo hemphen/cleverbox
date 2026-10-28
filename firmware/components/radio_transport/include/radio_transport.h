@@ -6,10 +6,10 @@
 #include "radiator_pairing.h"
 #include "radiator_control.h"
 #include "esp_err.h"
+#include "device_store.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
-typedef enum { RADIO_STORE_NONE, RADIO_STORE_PENDING, RADIO_STORE_OK, RADIO_STORE_FAILED } radio_store_result;
 typedef struct {
     bool ready;
     int error;
@@ -20,34 +20,27 @@ typedef struct {
     rf_frame last_frame;
     rf_report last_report;
     rf_pairing pairing;
-    bool pairing_saved;
+    bool pairing_saved, pairing_duplicate;
     int pairing_error;
-    rf_control_status control;
-    int control_error;
-    bool has_paired_report;
-    rf_report paired_report;
-    int64_t paired_report_time_us;
-    bool has_saved_template;
-    rf_frame saved_template;
-    int state_load_error, state_store_error;
-    radio_store_result state_save_result, state_clear_result;
-    bool has_control_template;
-    rf_frame control_template; // Latest matching state heard over RF; RAM only.
-    int64_t control_template_time_us;
+    uint32_t pairing_id, exchange_id;
+    size_t device_count, capacity;
+    int registry_error, mutation_error;
+    bool mutation_pending;
 } radio_status;
 // Starts reception and loads saved pairing without transmitting. Failure leaves the HTTP interface available.
 void radio_transport_start(void);
 radio_status radio_transport_status(void);
-// Enqueue one explicit action. Radio and storage work stay in the radio task.
-esp_err_t radio_pair_start(const uint8_t controller[4], const uint8_t candidate[4]);
-esp_err_t radio_pair_cancel(void);
-esp_err_t radio_pair_save(void);
-// Explicit save snapshots learned RAM state; import saves a validated exact frame.
-// NULL selects learned state. Clear also drops learned RAM state after successful commit.
-esp_err_t radio_state_save(const rf_frame *imported);
-esp_err_t radio_state_clear(void);
-// Empty request.state selects learned RAM, then saved state. Selection is snapshotted.
-esp_err_t radio_control_start(const rf_control_request *request);
+// id==0 resolves only a single configured radiator, never a browser selection.
+esp_err_t radio_device_status(uint32_t id, radiator_record *out);
+esp_err_t radio_device_at(size_t index, radiator_record *out);
+esp_err_t radio_pair_start(const uint8_t controller[4], const uint8_t candidate[4], uint32_t *id);
+esp_err_t radio_pair_cancel(uint32_t id);
+esp_err_t radio_pair_save(uint32_t id);
+esp_err_t radio_state_save(uint32_t id, const rf_frame *imported);
+esp_err_t radio_state_clear(uint32_t id);
+esp_err_t radio_device_rename(uint32_t id, const char *name);
+esp_err_t radio_device_remove(uint32_t id);
+esp_err_t radio_control_start(uint32_t id, const rf_control_request *request);
 #ifdef __cplusplus
 }
 #endif

@@ -4,8 +4,8 @@ A small, local bridge for Purmo/LVI radiators, targeting the Elecram Sub-GHz
 855–925 MHz Bridge (ESP32-C6 + CC1101).
 
 **Status: locally runnable HTTP application with simulated RF traffic; physical
-firmware supports reception, explicit one-radiator pairing with NVS persistence,
-explicit controller-state saving and report-driven target/mode commands. No hardware test yet.**
+firmware supports reception, a persistent multi-radiator registry with explicit HTTP routing,
+explicit controller-state saving and globally serialized report-driven commands. No hardware test yet.**
 
 ## Run locally without hardware
 
@@ -16,9 +16,9 @@ installed, run from the repository root:
 make simulate
 ```
 
-Open **http://127.0.0.1:8080**. Pair the invented radiator, try sending before
+Open **http://127.0.0.1:8080**. Pair the two invented radiators one at a time, name each, try sending before
 learning state, inject the separate **synthetic controller-state fixture**,
-explicitly save it, restart, then change target/mode without injecting it again.
+explicitly save it, restart, then select either radiator and change target/mode without injecting it again.
 Observe decoded readback. Choose delayed responses to see
 the requested settings before matching readback. See the
 [startup prerequisites, walkthrough and limitations](docs/simulation.md).
@@ -37,8 +37,8 @@ defaults. See the [field assessment](docs/controller-state.md).
 
 ## Product direction
 
-Local HTTP setup/control comes first, followed by saved one-radiator setup, a
-registry and independent per-radiator delivery, home Wi-Fi/device time, then MQTT
+Local HTTP setup/control comes first, with a persistent registry and globally serialized delivery implemented. Next come
+independent per-radiator delivery, home Wi-Fi/device time, then MQTT
 with Home Assistant discovery. Matter is
 an optional later interface. Interfaces will share the same command handling.
 Home Assistant supplies history, schedules, automations and notifications.

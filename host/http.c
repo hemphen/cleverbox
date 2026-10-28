@@ -5,12 +5,12 @@
 #include "simulation.h"
 #include <stdio.h>
 #include <string.h>
-static httpd_uri_t routes[5];
+static httpd_uri_t routes[7];
 static size_t route_count;
 static httpd_req_t request;
 esp_err_t httpd_register_uri_handler(httpd_handle_t server, const httpd_uri_t *route) {
     (void)server;
-    if (route_count == 5) return ESP_FAIL;
+    if (route_count == 7) return ESP_FAIL;
     routes[route_count++] = *route; return ESP_OK;
 }
 esp_err_t httpd_req_get_hdr_value_str(httpd_req_t *r, const char *name, char *out, size_t n) {
@@ -35,9 +35,9 @@ esp_err_t httpd_resp_send_err(httpd_req_t *r, int code, const char *s) {
 void host_init(void) { simulation_init(); http_api_register(NULL); }
 int host_request(int method, const char *path, const char *body, const char *type) {
     free(request.response);
-    request=(httpd_req_t){.content_len=strlen(body),.body=body,.content_type=type,
+    request=(httpd_req_t){.uri=path,.content_len=strlen(body),.body=body,.content_type=type,
                          .status="200 OK",.response_type="text/plain"};
-    for (size_t i=0;i<route_count;++i) if (method==routes[i].method && !strcmp(path,routes[i].uri)) {
+    for (size_t i=0;i<route_count;++i) if (method==routes[i].method && strlen(routes[i].uri)==strcspn(path,"?") && !strncmp(path,routes[i].uri,strcspn(path,"?"))) {
         if (routes[i].handler(&request)!=ESP_OK) {
             request.status="500 Internal Server Error"; httpd_resp_sendstr(&request,"Handler failed");
         }
@@ -47,3 +47,9 @@ int host_request(int method, const char *path, const char *body, const char *typ
 }
 const char *host_response(void) { return request.response ? request.response : ""; }
 const char *host_response_type(void) { return request.response_type; }
+
+size_t httpd_req_get_url_query_len(httpd_req_t *r) { const char *q = strchr(r->uri, '?'); return q ? strlen(q + 1) : 0; }
+esp_err_t httpd_req_get_url_query_str(httpd_req_t *r, char *out, size_t n) {
+    const char *q = strchr(r->uri, '?'); if (!q || strlen(q + 1) >= n) return ESP_FAIL;
+    strcpy(out, q + 1); return ESP_OK;
+}

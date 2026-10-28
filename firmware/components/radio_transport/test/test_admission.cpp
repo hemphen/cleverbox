@@ -1,153 +1,111 @@
 // SPDX-License-Identifier: MIT
-// Exercise the real admission and worker code with a deterministic fake platform.
 #include "../radio_transport.cpp"
 #include <cstdio>
-
-extern "C" esp_err_t device_store_load(paired_device *) { return ESP_ERR_NOT_FOUND; }
-extern "C" esp_err_t device_store_save(const paired_device *) { return ESP_OK; }
-
-extern "C" esp_err_t device_store_load_state(const paired_device *, rf_frame *) { return ESP_ERR_NOT_FOUND; }
-extern "C" esp_err_t device_store_save_state(const paired_device *, const rf_frame *) { return ESP_OK; }
-
+extern "C" esp_err_t device_registry_load(radiator_registry *r) { *r = {}; r->next_id = 1; return ESP_OK; }
+static int store_result;
+extern "C" esp_err_t device_registry_save_record(const radiator_registry *, const radiator_record *, uint32_t) { return store_result; }
 static rf_control_request command;
 struct stop_worker {};
 static unsigned checks;
-
-static void reject_second()
-{
-    assert(radio_control_start(&command) == ESP_ERR_INVALID_STATE);
-    assert(!queue_full);
-    ++checks;
+static rf_frame state_frame() {
+    rf_frame f = {};
+    assert(rf_parse_hex("38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0078B20C0000A20F60D9", f.bytes, sizeof(f.bytes), &f.size)); return f;
 }
-
-static void reset()
-{
-    status = {}; status.ready = true; status.pairing_saved = true;
-    status.pairing.phase = RF_PAIR_COMPLETE;
-    const uint8_t controller[4] = {0xf1,1,2,3}, radiator[4] = {0xf1,4,5,6};
-    memcpy(status.pairing.controller, controller, 4);
-    memcpy(status.pairing.radiator, radiator, 4);
-    control_pending = state_store_pending = queue_full = false;
-    dequeue_hook = transmit_hook = delay_hook = nullptr;
+static void reset() {
+    status = {}; status.ready = true; registry = {}; registry.count = 2; registry.next_id = 3;
+    for (unsigned i = 0; i < 2; ++i) {
+        auto &d = registry.records[i]; d.id = i + 1;
+        const uint8_t controller[] = {0xf1,1,2,3}, radiator[] = {0xf1,4,5,6};
+        memcpy(d.pair.controller, controller, 4); memcpy(d.pair.radiator, radiator, 4); d.pair.radiator[3] += i;
+    }
+    mutation_pending = exchange_pending = pair_reserved = queue_full = false; exchange_id = 0;
+    dequeue_hook = transmit_hook = delay_hook = nullptr; store_result = 0;
     transmit_result = 0; test_now_us = 1000000; checks = 0;
-    incoming_size = incoming_used = 0;
-    radio_requests = xQueueCreate(1, sizeof(radio_request));
+    incoming_size = incoming_used = 0; radio_requests = xQueueCreate(1, sizeof(radio_request));
 }
-
-static void run_worker()
-{
-    try { receive_task(nullptr); assert(false); }
-    catch (const stop_worker &) {}
+static void hear(radio_worker &worker, const rf_frame &frame) {
+    memcpy(incoming_bytes, frame.bytes, frame.size); incoming_size = frame.size; incoming_used = 0;
+    worker.step(); assert(incoming_used == incoming_size);
 }
-
-static rf_frame state_frame()
-{
-    rf_frame state = {};
-    assert(rf_parse_hex("38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0078B20C0000A20F60D9",
-                        state.bytes, sizeof(state.bytes), &state.size));
-    return state;
+static void reject_second() {
+    assert(radio_control_start(2, &command) == ESP_ERR_INVALID_STATE);
+    uint32_t id; const uint8_t c[] = {0xf1,1,2,3}, candidate[] = {0xf1,0x10,0,1};
+    assert(radio_pair_start(c, candidate, &id) == ESP_ERR_INVALID_STATE);
+    assert(radio_device_remove(1) == ESP_ERR_INVALID_STATE);
+    assert(!queue_full); ++checks;
 }
-
-static void hear(const rf_frame &frame)
-{
-    assert(frame.size <= sizeof(incoming_bytes));
-    memcpy(incoming_bytes, frame.bytes, frame.size);
-    incoming_size = frame.size; incoming_used = 0;
-    delay_hook = [] { throw stop_worker{}; };
-    transmit_hook = [] { assert(false); }; // Learning alone never transmits.
-    run_worker();
-    assert(incoming_used == incoming_size);
-}
-
-int main()
-{
+int main() {
     command.mode = RF_COMFORT; command.centi_c = 2050; command.clock_seconds = 43200;
-    command.state = {};
-    reset();
-    assert(radio_control_start(&command) == ESP_ERR_INVALID_STATE); // No implicit zero/default state.
-    assert(!queue_full && !control_pending);
-    rf_frame state = state_frame();
-    status.pairing_saved = false; hear(state);
-    assert(!status.has_control_template);
-    status.pairing_saved = true;
-    status.pairing.controller[3] ^= 1; hear(state);
-    assert(!status.has_control_template);
-    status.pairing.controller[3] ^= 1;
-    status.pairing.radiator[3] ^= 1; hear(state);
-    assert(!status.has_control_template);
-    status.pairing.radiator[3] ^= 1;
-    rf_frame bad = state; bad.bytes[31] ^= 1; hear(bad);
-    assert(!status.has_control_template);
-    rf_frame malformed = {};
-    // Independently sealed by reference decoder.py, but tag 98 replaces 97.
-    assert(rf_parse_hex("38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000982030049402BA00E100641919DA000000005B0078B20C0000A22BA00E",
-                        malformed.bytes, sizeof(malformed.bytes), &malformed.size));
-    assert(rf_valid(&malformed)); hear(malformed);
-    assert(!status.has_control_template);
-    rf_frame poll = {}; assert(rf_short(&poll, status.pairing.controller, status.pairing.radiator, RF_POLL));
-    hear(poll); assert(!status.has_control_template); // Valid envelope, wrong application shape.
-    hear(state);
-    assert(status.has_control_template && status.control_template_time_us == test_now_us);
-    assert(!memcmp(status.control_template.bytes, state.bytes, state.size));
-    assert(status.control.phase == RF_CONTROL_IDLE && !status.has_paired_report);
-    // Saving also owns its admission snapshot, and never asks the radio to TX.
-    assert(radio_state_save(nullptr) == ESP_OK);
-    assert(status.state_save_result == RADIO_STORE_PENDING);
-    rf_frame original = status.control_template;
-    status.control_template.bytes[31] ^= 1;
-    radio_worker save_worker;
-    save_worker.step();
-    assert(status.state_save_result == RADIO_STORE_OK && status.has_saved_template);
-    assert(!memcmp(status.saved_template.bytes, original.bytes, original.size));
-    status.control_template = original;
-    command.state = bad;
-    assert(radio_control_start(&command) == ESP_ERR_INVALID_ARG); // Never hide a bad import with learned state.
-    command.state = {};
-    bad = state; bad.bytes[55] ^= 1; hear(bad);
-    hear(poll); // Neither invalid traffic nor another shape overwrites the cache.
-    assert(!memcmp(status.control_template.bytes, state.bytes, state.size));
-    assert(radio_control_start(&command) == ESP_OK);
-    status.control_template.bytes[31] ^= 1; // Queued command owns its snapshot.
-    radio_request learned;
-    assert(xQueueReceive(radio_requests, &learned, 0) == pdPASS);
-    assert(learned.control.state.size == state.size &&
-           !memcmp(learned.control.state.bytes, state.bytes, state.size));
-    reset(); // Reboot loses the learned state and never schedules a command.
-    assert(!status.has_control_template && radio_control_start(&command) == ESP_ERR_INVALID_STATE);
-    command.state = bad;
-    assert(radio_control_start(&command) == ESP_ERR_INVALID_ARG); // Bad explicit import cannot fall back.
+    reset(); radio_worker worker;
+    assert(radio_control_start(0, &command) == ESP_ERR_INVALID_STATE); // Ambiguous.
+    assert(radio_control_start(1, &command) == ESP_ERR_INVALID_STATE); // Missing state.
+    rf_frame state = state_frame(), bad = state; bad.bytes[31] ^= 1; hear(worker, bad);
+    assert(!registry.records[0].has_control_template);
+    registry.records[0].pair.controller[3] ^= 1; hear(worker, state);
+    assert(!registry.records[0].has_control_template); registry.records[0].pair.controller[3] ^= 1;
+    hear(worker, state);
+    assert(registry.records[0].has_control_template && !registry.records[1].has_control_template);
+    assert(!registry.records[0].has_paired_report && registry.records[0].control.phase == RF_CONTROL_IDLE);
+    assert(radio_state_save(1, nullptr) == ESP_OK);
+    registry.records[0].control_template[31] ^= 1; // Admission owns the snapshot.
+    worker.step();
+    assert(registry.records[0].state_save_result == RADIO_STORE_OK);
+    assert(!memcmp(registry.records[0].saved_template, state.bytes, state.size));
+    registry.records[0].has_control_template = false;
+    command.state = bad; assert(radio_control_start(1, &command) == ESP_ERR_INVALID_ARG);
+    command.state = {}; assert(radio_control_start(1, &command) == ESP_OK);
+    assert(radio_control_start(2, &command) != ESP_OK);
+    assert(radio_device_remove(1) != ESP_OK);
+    dequeue_hook = reject_second; transmit_hook = reject_second;
+    worker.step(); assert(checks == 2); dequeue_hook = transmit_hook = nullptr;
+    assert(registry.records[0].control.phase == RF_CONTROL_WAIT_REPORT);
+    test_now_us += (RF_CONTROL_WAIT_MS + 1) * 1000LL; worker.step();
+    assert(!exchange_id && registry.records[0].control.phase == RF_CONTROL_TIMEOUT);
     command.state = state;
-    reset();
-    assert(radio_control_start(&command) == ESP_OK);
-    assert(radio_control_start(&command) != ESP_OK); // Still queued.
-    dequeue_hook = reject_second; // Queue empty, active status not yet published.
-    transmit_hook = reject_second; // Reservation handed over to active status.
-    delay_hook = [] {
-        if (status.control.phase == RF_CONTROL_WAIT_REPORT) {
-            reject_second();
-            test_now_us += (RF_CONTROL_WAIT_MS + 1) * 1000LL;
-        } else {
-            assert(status.control.phase == RF_CONTROL_TIMEOUT);
-            assert(radio_control_start(&command) == ESP_OK);
-            throw stop_worker{};
-        }
-    };
-    run_worker();
-    assert(checks == 3);
-
-    reset();
-    assert(radio_pair_cancel() == ESP_OK); // Occupy the shared queue.
-    assert(radio_control_start(&command) == ESP_ERR_TIMEOUT);
-    assert(!control_pending);
-    radio_request discarded;
-    assert(xQueueReceive(radio_requests, &discarded, 0) == pdPASS);
-    assert(radio_control_start(&command) == ESP_OK); // Failed enqueue released the slot.
-    transmit_result = -1;
-    delay_hook = [] {
-        assert(status.control.phase == RF_CONTROL_ERROR);
-        assert(radio_control_start(&command) == ESP_OK); // TX error also allows retry.
-        throw stop_worker{};
-    };
-    run_worker();
-    puts("Command admission across dequeue, active delivery, timeout, queue/TX failure: passed");
+    assert(radio_control_start(1, &command) == ESP_OK);
+    transmit_result = -1; worker.step();
+    assert(!exchange_id && registry.records[0].control.phase == RF_CONTROL_ERROR);
+    transmit_result = 0;
+    // Full shared queue releases only the failed command's reservation.
+    assert(radio_device_rename(2, "Bedroom") == ESP_OK);
+    assert(radio_control_start(1, &command) != ESP_OK);
+    worker.step(); assert(!mutation_pending);
+    // Explicit clear failure retains both fallback and learned state.
+    hear(worker, state); store_result = ESP_ERR_INVALID_STATE;
+    assert(radio_state_clear(1) == ESP_OK); worker.step();
+    assert(registry.records[0].has_saved_template && registry.records[0].has_control_template);
+    store_result = 0; assert(radio_state_clear(1) == ESP_OK); worker.step();
+    assert(!registry.records[0].has_saved_template && !registry.records[0].has_control_template);
+    // New admission during an empty worker iteration must survive publish.
+    // Simulate exactly the state after another core enqueues the next operation.
+    assert(radio_control_start(1, &command) == ESP_OK);
+    worker.publish(); assert(exchange_id == 1 && exchange_pending);
+    worker.step(); assert(exchange_id == 1 && !exchange_pending);
+    test_now_us += (RF_CONTROL_WAIT_MS + 1) * 1000LL; worker.step();
+    assert(registry.records[0].control.phase == RF_CONTROL_TIMEOUT);
+    // A terminal attempted command can reconcile a late routed report while
+    // B owns delivery; this updates only a result and never schedules A again.
+    registry.records[0].control.attempts = 1;
+    rf_frame bstate = {};
+    assert(rf_parse_hex("38F1010203C6F10405074500004B02A83B004C00008E000084CC00000000977182939402BA00E100641919DA000000005BABCDB20C00000CFC7F4B", bstate.bytes, sizeof(bstate.bytes), &bstate.size));
+    command.state = bstate; assert(radio_control_start(2, &command) == ESP_OK); worker.step();
+    rf_frame matching = {};
+    assert(rf_parse_hex("23F1040506C6F1010203DF203000404B02A88A02B100E100641919DA000A000A0A47C783C11D", matching.bytes, sizeof(matching.bytes), &matching.size));
+    hear(worker, matching);
+    assert(registry.records[0].control.phase == RF_CONTROL_MATCHED);
+    assert(registry.records[1].control.phase == RF_CONTROL_WAIT_REPORT && exchange_id == 2);
+    test_now_us += (RF_CONTROL_WAIT_MS + 1) * 1000LL; worker.step(); command.state = state;
+    // Pair admission has the same global reservation, including queue/worker handoff.
+    const uint8_t c[] = {0xf1,1,2,3}, candidate[] = {0xf1,0x10,0,1}; uint32_t id;
+    assert(radio_pair_start(c, candidate, &id) == ESP_OK && id == 3);
+    worker.publish(); assert(exchange_id == id && exchange_pending);
+    assert(radio_control_start(1, &command) != ESP_OK);
+    worker.step(); assert(pair_reserved && exchange_id == id);
+    assert(radio_pair_cancel(id + 1) != ESP_OK);
+    assert(radio_pair_cancel(id) == ESP_OK); worker.step(); assert(!exchange_id);
+    // Queue-full enqueue failure cannot leave a reservation behind.
+    queue_full = true; assert(radio_control_start(1, &command) == ESP_ERR_TIMEOUT);
+    assert(!exchange_id && !exchange_pending); queue_full = false;
+    printf("Memory: capacity=%u record=%zu registry=%zu worker=%zu request=%zu\n", (unsigned)CLEVERBOX_RADIATOR_CAPACITY, sizeof(radiator_record), sizeof(registry), sizeof(radio_worker), sizeof(radio_request));
+    puts("Identity ownership, learning, snapshot/save/clear, global reservations across handoff/TX, timeout, queue/storage failures: passed");
 }

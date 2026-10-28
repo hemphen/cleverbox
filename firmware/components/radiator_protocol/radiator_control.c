@@ -53,22 +53,26 @@ void rf_control_sent(rf_control *c, int64_t now_ms, bool success)
     c->deadline_ms = now_ms + RF_CONTROL_WAIT_MS;
 }
 
+bool rf_control_reconcile(rf_control_status *s, int64_t now_ms, const rf_frame *frame)
+{
+    rf_report report;
+    if (!s->attempts || s->phase == RF_CONTROL_MATCHED || !rf_decode_report(frame, &report)) return false;
+    unsigned target = s->mode == RF_OFF ? 320 : (18 * s->centi_c + 50) / 100 + 320;
+    unsigned observed = (unsigned)frame->bytes[19] << 8 | frame->bytes[20];
+    if (!report.target_available || observed != target || report.mode != s->mode) return false;
+    s->phase = RF_CONTROL_MATCHED; s->matched_ms = now_ms; return true;
+}
+
 void rf_control_receive(rf_control *c, int64_t now_ms, const rf_frame *frame)
 {
     rf_control_tick(c, now_ms);
     rf_report report;
     if (c->status.phase == RF_CONTROL_IDLE || !rf_decode_report(frame, &report) ||
         memcmp(report.source, c->radiator, 4) || memcmp(report.destination, c->controller, 4)) return;
-    unsigned target = c->request.mode == RF_OFF ? 320 : (18 * c->request.centi_c + 50) / 100 + 320;
-    unsigned observed = (unsigned)frame->bytes[19] << 8 | frame->bytes[20];
-    // Reconcile a late matching report after timeout/TX failure, without more TX.
-    if (c->status.attempts && c->status.phase != RF_CONTROL_MATCHED &&
-        report.target_available && observed == target && report.mode == c->request.mode) {
-        c->status.phase = RF_CONTROL_MATCHED;
-        c->status.matched_ms = now_ms;
-    } else if (c->status.phase == RF_CONTROL_WAIT_REPORT ||
-               (c->status.phase == RF_CONTROL_WAIT_READBACK &&
-                c->status.attempts < RF_CONTROL_MAX_ATTEMPTS)) {
+    // Late matching readback updates a result without restarting delivery.
+    if (!rf_control_reconcile(&c->status, now_ms, frame) &&
+        (c->status.phase == RF_CONTROL_WAIT_REPORT ||
+         (c->status.phase == RF_CONTROL_WAIT_READBACK && c->status.attempts < RF_CONTROL_MAX_ATTEMPTS))) {
         c->report = *frame;
         c->status.phase = RF_CONTROL_SEND;
     }

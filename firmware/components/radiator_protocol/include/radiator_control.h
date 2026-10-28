@@ -38,6 +38,8 @@ bool rf_control_start(rf_control *c, const rf_control_request *request,
 void rf_control_tick(rf_control *c, int64_t now_ms);
 bool rf_control_next(const rf_control *c, int64_t now_ms, rf_frame *out);
 void rf_control_sent(rf_control *c, int64_t now_ms, bool success);
+// Reconcile an already attempted command from a CRC-valid routed report; no TX.
+bool rf_control_reconcile(rf_control_status *status, int64_t now_ms, const rf_frame *frame);
 void rf_control_receive(rf_control *c, int64_t now_ms, const rf_frame *frame);
 const char *rf_control_phase_name(rf_control_phase phase);
 #ifdef __cplusplus

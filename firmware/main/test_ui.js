@@ -8,6 +8,7 @@ async function main() {
   const html = fs.readFileSync(__dirname + '/index.html', 'utf8');
   const fields = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, {
     value: '', textContent: '', disabled: false, handlers: {},
+    replaceChildren(...children) { this.children=children; },
     addEventListener(event, handler) { this.handlers[event] = handler; }
   }]));
   const buttons = [...html.matchAll(/<button[^>]+data-command="([^"]+)"/g)].map(([, command]) => ({
@@ -16,16 +17,19 @@ async function main() {
   let data = {ready: true, valid_frames: 1,
     pairing: {saved: true, phase: 'complete', controller: 'F1010203', radiator: 'F1040506'},
     command: {phase: 'idle', attempts: 0, template_available: false}};
+  data.radiators=[{id:1,name:'Living room',pairing:data.pairing,command:data.command}];
+  data.capacity=8; data.exchange_id=0;
   let lastRequest, responseOK = true;
   const context = vm.createContext({
     document: {
       getElementById(id) { assert(fields[id], id); return fields[id]; },
+      createElement() { return {}; },
       querySelectorAll(selector) { return selector.includes('data-command') ? buttons : []; }
     },
     Date: class { getHours() { return 12; } getMinutes() { return 34; } getSeconds() { return 56; } },
-    setTimeout() {},
+    setTimeout() {}, clearTimeout() {},
     async fetch(url, options) {
-      if (url === '/api/radio') return {ok: true, json: async () => data};
+      if (url.startsWith('/api/radio')) return {ok: true, json: async () => data};
       lastRequest = {url, body: JSON.parse(options.body)};
       return {ok: responseOK, text: async () => 'No learned controller state', json: async () => ({frame: 'preview'})};
     }
@@ -36,7 +40,7 @@ async function main() {
   assert.equal(fields.simulationPanel.hidden, true);
   fields.mode.value = '3'; fields.temperature.value = '15.5';
   await fields.sendTarget.handlers.click();
-  assert.deepEqual(lastRequest, {url: '/api/command', body: {mode: 3, centi_c: 1550, clock_seconds: 45296}});
+  assert.deepEqual(lastRequest, {url: '/api/command', body: {id: 1, mode: 3, centi_c: 1550, clock_seconds: 45296}});
   assert.match(fields.commandAction.textContent, /delivery is not yet established/);
   fields.state.value = '  explicit-import  ';
   await fields.sendTarget.handlers.click();
@@ -56,12 +60,12 @@ async function main() {
   assert.match(fields.templateStatus.textContent, /Capture age unknown/);
   assert.match(fields.stateStorageStatus.textContent, /Latest explicit save: succeeded/);
   await fields.saveState.handlers.click();
-  assert.deepEqual(lastRequest, {url: '/api/controller-state', body: {action: 'save'}});
+  assert.deepEqual(lastRequest, {url: '/api/controller-state', body: {action: 'save', id: 1}});
   assert.match(fields.stateAction.textContent, /queued/);
   await fields.importState.handlers.click();
-  assert.deepEqual(lastRequest, {url: '/api/controller-state', body: {action: 'import', state: 'explicit-import'}});
+  assert.deepEqual(lastRequest, {url: '/api/controller-state', body: {action: 'import', id: 1, state: 'explicit-import'}});
   await fields.clearState.handlers.click();
-  assert.deepEqual(lastRequest, {url: '/api/controller-state', body: {action: 'clear'}});
+  assert.deepEqual(lastRequest, {url: '/api/controller-state', body: {action: 'clear', id: 1}});
   data.command.save_status = 'failed'; data.command.state_store_error = 3;
   await vm.runInContext('refreshRadio()', context);
   assert.match(fields.stateStorageStatus.textContent, /Latest explicit save: failed/);
@@ -90,6 +94,17 @@ async function main() {
   assert.match(fields.simulationAction.textContent, /not a radiator report/);
   await fields.simulationApply.handlers.click();
   assert.deepEqual(lastRequest, {url: '/api/simulation', body: {action: 'scenario', name: 'delayed'}});
+  data.radiators.push({id:2,name:'Bedroom',pairing:{saved:true,phase:'complete',radiator:'F1040507'},command:{phase:'idle',template_source:'missing'}});
+  fields.state.value='device-A-template';
+  fields.radiatorSelect.value='2'; fields.radiatorSelect.handlers.change();
+  await new Promise(setImmediate);
+  assert.equal(fields.state.value,'');
+  assert.match(fields.pairedReport.textContent,/No report/);
+  assert.match(fields.templateStatus.textContent,/No controller state/);
+  await fields.sendTarget.handlers.click(); assert.equal(lastRequest.body.id,2); assert.equal(lastRequest.body.state,undefined);
+  await fields.clearState.handlers.click(); assert.equal(lastRequest.body.id,2);
+  await fields.removeRadiator.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/radiators',body:{action:'remove',id:2}});
+  data.exchange_id=1; await vm.runInContext('refreshRadio()',context); assert.equal(fields.sendTarget.disabled,true);
   console.log('UI learned/missing state, optional import, preview, admission and error rendering: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

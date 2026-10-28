@@ -22,7 +22,7 @@ The RX and TX profiles still need physical board acceptance.
   hardware and buildable in host tests.
 - **radio_transport:** Elecram pin configuration, RadioLib integration, interrupts,
   queues and timed exchanges.
-- **device_store:** NVS-backed pairing data, explicit one-radiator controller state and stable identities.
+- **device_store:** bounded versioned NVS registry, legacy migration, names, pairings and saved controller state.
 - **matter_bridge (optional later):** thermostat attributes and commands mapped to radiator operations.
 
 Keep one codec and one set of protocol values. Reuse these components throughout
@@ -35,6 +35,6 @@ reports radiator state separately from requested settings. RF Auto Comfort/Eco
 codes are schedule phases, not a direct mapping to Matter Auto mode.
 
 HTTP, the host-tested codec/pairing/command logic, RadioLib RX/TX adapter and
-one-radiator NVS store are present.
+multi-radiator NVS registry with globally serialized delivery are present.
 ESP-Matter is not imported. The host-only platform/HTTP/NVS adapters are described
 in [simulation](simulation.md); they are not part of the physical firmware.
