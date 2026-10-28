@@ -41,3 +41,4 @@ test:
 	  firmware/components/radio_transport/test/test_admission.cpp \
 	  build/transport_protocol.o build/transport_pairing.o build/transport_control.o -o build/test_admission
 	./build/test_admission
+	node firmware/main/test_ui.js

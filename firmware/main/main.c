@@ -148,9 +148,12 @@ static esp_err_t live_command(httpd_req_t *r)
     rf_control_request command = {0};
     int mode, target, clock;
     bool valid = integer(j, "mode", 0, 3, &mode) && integer(j, "centi_c", 0, 3000, &target) &&
-                 integer(j, "clock_seconds", 0, 86399, &clock) &&
-                 rf_parse_hex(string(j, "state"), command.state.bytes,
-                              sizeof(command.state.bytes), &command.state.size);
+                 integer(j, "clock_seconds", 0, 86399, &clock);
+    // Omission selects the state learned over RF. Explicit invalid imports must
+    // fail, rather than silently falling back to a different template.
+    if (valid && cJSON_GetObjectItemCaseSensitive(j, "state"))
+        valid = rf_parse_hex(string(j, "state"), command.state.bytes,
+                             sizeof(command.state.bytes), &command.state.size);
     if (valid) {
         command.mode = (rf_mode)mode; command.centi_c = target; command.clock_seconds = clock;
     }
@@ -160,7 +163,7 @@ static esp_err_t live_command(httpd_req_t *r)
         return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid target, mode, clock or radiator template");
     if (result != ESP_OK) {
         httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, "Command busy, radio unavailable or no saved pairing");
+        return httpd_resp_sendstr(r, "Command busy, radio unavailable, no saved pairing or no learned controller state; check radio status or import a template");
     }
     httpd_resp_set_status(r, "202 Accepted");
     httpd_resp_set_type(r, "application/json");
@@ -197,6 +200,9 @@ static esp_err_t radio_status_page(httpd_req_t *r)
     cJSON_AddStringToObject(command, "phase", rf_control_phase_name(s.control.phase));
     cJSON_AddNumberToObject(command, "error", s.control_error);
     cJSON_AddNumberToObject(command, "attempts", s.control.attempts);
+    cJSON_AddBoolToObject(command, "template_available", s.has_control_template);
+    if (s.has_control_template)
+        cJSON_AddNumberToObject(command, "template_age_ms", (now - s.control_template_time_us) / 1000);
     if (s.control.phase != RF_CONTROL_IDLE) {
         cJSON_AddNumberToObject(command, "requested_target_c", s.control.centi_c / 100.0);
         cJSON_AddNumberToObject(command, "requested_mode", s.control.mode);

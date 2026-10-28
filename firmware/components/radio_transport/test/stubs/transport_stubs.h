@@ -52,6 +52,8 @@ constexpr int RADIOLIB_CC1101_REG_PKTCTRL0 = 0, RADIOLIB_CC1101_REG_RXBYTES = 1,
               RADIOLIB_CC1101_REG_PKTCTRL1 = 4;
 inline void (*transmit_hook)() = nullptr;
 inline int transmit_result;
+inline uint8_t incoming_bytes[64];
+inline size_t incoming_size, incoming_used;
 class RadioLibHal {
 public:
     RadioLibHal(int, int, int, int, int, int) {}
@@ -79,8 +81,15 @@ class Module {
 public:
     Module(RadioLibHal *, int, int, uint32_t, int) {}
     int SPIsetRegValue(int, int, int, int) { return 0; }
-    uint8_t SPIreadRegister(int) { return 0; }
-    void SPIreadRegisterBurst(int, size_t, uint8_t *) { assert(false); }
+    uint8_t SPIreadRegister(int reg) {
+        if (reg == (RADIOLIB_CC1101_REG_RXBYTES | 0x40)) return incoming_size - incoming_used;
+        assert(reg == RADIOLIB_CC1101_REG_FIFO && incoming_used < incoming_size);
+        return incoming_bytes[incoming_used++];
+    }
+    void SPIreadRegisterBurst(int, size_t size, uint8_t *out) {
+        assert(incoming_used + size <= incoming_size);
+        memcpy(out, incoming_bytes + incoming_used, size); incoming_used += size;
+    }
 };
 class CC1101 {
 public:
