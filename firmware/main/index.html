@@ -96,6 +96,7 @@ async function refreshRadio(){
   try {
     const epoch=selectionEpoch;
     const response=await fetch('/api/radio'+(selectedId?'?id='+selectedId:''),{cache:'no-store'});
+    if(epoch!==selectionEpoch) return;
     if(response.status===404 && selectedId){resetSelection(0);refreshRadio();return;}
     if(!response.ok) throw new Error('Radio status unavailable');
     const data=await response.json();

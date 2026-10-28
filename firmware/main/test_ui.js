@@ -19,7 +19,7 @@ async function main() {
     command: {phase: 'idle', attempts: 0, template_available: false}};
   data.radiators=[{id:1,name:'Living room',pairing:data.pairing,command:data.command}];
   data.capacity=8; data.exchange_id=0;
-  let lastRequest, responseOK = true;
+  let lastRequest, responseOK = true, deferredStatus;
   const context = vm.createContext({
     document: {
       getElementById(id) { assert(fields[id], id); return fields[id]; },
@@ -29,6 +29,7 @@ async function main() {
     Date: class { getHours() { return 12; } getMinutes() { return 34; } getSeconds() { return 56; } },
     setTimeout() {}, clearTimeout() {},
     async fetch(url, options) {
+      if (url.startsWith('/api/radio') && deferredStatus) { const next=deferredStatus;deferredStatus=undefined;return next; }
       if (url.startsWith('/api/radio')) return {ok: true, json: async () => data};
       lastRequest = {url, body: JSON.parse(options.body)};
       return {ok: responseOK, text: async () => 'No learned controller state', json: async () => ({frame: 'preview'})};
@@ -104,6 +105,14 @@ async function main() {
   await fields.sendTarget.handlers.click(); assert.equal(lastRequest.body.id,2); assert.equal(lastRequest.body.state,undefined);
   await fields.clearState.handlers.click(); assert.equal(lastRequest.body.id,2);
   await fields.removeRadiator.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/radiators',body:{action:'remove',id:2}});
+  // An old in-flight 404 from B must not reset a newer selection of A.
+  let releaseStatus;
+  deferredStatus=new Promise(resolve=>{releaseStatus=resolve;});
+  const staleRefresh=vm.runInContext('refreshRadio()',context);
+  fields.radiatorSelect.value='1'; fields.radiatorSelect.handlers.change();
+  await new Promise(setImmediate);
+  releaseStatus({status:404,ok:false}); await staleRefresh;
+  assert.equal(vm.runInContext('selectedId',context),1);
   data.exchange_id=1; await vm.runInContext('refreshRadio()',context); assert.equal(fields.sendTarget.disabled,true);
   console.log('UI learned/missing state, optional import, preview, admission and error rendering: passed');
 }
