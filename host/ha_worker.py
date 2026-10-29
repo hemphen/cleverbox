@@ -15,15 +15,19 @@ from homeassistant.const import __version__
 
 async def main():
     assert __version__ == '2026.10.4', __version__
-    hass = await async_setup_hass(RuntimeConfig(config_dir=sys.argv[1], skip_pip=True, log_file=sys.argv[1]+'/home-assistant.log'))
+    hass = await async_setup_hass(RuntimeConfig(config_dir=sys.argv[1], log_file=sys.argv[1]+'/home-assistant.log'))
     assert hass is not None and not hass.config.recovery_mode
     await hass.async_start()
     try:
         if not hass.config_entries.async_entries('mqtt'):
             result = await hass.config_entries.flow.async_init('mqtt', context={'source': 'user'})
             result = await hass.config_entries.flow.async_configure(result['flow_id'], {
-                'broker': '127.0.0.1', 'port': int(sys.argv[2]), 'username': '', 'password': ''})
+                'broker': '127.0.0.1', 'port': int(sys.argv[2]), 'username': '', 'password': '', 'other_settings': {'set_client_cert': False, 'set_ca_cert': 'off'}})
             assert result['type'] == 'create_entry', result
+            await hass.async_block_till_done()
+            # The package was loaded before the first MQTT entry existed. Reload
+            # its real triggers, as a user adding MQTT after YAML would do.
+            await hass.services.async_call('template', 'reload', {}, blocking=True)
         await hass.async_block_till_done()
         print(json.dumps({'ready': __version__}), flush=True)
         while line := await asyncio.to_thread(sys.stdin.readline):

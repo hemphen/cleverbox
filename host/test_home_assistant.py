@@ -35,7 +35,12 @@ class HomeAssistant:
         self.log = open(directory / 'worker.log', 'ab')
         self.process = subprocess.Popen([sys.executable, str(ROOT / 'host/ha_worker.py'), str(directory), str(broker_port)],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, text=True)
-        assert self.read(90) == {'ready': '2026.10.4'}
+        try:
+            assert self.read(180) == {'ready': '2026.10.4'}
+        except Exception:
+            print((directory / 'worker.log').read_text()[-12000:], file=sys.stderr)
+            self.stop()
+            raise
 
     def read(self, timeout=20):
         until = time.monotonic() + timeout
