@@ -28,6 +28,12 @@ def main():
     lib.host_time_sync.argtypes = [ctypes.c_int64]
     lib.host_network_event.argtypes = [ctypes.c_char_p]
     lib.simulation_advance.argtypes = [ctypes.c_int]
+    lib.host_mqtt_storage_fault.argtypes = [ctypes.c_int]
+    lib.host_mqtt_subscribe_mode.argtypes = [ctypes.c_int]
+    lib.mqtt_bridge_suback.argtypes = [ctypes.c_int,ctypes.c_int]
+    lib.host_mqtt_connection.argtypes = [ctypes.c_int]
+    lib.host_mqtt_pop.restype = ctypes.c_char_p
+    lib.mqtt_bridge_input.argtypes = [ctypes.c_char_p,ctypes.c_size_t,ctypes.c_char_p,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_bool]
     lib.host_init()
     last = time.monotonic()
 
@@ -58,6 +64,15 @@ def main():
             tick()
             if self.path == '/':
                 self.reply(200, (ROOT / 'firmware/main/index.html').read_bytes(), 'text/html; charset=utf-8')
+            elif args.test_clock and self.path == '/api/simulation/mqtt':
+                rows=[]
+                while True:
+                    row=lib.host_mqtt_pop()
+                    if not row: break
+                    item=json.loads(row); item['payload']=json.loads(item['payload']) if item['payload'].startswith('{') else item['payload']; rows.append(item)
+                self.reply(200,json.dumps(rows),'application/json')
+            elif args.test_clock and self.path == '/api/simulation/mqtt-client':
+                self.reply(200,json.dumps(dict(subscription_id=lib.host_mqtt_subscription_id(),starts=lib.host_mqtt_starts())),'application/json')
             else:
                 self.production(0, b'')
 
@@ -91,7 +106,20 @@ def main():
             try:
                 data = json.loads(body)
                 action = data.get('action')
-                if action == 'fixture':
+                if args.test_clock and action == 'mqtt_storage_fault' and type(data.get('mode')) is int:
+                    if not lib.host_mqtt_storage_fault(data['mode']): raise ValueError()
+                elif args.test_clock and action == 'mqtt_connection'  and type(data.get('connected')) is bool:
+                    if not lib.host_mqtt_connection(int(data['connected'])): raise ValueError()
+                elif args.test_clock and action == 'mqtt_subscribe_mode' and type(data.get('mode')) is int:
+                    if not lib.host_mqtt_subscribe_mode(data['mode']): raise ValueError()
+                elif args.test_clock and action == 'mqtt_suback' and type(data.get('id')) is int and type(data.get('qos')) is int:
+                    lib.mqtt_bridge_suback(data['id'],data['qos'])
+                elif args.test_clock and action == 'mqtt_input' and isinstance(data.get('topic'), str) and isinstance(data.get('payload'), str):
+                    topic=data['topic'].encode(); payload=data['payload'].encode()
+                    offset=data.get('offset',0); total=data.get('total',len(payload))
+                    if type(offset) is not int or type(total) is not int or offset<0 or total<0: raise ValueError()
+                    lib.mqtt_bridge_input(topic,len(topic),payload,len(payload),offset,total,bool(data.get('retained',False)))
+                elif action == 'fixture':
                     lib.simulation_fixture()
                 elif action == 'device' and type(data.get('index')) is int:
                     if not lib.simulation_device(data['index']):

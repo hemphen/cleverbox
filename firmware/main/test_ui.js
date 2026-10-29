@@ -22,6 +22,7 @@ async function main() {
   let network = {state:'disconnected',configured:false,recovery_ap:true,attempts:0,setup_result:'none',error:'none',ip:''};
   let networkReadsFail=false;
   let clock={usable:false,source:'unsynchronized',timezone:'UTC0',synchronized_this_boot:false,sync_age_ms:null};
+  let mqtt={configured:true,enabled:true,connected:false,bridge_id:'020000000001'};
   let lastRequest, responseOK = true, deferredStatus;
   const context = vm.createContext({
     document: {
@@ -33,6 +34,7 @@ async function main() {
     TextEncoder,
     setTimeout() {}, clearTimeout() {},
     async fetch(url, options) {
+      if(url==='/api/mqtt' && !options.body) return {ok:true,json:async()=>mqtt};
       if(url==='/api/time' && !options.body) return {ok:true,json:async()=>clock};
       if(url==='/api/network' && !options.body){
         if(networkReadsFail) throw new Error('unreachable');
@@ -192,6 +194,24 @@ async function main() {
   responseOK=false; await fields.saveTimezone.handlers.click();
   assert.equal(fields.timeAction.textContent,'No learned controller state');
   assert(!html.includes('getHours()')); assert(!html.includes('clock_seconds:'));
+  responseOK=true;
+  mqtt={...mqtt,broker_connected:true,subscription_pending:true};
+  await vm.runInContext('refreshMqtt()',context); assert.match(fields.mqttStatus.textContent,/waiting for command subscription/);
+  mqtt={...mqtt,broker_connected:false,subscription_pending:false,subscription_error:0x7401};
+  await vm.runInContext('refreshMqtt()',context); assert.match(fields.mqttStatus.textContent,/rejected/);
+  mqtt.subscription_error=0x7402;
+  await vm.runInContext('refreshMqtt()',context); assert.match(fields.mqttStatus.textContent,/acknowledgement timed out/);
+  mqtt={...mqtt,connected:true,subscription_error:0};
+  await vm.runInContext('refreshMqtt()',context); assert.match(fields.mqttStatus.textContent,/MQTT: ready/);
+  fields.mqttHost.value='broker.test'; fields.mqttPort.value='1883'; fields.mqttUser.value='user';
+  fields.mqttPassword.value=secret; fields.mqttEnabled.value='true';
+  await fields.mqttSave.handlers.click();
+  assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'configure',host:'broker.test',port:1883,username:'user',password:secret,enabled:true}});
+  assert.equal(fields.mqttPassword.value,'');
+  await fields.mqttDisable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'disable'}});
+  await fields.mqttEnable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'enable'}});
+  await fields.mqttForget.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'forget'}});
+  for(const field of Object.values(fields)) assert(!field.textContent.includes(secret));
   console.log('UI learned/missing state, optional import, preview, admission and error rendering: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

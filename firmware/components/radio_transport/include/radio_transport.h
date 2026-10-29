@@ -43,6 +43,8 @@ esp_err_t radio_device_remove(uint32_t id);
 // Normal admission snapshots device local time. No usable time queues nothing.
 #define RADIO_ERR_TIME_UNAVAILABLE 0x7301
 esp_err_t radio_control_start_device(uint32_t id, const rf_control_request *request);
+// Same admission with an optional nonzero correlation cookie and last-result mailbox.
+esp_err_t radio_control_start_device_tracked(uint32_t id, const rf_control_request *request, uint64_t cookie);
 // Explicit time-of-day override retained for compatibility and bench tests.
 esp_err_t radio_control_start(uint32_t id, const rf_control_request *request);
 #ifdef __cplusplus

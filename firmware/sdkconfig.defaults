@@ -3,3 +3,11 @@ CONFIG_IDF_TARGET="esp32c6"
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# MQTT exceeds the default 1 MiB factory slot. IDF's 1500 KiB single-app
+# layout retains NVS/PHY/app offsets and still fits within the default 2 MiB.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# This milestone supports TCP only; avoid unused TLS/WebSocket client transports.
+CONFIG_MQTT_TRANSPORT_SSL=n
+CONFIG_MQTT_TRANSPORT_WEBSOCKET=n
+CONFIG_MQTT_TRANSPORT_WEBSOCKET_SECURE=n

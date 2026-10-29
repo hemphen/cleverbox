@@ -131,12 +131,12 @@ Each record retains two 59-byte state arrays, compact report/command status and
 an admission reservation. The worker owns one compact control machine per configured
 capacity slot: 59 state bytes and up to 64 report bytes, rather than retaining two
 258-byte frame buffers per command. Full envelopes are temporary codec/TX/RX values.
-The request queue has `capacity + 1` slots of 124 bytes on the tested host ABI;
+The request queue has `capacity + 1` slots of 136 bytes on the tested host ABI;
 this bounds admission during worker handoff without allowing a second command for
-the same device. At capacity eight, the host ABI measured record 256 bytes,
-registry 2064 bytes, worker 1960 bytes and queue payload at most 1116 bytes
+the same device. At capacity eight, the host ABI measured record 304 bytes (including the transient MQTT result mailbox),
+registry 2448 bytes, worker 1960 bytes and queue payload at most 1224 bytes
 (plus RTOS queue metadata). At capacity three, worker size was 944 bytes.
-Each additional slot adds 256 registry bytes, about 203 worker bytes and 124
+Each additional slot adds 304 registry bytes, about 203 worker bytes and 136
 queue payload bytes, plus 210 bytes in the two static storage wire buffers.
 The storage buffers and capacity-dependent worker live in static memory on
 firmware. The radio task keeps its 6144-byte stack for temporary frames and

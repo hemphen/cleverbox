@@ -36,7 +36,7 @@ back to the source project. Do not expand this repository into a research archiv
   chronology of attempts. Remove abandoned alternatives.
 
 Build and test local HTTP, the persistent registry and independent per-radiator
-delivery before home Wi-Fi/device time and MQTT with HA discovery. Keep Matter optional later.
+delivery before home Wi-Fi/device time, MQTT transport and then HA discovery. Keep Matter optional later.
 All interfaces must use the same protocol component and command handling.
 Host simulation must reuse production receive/learning and state machines; keep
 synthetic controller fixtures explicit and separate from radiator reports. Never

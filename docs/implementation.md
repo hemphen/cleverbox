@@ -35,10 +35,10 @@ Use the [libraries and component boundaries](libraries.md).
    a validated same-radiator frame. Implemented with a separate versioned NVS
    record, preserving existing pairing. Restart restores configuration only;
    delivery still requires a fresh report. See [storage policy](controller-state.md).
-3. **Persistent registry with serialized delivery.** Implemented: bounded capacity,
-   stable identities/names, explicit HTTP routing, inclusion/removal, per-radiator
-   observations/results and legacy migration. One pairing or command exchange
-   globally; other exchanges return busy. See [registry](registry.md).
+3. **Persistent registry.** Implemented: bounded capacity, stable identities/names,
+   explicit HTTP routing, inclusion/removal, per-radiator observations/results and
+   legacy migration. Delivery is independently reserved per radiator as described
+   in milestone 4; pairing remains exclusive. See [registry](registry.md).
 4. **Independent per-radiator delivery.** Implemented: one outstanding command per
    radiator, independent report deadlines/results and round-robin selection of ready
    TX frames on the single CC1101. Pairing remains exclusive; there is no second
@@ -55,10 +55,14 @@ Use the [libraries and component boundaries](libraries.md).
    it monotonically across delivery/retries; unset boot rejects them. No timestamps
    or commands are restored, and time/network events never send settings. See
    [time policy and validation](time.md). Physical time/RF acceptance remains pending.
-7. **MQTT and Home Assistant discovery — next.** Expose measurements, targets, supported
-   modes and honest availability through the existing command handling. Test
-   network loss/reconnect without arbitrary settings changes.
-8. **Installation and endurance.** Validate physical pairing/control, power cycles,
+7. **MQTT transport.** Implemented: explicit persistent broker setup, versioned
+   topics, session-bound immediate commands through device-time admission,
+   correlated results and separate observations/availability. No RF replay on
+   network loss/reconnect or boot. See [MQTT contract](mqtt.md).
+8. **Home Assistant discovery — next.** Publish discovery for supported measurements,
+   target/mode controls and availability using the MQTT v1 command/session contract.
+   Keep complete command fields explicit, observations separate and freshness honest.
+9. **Installation and endurance.** Validate physical pairing/control, power cycles,
    multiple devices and continued operation without HA/Touch E3. Publish installation
    and upgrade handling that preserves setup. Matter may be added later if useful.
 

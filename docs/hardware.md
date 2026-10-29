@@ -10,7 +10,7 @@
 | 5 V USB-C supply and suitable cable | Operating power |
 | USB data cable and development computer | Flashing and serial diagnostics |
 | Purmo/LVI radiator supported by the reference protocol | Initial physical target |
-| Home Assistant with Matter integration and a working local IPv6/multicast network | First controller for acceptance testing |
+| Home Assistant with MQTT integration and a local broker | Controller for MQTT/discovery acceptance testing |
 
 Manufacturer: [board and accessories](https://elecram.com/products/esp32-c6-wifi-zigbee-to-855-925mhz-wireless).
 The quoted delivered price for board, antenna and enclosure was 621 SEK;

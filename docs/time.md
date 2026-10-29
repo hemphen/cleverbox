@@ -165,5 +165,5 @@ blocked/unreachable NTP with HTTP/RF still working, router outage/reconnection,
 manual UTC and newlib timezone/DST display on the board, flash retention across
 power cycles, and physical radiator B2/target/mode delivery with Touch E3 removed.
 Clock drift, radio acceptance and continued heating behavior require measurement.
-No schedule engine, MQTT, HA discovery, Matter, OTA or history storage is included.
-MQTT with HA discovery is the next implementation milestone.
+[MQTT transport](mqtt.md) now uses the same device-time admission. HA discovery
+follows separately; no schedule engine, Matter, OTA or history storage is included.

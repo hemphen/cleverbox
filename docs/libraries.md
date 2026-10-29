@@ -1,12 +1,12 @@
 # Libraries
 
 Use C/C++ with ESP-IDF and RadioLib. Use ESP-IDF's HTTP server and RadioLib
-transport. MQTT/HA discovery follows setup and home-network/time milestones;
+transport. MQTT transport is implemented; Home Assistant discovery follows;
 ESP-Matter is an optional later dependency.
 
 | Dependency | Use |
 | --- | --- |
-| [ESP-IDF](https://github.com/espressif/esp-idf) | FreeRTOS, SPI/GPIO, Wi-Fi, HTTP server, NVS, SNTP/system time and timers |
+| [ESP-IDF](https://github.com/espressif/esp-idf) | FreeRTOS, SPI/GPIO, Wi-Fi, HTTP server, NVS, SNTP/system time, MQTT and timers |
 | Optional later: [ESP-Matter](https://github.com/espressif/esp-matter) | Matter commissioning, bridge lifecycle and thermostat endpoints |
 | [RadioLib](https://github.com/jgromes/RadioLib) | CC1101 driver through its native ESP-IDF integration |
 
@@ -28,6 +28,9 @@ The RX and TX profiles still need physical board acceptance.
 - **device_time:** shared UTC/provenance and validated POSIX timezone logic, separate
   configuration-only NVS key, ESP-IDF SNTP adapter and explicit manual UTC setup.
   No timezone database or third-party time dependency. See [time](time.md).
+- **mqtt_bridge:** bounded broker configuration/store, production routing/publication
+  and the ESP-IDF MQTT adapter. Built-in ESP-MQTT from exact IDF v5.5.1; see
+  [topic/session/security contract](mqtt.md). HA discovery is separate.
 - **matter_bridge (optional later):** thermostat attributes and commands mapped to radiator operations.
 
 Keep one codec and one set of protocol values. Reuse these components throughout
