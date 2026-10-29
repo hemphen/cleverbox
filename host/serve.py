@@ -29,6 +29,8 @@ def main():
     lib.host_network_event.argtypes = [ctypes.c_char_p]
     lib.simulation_advance.argtypes = [ctypes.c_int]
     lib.host_mqtt_storage_fault.argtypes = [ctypes.c_int]
+    lib.host_mqtt_subscribe_mode.argtypes = [ctypes.c_int]
+    lib.mqtt_bridge_suback.argtypes = [ctypes.c_int,ctypes.c_int]
     lib.host_mqtt_connection.argtypes = [ctypes.c_int]
     lib.host_mqtt_pop.restype = ctypes.c_char_p
     lib.mqtt_bridge_input.argtypes = [ctypes.c_char_p,ctypes.c_size_t,ctypes.c_char_p,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_bool]
@@ -69,6 +71,8 @@ def main():
                     if not row: break
                     item=json.loads(row); item['payload']=json.loads(item['payload']) if item['payload'].startswith('{') else item['payload']; rows.append(item)
                 self.reply(200,json.dumps(rows),'application/json')
+            elif args.test_clock and self.path == '/api/simulation/mqtt-client':
+                self.reply(200,json.dumps(dict(subscription_id=lib.host_mqtt_subscription_id(),starts=lib.host_mqtt_starts())),'application/json')
             else:
                 self.production(0, b'')
 
@@ -106,6 +110,10 @@ def main():
                     if not lib.host_mqtt_storage_fault(data['mode']): raise ValueError()
                 elif args.test_clock and action == 'mqtt_connection'  and type(data.get('connected')) is bool:
                     if not lib.host_mqtt_connection(int(data['connected'])): raise ValueError()
+                elif args.test_clock and action == 'mqtt_subscribe_mode' and type(data.get('mode')) is int:
+                    if not lib.host_mqtt_subscribe_mode(data['mode']): raise ValueError()
+                elif args.test_clock and action == 'mqtt_suback' and type(data.get('id')) is int and type(data.get('qos')) is int:
+                    lib.mqtt_bridge_suback(data['id'],data['qos'])
                 elif args.test_clock and action == 'mqtt_input' and isinstance(data.get('topic'), str) and isinstance(data.get('payload'), str):
                     topic=data['topic'].encode(); payload=data['payload'].encode()
                     offset=data.get('offset',0); total=data.get('total',len(payload))

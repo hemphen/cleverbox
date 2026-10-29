@@ -15,7 +15,7 @@ class Settings(C.Structure):
 
 START=C.CFUNCTYPE(C.c_int,C.POINTER(Settings),C.c_char_p,C.c_char_p)
 STOP=C.CFUNCTYPE(None,C.c_char_p)
-SUBSCRIBE=C.CFUNCTYPE(C.c_bool,C.c_char_p)
+SUBSCRIBE=C.CFUNCTYPE(C.c_int,C.c_char_p)
 PUBLISH=C.CFUNCTYPE(C.c_bool,C.c_char_p,C.c_char_p,C.c_bool)
 NONCE=C.CFUNCTYPE(None,C.POINTER(C.c_char))
 
@@ -31,6 +31,7 @@ class BrokerClient:
         lib.mqtt_bridge_init.argtypes=[Ops,C.c_char_p]
         lib.mqtt_bridge_input.argtypes=[C.c_char_p,C.c_size_t,C.c_char_p,C.c_size_t,C.c_size_t,C.c_size_t,C.c_bool]
         lib.mqtt_bridge_connection.argtypes=[C.c_bool]
+        lib.mqtt_bridge_suback.argtypes=[C.c_int,C.c_int]
         lib.mqtt_bridge_init(self.ops,b'020000000001')
 
     def start(self,settings,identity,will):
@@ -38,6 +39,7 @@ class BrokerClient:
         self.client=mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,client_id=identity.decode(),clean_session=True,protocol=mqtt.MQTTv311)
         if s.username: self.client.username_pw_set(s.username.decode(),s.password.decode())
         self.client.will_set(will.decode(),'offline',qos=1,retain=True)
+        self.client.on_subscribe=self.on_subscribe
         self.client.on_connect=self.on_connect; self.client.on_disconnect=self.on_disconnect; self.client.on_message=self.on_message
         self.client.reconnect_delay_set(5,5)
         try: self.client.connect(s.host.decode(),s.port,30)
@@ -54,8 +56,14 @@ class BrokerClient:
         topic=message.topic.encode(); payload=message.payload
         self.lib.mqtt_bridge_input(topic,len(topic),payload,len(payload),0,len(payload),message.retain)
 
+    def on_subscribe(self,client,userdata,mid,reasons,properties):
+        granted=len(reasons)==1 and not reasons[0].is_failure and reasons[0].value==0
+        self.lib.mqtt_bridge_suback(mid,0 if granted else -1)
+
     def subscribe(self,topic):
-        return self.connected and self.client.subscribe(topic.decode(),qos=0)[0]==mqtt.MQTT_ERR_SUCCESS
+        if not self.connected: return -1
+        error,mid=self.client.subscribe(topic.decode(),qos=0)
+        return mid if error==mqtt.MQTT_ERR_SUCCESS else -1
 
     def publish(self,topic,payload,retain):
         return self.connected and self.client.publish(topic.decode(),payload,qos=0,retain=retain).rc==mqtt.MQTT_ERR_SUCCESS

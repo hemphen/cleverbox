@@ -16,6 +16,8 @@ def publications(app):
 
 def connect(app):
     app.sim('mqtt_connection',connected=True); app.advance(100)
+    pending=app.http('/api/mqtt'); assert pending['broker_connected'] and pending['subscription_pending'] and not pending['connected'] and not pending['session']
+    app.sim('mqtt_suback',id=app.http('/api/simulation/mqtt-client')['subscription_id'],qos=0); app.advance(100)
     s=app.http('/api/mqtt'); assert s['connected'] and len(s['session'])==32
     return s['session']
 
@@ -43,7 +45,46 @@ def run(directory):
         assert secret not in json.dumps(s) and 'password' not in s
         app.http('/api/network',dict(action='configure',ssid=secrets.token_hex(6),password=secrets.token_hex(8)),202)
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip'); app.advance(100)
+        # Broker CONNACK alone is not readiness. A wrong SUBACK cannot grant it.
+        app.sim('mqtt_connection',connected=True); app.advance(100)
+        mid=app.http('/api/simulation/mqtt-client')['subscription_id']
+        app.sim('mqtt_suback',id=mid+1,qos=0); app.advance(100)
+        waiting=app.http('/api/mqtt')
+        assert waiting['subscription_pending'] and not waiting['connected'] and waiting['session']==''
+        assert not any(r['payload']=='online' for r in publications(app))
+        # Matching rejection fails closed and retries only after five seconds.
+        app.sim('mqtt_suback',id=mid,qos=128); app.advance(100)
+        failed=app.http('/api/mqtt'); assert failed['subscription_error']==0x7401 and not failed['connected']
+        starts=app.http('/api/simulation/mqtt-client')['starts']
+        app.advance(4999); assert app.http('/api/simulation/mqtt-client')['starts']==starts
+        app.advance(101); assert app.http('/api/simulation/mqtt-client')['starts']==starts+1
+        app.sim('mqtt_connection',connected=True); app.advance(100)
+        missing_id=app.http('/api/simulation/mqtt-client')['subscription_id']
+        # Old connection's matching ACK and unrelated ACKs do not open this session.
+        app.sim('mqtt_suback',id=mid,qos=0); app.advance(4900)
+        assert app.http('/api/mqtt')['subscription_pending'] and not app.http('/api/mqtt')['connected']
+        assert not any(r['payload']=='online' for r in publications(app))
+        app.advance(100)
+        failed=app.http('/api/mqtt'); assert failed['subscription_error']==0x7402 and not failed['subscription_pending']
+        app.sim('mqtt_suback',id=missing_id,qos=0); app.advance(100)
+        assert not app.http('/api/mqtt')['connected'] and app.http()['simulation_tx']==[]
+        starts=app.http('/api/simulation/mqtt-client')['starts']
+        app.advance(4899); assert app.http('/api/simulation/mqtt-client')['starts']==starts
+        app.advance(101); assert app.http('/api/simulation/mqtt-client')['starts']==starts+1
+        app.sim('mqtt_subscribe_mode',mode=2)
+        app.sim('mqtt_connection',connected=True); app.advance(100)
+        assert app.http('/api/mqtt')['subscription_error']==0x7403
+        starts=app.http('/api/simulation/mqtt-client')['starts']
+        app.advance(5000); assert app.http('/api/simulation/mqtt-client')['starts']==starts+1
+        # Fast client callback before subscribe() returns its packet ID is valid.
+        app.sim('mqtt_subscribe_mode',mode=1)
+        app.sim('mqtt_connection',connected=True); app.advance(100)
+        assert app.http('/api/mqtt')['connected'] and not app.http('/api/mqtt')['subscription_error']
+        assert any(r['payload']=='online' for r in publications(app))
+        app.sim('mqtt_subscribe_mode',mode=0)
+        app.sim('mqtt_connection',connected=False)
         session=connect(app); rows=publications(app)
+        assert app.http('/api/mqtt')['subscription_error']==0
         assert any(r['payload']=='online' and r['retain'] for r in rows)
         initial=[r['payload'] for r in rows if r['topic'].endswith('/state')][-1]
         assert initial['available'] is False and 'mode' not in initial and 'age_ms' not in initial

@@ -18,6 +18,9 @@ static mqtt_bridge_status status;
 static bool action_pending, link_connected, running;
 static unsigned link_epoch, owner_epoch;
 static int64_t retry_ms, state_ms;
+static int subscription_id, suback_id, suback_qos;
+static bool suback_received;
+static int64_t subscription_deadline, suback_ms;
 static char base[64], availability[96], session[33];
 static uint64_t high_water, next_cookie;
 typedef struct { char topic[MQTT_TOPIC_BYTES], data[MQTT_PAYLOAD_BYTES+1]; size_t used, total; unsigned epoch; bool retained; } input;
@@ -38,6 +41,8 @@ void mqtt_bridge_init(mqtt_client_ops ops, const char bridge_id[13]) {
     memset(tracked, 0, sizeof(tracked)); memset(&assembly, 0, sizeof(assembly));
     action_pending = link_connected = running = false; link_epoch = owner_epoch = 0;
     input_head = input_count = 0; high_water = next_cookie = 0; retry_ms = state_ms = 0; session[0] = 0;
+    subscription_id = suback_id = suback_qos = 0; suback_received = false;
+    subscription_deadline = suback_ms = 0;
     strcpy(status.bridge_id, bridge_id);
     snprintf(base, sizeof(base), "cleverbox/v1/%s", bridge_id);
     snprintf(availability, sizeof(availability), "%s/availability", base);
@@ -72,7 +77,20 @@ void mqtt_bridge_connection(bool connected) {
     link_connected = connected; ++link_epoch;
     if (connected) status.client_error = ESP_OK;
     status.connected = false; status.session[0] = 0;
+    status.broker_connected = connected; status.subscription_pending = false;
+    subscription_id = 0; suback_received = false;
     input_head = input_count = 0; assembly.total = 0;
+    mqtt_platform_unlock();
+}
+void mqtt_bridge_suback(int message_id, int granted_qos) {
+    mqtt_platform_lock();
+    if (link_connected && status.subscription_pending && message_id > 0 && message_id <= 65535 &&
+        (!subscription_id || message_id == subscription_id)) {
+        // subscribe() may yield to the client callback before it returns its ID.
+        // Preserve that early ACK; the owner still verifies its exact ID/epoch.
+        suback_id = message_id; suback_qos = granted_qos;
+        suback_ms = now(); suback_received = true;
+    }
     mqtt_platform_unlock();
 }
 void mqtt_bridge_input(const char *topic, size_t topic_len, const char *data,
@@ -233,6 +251,11 @@ static void stop(void) {
     if (running) client.stop(availability);
     running = false; mqtt_bridge_connection(false); session[0] = 0;
 }
+static void subscription_failed(int error) {
+    stop(); // Clear partial/queued input and destroy the subscription outbox.
+    mqtt_platform_lock(); status.subscription_error = error; mqtt_platform_unlock();
+    retry_ms = now()+MQTT_RETRY_MS;
+}
 void mqtt_bridge_tick(void) {
     mqtt_settings change; bool action;
     mqtt_platform_lock(); action = action_pending;
@@ -253,27 +276,56 @@ void mqtt_bridge_tick(void) {
         char id[32]; snprintf(id, sizeof(id), "cleverbox-%s", status.bridge_id);
         esp_err_t err = client.start(&settings, id, availability);
         mqtt_platform_lock(); status.client_error = err; mqtt_platform_unlock();
-        running = err == ESP_OK; retry_ms = now()+5000;
+        running = err == ESP_OK; retry_ms = now()+MQTT_RETRY_MS;
     }
     bool connected; unsigned epoch;
     mqtt_platform_lock(); connected = link_connected; epoch = link_epoch; mqtt_platform_unlock();
-    bool reconnected = epoch != owner_epoch;
-    if (reconnected) {
+    if (epoch != owner_epoch) {
         owner_epoch = epoch; session[0] = 0; high_water = 0;
         if (connected) {
             char topic[MQTT_TOPIC_BYTES]; snprintf(topic, sizeof(topic), "%s/radiators/+/set", base);
-            if (!client.subscribe(topic)) { stop(); retry_ms = now()+5000; return; }
-            client.nonce(session);
             mqtt_platform_lock();
-            // A disconnect during subscribe must not revive connected status.
-            if (epoch == link_epoch && link_connected) { status.connected = true; strcpy(status.session, session); }
-            else connected = false;
+            if (epoch != link_epoch || !link_connected) { mqtt_platform_unlock(); return; }
+            status.subscription_pending = true; subscription_id = 0; suback_received = false;
+            subscription_deadline = now()+MQTT_SUBACK_TIMEOUT_MS;
             mqtt_platform_unlock();
-            if (connected) { client.publish(availability, "online", true); state_ms = 0; }
+            // Clear any old retained availability while command access is unproven.
+            client.publish(availability, "offline", true);
+            int id = client.subscribe(topic);
+            mqtt_platform_lock();
+            bool current = epoch == link_epoch && link_connected && status.subscription_pending;
+            if (current) {
+                subscription_id = id;
+                if (suback_received && suback_id != id) suback_received = false;
+            }
+            mqtt_platform_unlock();
+            if (!current) return;
+            if (id <= 0 || id > 65535) { subscription_failed(MQTT_ERR_SUBSCRIBE_REQUEST); return; }
         }
     }
-    if (!connected || !session[0]) return;
-    results(reconnected);
+    bool became_ready = false;
+    mqtt_platform_lock();
+    bool current = epoch == link_epoch && link_connected;
+    bool pending = current && status.subscription_pending;
+    bool acked = pending && suback_received && suback_id == subscription_id;
+    bool late = pending && (acked ? suback_ms >= subscription_deadline : now() >= subscription_deadline);
+    int grant = suback_qos;
+    mqtt_platform_unlock();
+    if (late) { subscription_failed(MQTT_ERR_SUBSCRIBE_TIMEOUT); return; }
+    if (acked) {
+        if (grant != 0) { subscription_failed(MQTT_ERR_SUBSCRIBE_REJECTED); return; }
+        client.nonce(session);
+        mqtt_platform_lock();
+        if (epoch == link_epoch && link_connected && status.subscription_pending) {
+            status.connected = true; status.subscription_pending = false;
+            status.subscription_error = ESP_OK; strcpy(status.session, session); became_ready = true;
+        }
+        mqtt_platform_unlock();
+        if (became_ready) { client.publish(availability, "online", true); state_ms = 0; }
+    }
+    mqtt_platform_lock(); current = epoch == link_epoch && link_connected && status.connected; mqtt_platform_unlock();
+    if (!current || !session[0]) return;
+    results(became_ready);
     if (now() >= state_ms) { observations(); state_ms = now()+5000; }
     // Drain a bounded batch. Epoch checks discard work queued before link loss;
     // there is no offline input queue. Already-admitted RF runs independently.

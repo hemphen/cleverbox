@@ -6,13 +6,14 @@
 #include <string.h>
 #include <stdlib.h>
 static bool started, connected;
+static int subscription_id, last_subscription_id, starts, subscribe_mode;
 
 static char publications[64][1024];
 static size_t head, count;
 void mqtt_platform_lock(void) {}
 void mqtt_platform_unlock(void) {}
 static esp_err_t start(const mqtt_settings *s, const char *id, const char *will) {
-    (void)s; (void)id; (void)will; started = true; return ESP_OK;
+    (void)s; (void)id; (void)will; started = true; ++starts; return ESP_OK;
 }
 static bool publish(const char *topic, const char *payload, bool retain) {
     if (!connected) return false;
@@ -23,7 +24,18 @@ static bool publish(const char *topic, const char *payload, bool retain) {
     cJSON_PrintPreallocated(j, publications[index], sizeof(publications[index]), false); cJSON_Delete(j); return true;
 }
 static void stop(const char *will) { if (connected) publish(will, "offline", true); started = connected = false; }
-static bool subscribe(const char *topic) { (void)topic; return connected; }
+static int subscribe(const char *topic) {
+    (void)topic; if (!connected || subscribe_mode == 2) return -1;
+    last_subscription_id = ++subscription_id;
+    if (subscribe_mode == 1) mqtt_bridge_suback(last_subscription_id, 0);
+    return last_subscription_id;
+}
+int host_mqtt_subscribe_mode(int mode) {
+    if (mode < 0 || mode > 2) return 0;
+    subscribe_mode = mode; return 1;
+}
+int host_mqtt_subscription_id(void) { return last_subscription_id; }
+int host_mqtt_starts(void) { return starts; }
 static void nonce(char out[33]) {
     unsigned char b[16]; FILE *f = fopen("/dev/urandom", "rb");
     if (!f || fread(b, 1, sizeof(b), f) != sizeof(b)) abort();

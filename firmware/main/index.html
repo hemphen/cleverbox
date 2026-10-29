@@ -216,11 +216,12 @@ async function refreshMqtt(){
   try{
     const r=await fetch('/api/mqtt',{cache:'no-store'}); if(!r.ok) throw new Error('MQTT status unavailable.');
     const s=await r.json();
-    field('mqttStatus').textContent='MQTT: '+(s.connected?'connected':s.enabled?'waiting for Wi-Fi / broker':'disabled')+
+    field('mqttStatus').textContent='MQTT: '+(s.connected?'ready':s.subscription_pending?'waiting for command subscription':s.broker_connected?'broker connected; command access unconfirmed':s.enabled?'waiting for Wi-Fi / broker':'disabled')+
       ' · Configured: '+(s.configured?'yes':'no')+' · Bridge: '+s.bridge_id+
       (s.host?' · Broker: '+s.host+':'+s.port:'')+(s.pending?' · Saving…':'')+
       (s.config_error?' · Save/load error: '+s.config_error:'')+
       (s.client_error?' · Client error: '+s.client_error:'')+
+      (s.subscription_error?' · Command subscription: '+({29697:'rejected',29698:'acknowledgement timed out',29699:'request failed'}[s.subscription_error]??s.subscription_error)+'; retrying at a bounded pace.':'')+
       (s.persistence_uncertain?' · Persistence uncertain: check after restart or retry save/forget.':'');
     for(const id of ['mqttSave','mqttEnable','mqttDisable','mqttForget']) field(id).disabled=!!s.pending;
     field('mqttEnable').disabled=!!s.pending||!s.configured||s.enabled;

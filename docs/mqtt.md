@@ -25,13 +25,28 @@ None of these operations cancels an admitted RF command or changes radiator sett
 202 means queued, not saved; 400 means invalid, 409 means a configuration action
 is pending. Poll `GET /api/mqtt`: `configured`, `enabled`, `connected`, `pending`,
 `bridge_id`, `session`, `host`, `port`, `username`, `config_error`, `client_error`,
-`persistence_uncertain`, `dropped_input`. Passwords are never returned. Status and
+`persistence_uncertain`, `dropped_input`, `broker_connected`, `subscription_pending`,
+`subscription_error`. Passwords are never returned. Status and
 actions are no-store. A failed save retains the previous active RAM settings and
 sets persistence uncertainty: the next boot may load old/new/missing/invalid
 configuration. There is no rollback or power-loss guarantee. Explicit retry
 forces erase/commit, rewrite/commit and fresh-handle verification, including for
 same-value retries and the forget tombstone. Success clears uncertainty. Invalid
 boot configuration is reported and leaves MQTT disabled; no automatic erase.
+
+`broker_connected` means a broker CONNACK was received; `connected` means command
+access is ready after the matching successful SUBACK. While awaiting SUBACK,
+availability stays `offline`, the session is empty and no commands are admitted
+or observations/results published. Only the exact subscription packet ID with
+one QoS-0 grant succeeds. Rejection/malformed grants report `subscription_error`
+29697 (`0x7401`), a missing/late acknowledgement after **five monotonic seconds**
+reports 29698 (`0x7402`), and a failed subscribe request reports 29699 (`0x7403`).
+The client is closed (clearing pending input/outbox) and recreated no sooner than
+**five seconds** later. Wrong/late ACK IDs cannot establish readiness; disconnect
+invalidates the outstanding ACK. The last subscription error stays visible during
+retries and clears only after a successful SUBACK. RF already admitted continues
+independently throughout. The UI distinguishes waiting for command subscription
+from readiness and displays rejection/timeout explicitly.
 
 Only `cleverbox/mqtt` is written: fixed version-1 layout (295 bytes): version,
 flags (configured bit 0, enabled bit 1), LE16 port, then zero-padded NUL-terminated
@@ -177,7 +192,8 @@ and [pinned client header](https://github.com/espressif/esp-mqtt/blob/6af4446a48
 `make test test-http test-capacity` includes the production HTTP/UI, NVS,
 MQTT routing/publication, device-time admission and RF worker against a small
 fake MQTT client boundary. These tests are not a real broker test. Test scenarios
-cover validation, busy/independent delivery, retained and duplicate input,
+cover matching/rejected/missing/late SUBACKs, paced retry, validation,
+busy/independent delivery, retained and duplicate input,
 fragmentation, lost links, restart without replay, unavailable boot observations,
 requested/observed separation and staleness. See the PR validation results for
 the separate local-broker smoke test and ESP32-C6 build.

@@ -16,6 +16,13 @@ static void event(void *arg, esp_event_base_t base, int32_t id, void *data) {
     (void)arg; (void)base; esp_mqtt_event_handle_t e = data;
     if (id == MQTT_EVENT_CONNECTED) mqtt_bridge_connection(true);
     else if (id == MQTT_EVENT_DISCONNECTED) mqtt_bridge_connection(false);
+    else if (id == MQTT_EVENT_SUBSCRIBED) {
+        // IDF 5.5.1 deliver_suback exposes the grant bytes in data, including 0x80
+        // rejection, and marks MQTT_ERROR_TYPE_SUBSCRIBE_FAILED on failure.
+        bool granted = e->data && e->data_len == 1 && (unsigned char)e->data[0] == 0 &&
+            (!e->error_handle || e->error_handle->error_type != MQTT_ERROR_TYPE_SUBSCRIBE_FAILED);
+        mqtt_bridge_suback(e->msg_id, granted ? 0 : -1);
+    }
     else if (id == MQTT_EVENT_ERROR) mqtt_bridge_client_error(ESP_FAIL);
     else if (id == MQTT_EVENT_DATA && e->topic_len >= 0 && e->data_len >= 0 &&
              e->current_data_offset >= 0 && e->total_data_len >= 0)
@@ -49,7 +56,7 @@ static void stop(const char *will) {
         esp_mqtt_client_disconnect(handle);
     esp_mqtt_client_stop(handle); esp_mqtt_client_destroy(handle); handle = NULL;
 }
-static bool subscribe(const char *topic) { return handle && esp_mqtt_client_subscribe(handle, topic, 0) >= 0; }
+static int subscribe(const char *topic) { return handle ? esp_mqtt_client_subscribe(handle, topic, 0) : -1; }
 static bool publish(const char *topic, const char *data, bool retain) {
     // Called only while connected. QoS0 never enters the IDF retransmit outbox.
     return handle && esp_mqtt_client_publish(handle, topic, data, 0, 0, retain) >= 0;

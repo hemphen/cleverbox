@@ -518,6 +518,9 @@ static esp_err_t mqtt_status_page(httpd_req_t *r) {
     cJSON_AddStringToObject(j, "host", s.host); cJSON_AddNumberToObject(j, "port", s.port);
     cJSON_AddStringToObject(j, "username", s.username);
     cJSON_AddNumberToObject(j, "config_error", s.config_error); cJSON_AddNumberToObject(j, "client_error", s.client_error);
+    cJSON_AddBoolToObject(j, "broker_connected", s.broker_connected);
+    cJSON_AddBoolToObject(j, "subscription_pending", s.subscription_pending);
+    cJSON_AddNumberToObject(j, "subscription_error", s.subscription_error);
     cJSON_AddNumberToObject(j, "dropped_input", s.dropped_input); return json_response(r, j);
 }
 static esp_err_t mqtt_action(httpd_req_t *r) {
