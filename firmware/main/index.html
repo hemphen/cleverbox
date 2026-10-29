@@ -45,6 +45,23 @@ Network synchronization can replace it later.</small>
 <small>Commands use device time. If time is unavailable, connect home Wi-Fi for SNTP or set it manually here.
 Time setup never transmits radiator settings. Admitted commands keep their clock snapshot and advance monotonically through retries.</small>
 </section>
+<section>
+<h2>MQTT broker</h2>
+<p id="mqttStatus" role="status" aria-live="polite">Checking MQTT…</p>
+<label>Broker hostname or IPv4 <input id="mqttHost" maxlength="96" placeholder="192.168.1.10" autocomplete="off"></label>
+<label>Port <input id="mqttPort" type="number" min="1" max="65535" value="1883"></label>
+<label>Username (optional) <input id="mqttUser" maxlength="64" autocomplete="off"></label>
+<label>Password (optional) <input id="mqttPassword" type="password" maxlength="128" autocomplete="new-password"></label>
+<label>Enable after saving <select id="mqttEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+<button id="mqttSave">Save broker configuration</button>
+<button id="mqttEnable">Enable MQTT</button><button id="mqttDisable">Disable MQTT</button>
+<button id="mqttForget">Forget MQTT only</button>
+<p id="mqttAction" role="status"></p>
+<small>Local TCP broker; no TLS. Use a trusted LAN and broker topic ACLs. HTTP and NVS are unencrypted.
+Each configuration save replaces all fields; re-enter the password when saving. Stored passwords are never returned.
+Disable/enable keeps credentials. Forget preserves radiators, Wi-Fi, time and admitted RF commands.
+MQTT state is separate from requested settings; commands require the current session and a new request ID (see docs/mqtt.md).</small>
+</section>
 <section id="simulationPanel" hidden>
 <h2>SIMULATION · no physical radio</h2>
 <p>Two invented radiators: F1040506 and F1040507. The fixture below stands in for an original controller;
@@ -193,6 +210,41 @@ async function timeAction(action){
 field('saveTimezone').addEventListener('click',()=>timeAction('timezone'));
 field('setManualTime').addEventListener('click',()=>timeAction('manual'));
 refreshTime();
+let mqttTimer;
+async function refreshMqtt(){
+  clearTimeout(mqttTimer);
+  try{
+    const r=await fetch('/api/mqtt',{cache:'no-store'}); if(!r.ok) throw new Error('MQTT status unavailable.');
+    const s=await r.json();
+    field('mqttStatus').textContent='MQTT: '+(s.connected?'connected':s.enabled?'waiting for Wi-Fi / broker':'disabled')+
+      ' · Configured: '+(s.configured?'yes':'no')+' · Bridge: '+s.bridge_id+
+      (s.host?' · Broker: '+s.host+':'+s.port:'')+(s.pending?' · Saving…':'')+
+      (s.config_error?' · Save/load error: '+s.config_error:'')+
+      (s.client_error?' · Client error: '+s.client_error:'')+
+      (s.persistence_uncertain?' · Persistence uncertain: check after restart or retry save/forget.':'');
+    for(const id of ['mqttSave','mqttEnable','mqttDisable','mqttForget']) field(id).disabled=!!s.pending;
+    field('mqttEnable').disabled=!!s.pending||!s.configured||s.enabled;
+    field('mqttDisable').disabled=!!s.pending||!s.configured||!s.enabled;
+  }catch(error){field('mqttStatus').textContent=error.message;}
+  finally{mqttTimer=setTimeout(refreshMqtt,2000);}
+}
+async function mqttAction(action){
+  const body={action};
+  if(action==='configure'){
+    Object.assign(body,{host:field('mqttHost').value,port:Number(field('mqttPort').value),
+      username:field('mqttUser').value,password:field('mqttPassword').value,enabled:field('mqttEnabled').value==='true'});
+  }
+  field('mqttPassword').value='';
+  try{
+    const r=await fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok) throw new Error('MQTT request failed or is busy. Check status.');
+    field('mqttAction').textContent='MQTT configuration queued. Check status for save errors. No radiator command requested.';
+  }catch(error){field('mqttAction').textContent=error.message;}
+  finally{body.password=''; await refreshMqtt();}
+}
+for(const [id,action] of [['mqttSave','configure'],['mqttEnable','enable'],['mqttDisable','disable'],['mqttForget','forget']])
+  field(id).addEventListener('click',()=>mqttAction(action));
+refreshMqtt();
 let simulationConfigured=false, selectedId=0, pairingId=0, selectionEpoch=0, refreshTimer;
 function resetSelection(id){
   selectedId=id; selectionEpoch++;

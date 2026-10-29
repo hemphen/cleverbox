@@ -33,6 +33,7 @@ async function main() {
     TextEncoder,
     setTimeout() {}, clearTimeout() {},
     async fetch(url, options) {
+      if(url==='/api/mqtt' && !options.body) return {ok:true,json:async()=>({configured:true,enabled:true,connected:false,bridge_id:'020000000001'})};
       if(url==='/api/time' && !options.body) return {ok:true,json:async()=>clock};
       if(url==='/api/network' && !options.body){
         if(networkReadsFail) throw new Error('unreachable');
@@ -192,6 +193,16 @@ async function main() {
   responseOK=false; await fields.saveTimezone.handlers.click();
   assert.equal(fields.timeAction.textContent,'No learned controller state');
   assert(!html.includes('getHours()')); assert(!html.includes('clock_seconds:'));
+  responseOK=true;
+  fields.mqttHost.value='broker.test'; fields.mqttPort.value='1883'; fields.mqttUser.value='user';
+  fields.mqttPassword.value=secret; fields.mqttEnabled.value='true';
+  await fields.mqttSave.handlers.click();
+  assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'configure',host:'broker.test',port:1883,username:'user',password:secret,enabled:true}});
+  assert.equal(fields.mqttPassword.value,'');
+  await fields.mqttDisable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'disable'}});
+  await fields.mqttEnable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'enable'}});
+  await fields.mqttForget.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'forget'}});
+  for(const field of Object.values(fields)) assert(!field.textContent.includes(secret));
   console.log('UI learned/missing state, optional import, preview, admission and error rendering: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

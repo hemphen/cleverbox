@@ -36,6 +36,11 @@ typedef struct {
     rf_control_status control;
     bool command_reserved; // Admission through worker handoff and terminal publication.
     bool command_pending;
+    // Optional transport correlation mailbox. Not persisted. Subsequent untracked
+    // HTTP commands cannot erase a tracked command's final result before it is read.
+    uint64_t command_cookie, result_cookie;
+    rf_control_status tracked_result;
+    int tracked_error;
     int control_error, state_load_error, state_store_error;
     radio_store_result state_save_result, state_clear_result;
 } radiator_record;

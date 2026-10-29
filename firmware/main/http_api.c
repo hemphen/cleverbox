@@ -12,6 +12,7 @@
 #include "http_api.h"
 #include "network_setup.h"
 #include "device_time.h"
+#include "mqtt_bridge.h"
 #ifdef CLEVERBOX_HOST
 #include "simulation.h"
 #endif
@@ -508,8 +509,62 @@ static esp_err_t time_action(httpd_req_t *r) {
     return httpd_resp_sendstr(r, "{\"updated\":true,\"transmitted\":false}");
 }
 
+static esp_err_t mqtt_status_page(httpd_req_t *r) {
+    mqtt_bridge_status s; mqtt_bridge_get(&s); cJSON *j = cJSON_CreateObject();
+    cJSON_AddBoolToObject(j, "configured", s.configured); cJSON_AddBoolToObject(j, "enabled", s.enabled);
+    cJSON_AddBoolToObject(j, "connected", s.connected); cJSON_AddBoolToObject(j, "pending", s.pending);
+    cJSON_AddBoolToObject(j, "persistence_uncertain", s.persistence_uncertain);
+    cJSON_AddStringToObject(j, "bridge_id", s.bridge_id); cJSON_AddStringToObject(j, "session", s.session);
+    cJSON_AddStringToObject(j, "host", s.host); cJSON_AddNumberToObject(j, "port", s.port);
+    cJSON_AddStringToObject(j, "username", s.username);
+    cJSON_AddNumberToObject(j, "config_error", s.config_error); cJSON_AddNumberToObject(j, "client_error", s.client_error);
+    cJSON_AddNumberToObject(j, "dropped_input", s.dropped_input); return json_response(r, j);
+}
+static esp_err_t mqtt_action(httpd_req_t *r) {
+    char body[768], type[40]; httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
+        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
+    size_t used = 0;
+    while (used < r->content_len) {
+        int n = httpd_req_recv(r, body+used, r->content_len-used);
+        if (n <= 0) { memset(body, 0, sizeof(body)); return ESP_FAIL; }
+        used += (size_t)n;
+    }
+    body[used] = 0; bool valid = !memchr(body, 0, used);
+    for (size_t i = 0; valid && i+1 < used; ++i) {
+        if (body[i] != '\\') continue;
+        if (i+5 < used && !strncmp(body+i+1, "u0000", 5)) valid = false;
+        ++i;
+    }
+    cJSON *j = valid && mqtt_json_flat(body) ? cJSON_ParseWithOpts(body, NULL, true) : NULL; memset(body, 0, sizeof(body));
+    const char *action = string(j, "action"); esp_err_t err = ESP_ERR_INVALID_ARG;
+    mqtt_settings settings = {0}; int port;
+    const char *host = string(j, "host"), *user = string(j, "username"), *password = string(j, "password");
+    cJSON *enabled = cJSON_GetObjectItemCaseSensitive(j, "enabled");
+    if (cJSON_IsObject(j) && action && !strcmp(action, "configure") && cJSON_GetArraySize(j) == 6 &&
+        host && user && password && strlen(host) <= MQTT_HOST_BYTES && strlen(user) <= MQTT_USER_BYTES &&
+        strlen(password) <= MQTT_PASSWORD_BYTES && integer(j, "port", 1, 65535, &port) && cJSON_IsBool(enabled)) {
+        settings.configured = true; settings.enabled = cJSON_IsTrue(enabled); settings.port = (uint16_t)port;
+        strcpy(settings.host, host); strcpy(settings.username, user); strcpy(settings.password, password);
+        err = mqtt_bridge_configure(&settings);
+    } else if (cJSON_IsObject(j) && cJSON_GetArraySize(j) == 1) err = mqtt_bridge_action(action);
+    cJSON *secret = cJSON_GetObjectItemCaseSensitive(j, "password");
+    if (cJSON_IsString(secret)) memset(secret->valuestring, 0, strlen(secret->valuestring));
+    memset(&settings, 0, sizeof(settings)); cJSON_Delete(j);
+    if (err == ESP_ERR_INVALID_ARG) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST,
+        "Use configure with host, port, username, password and enabled, or enable/disable/forget");
+    if (err != ESP_OK) { httpd_resp_set_status(r, "409 Conflict"); return httpd_resp_sendstr(r, "MQTT setup busy; check status"); }
+    httpd_resp_set_status(r, "202 Accepted"); httpd_resp_set_type(r, "application/json");
+    return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");
+}
+
 void http_api_register(httpd_handle_t server)
 {
+    httpd_uri_t mqtt_status = {.uri = "/api/mqtt", .method = HTTP_GET, .handler = mqtt_status_page};
+    httpd_uri_t mqtt_set = {.uri = "/api/mqtt", .method = HTTP_POST, .handler = mqtt_action};
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &mqtt_status));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &mqtt_set));
     httpd_uri_t time_status = {.uri = "/api/time", .method = HTTP_GET, .handler = time_status_page};
     httpd_uri_t time_set = {.uri = "/api/time", .method = HTTP_POST, .handler = time_action};
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &time_status));

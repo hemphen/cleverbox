@@ -2,6 +2,7 @@
 // Compile the same worker/admission code as the transport tests, with host I/O.
 #include "../firmware/components/radio_transport/radio_transport.cpp"
 #include "simulation.h"
+#include "mqtt_bridge.h"
 #include <algorithm>
 #include <deque>
 #include <string>
@@ -100,6 +101,7 @@ extern "C" void simulation_advance(int ms) {
             fifo.assign(f.bytes, f.bytes + f.size); fifo_used = 0; deliveries.pop_front();
         }
         worker->step(); host_network_tick();
+        if (now_us % 100000 == 0) mqtt_bridge_tick();
     }
 }
 extern "C" int simulation_scenario(const char *name) {

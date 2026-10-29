@@ -69,10 +69,11 @@ test:
 
 # Host simulation needs cJSON development headers/library (e.g. libcjson-dev).
 HOST_CFLAGS = -std=c11 -Wall -Wextra -Werror -pedantic -g -fPIC -MMD -MP -DCLEVERBOX_HOST \
-  -Ifirmware/components/device_time/include -Ifirmware/components/network_setup/include -Ihost/include -Ifirmware/main -Ifirmware/components/radio_transport \
+  -Ifirmware/components/mqtt_bridge/include -Ifirmware/components/device_time/include -Ifirmware/components/network_setup/include -Ihost/include -Ifirmware/main -Ifirmware/components/radio_transport \
   -Ifirmware/components/radio_transport/include -Ifirmware/components/device_store/include \
   -Ifirmware/components/radiator_protocol/include $(shell pkg-config --cflags libcjson)
-HOST_CSOURCES = firmware/components/device_time/device_time.c \
+HOST_CSOURCES = firmware/components/mqtt_bridge/mqtt_bridge.c firmware/components/mqtt_bridge/mqtt_store.c host/mqtt.c \
+  firmware/components/device_time/device_time.c \
   firmware/components/device_time/time_store.c host/time.c \
   firmware/components/radiator_protocol/radiator_protocol.c \
   firmware/components/radiator_protocol/radiator_pairing.c \
@@ -103,6 +104,7 @@ test-http: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_registry.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_network.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_time.py
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_mqtt.py
 
 -include $(HOST_OBJECTS:.o=.d) $(BUILD_DIR)/host/simulation.d
 

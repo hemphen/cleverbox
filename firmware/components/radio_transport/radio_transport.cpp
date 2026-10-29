@@ -99,7 +99,7 @@ static esp_err_t pair_action(uint32_t id, radio_action action) {
 }
 extern "C" esp_err_t radio_pair_cancel(uint32_t id) { return pair_action(id, PAIR_CANCEL); }
 extern "C" esp_err_t radio_pair_save(uint32_t id) { return pair_action(id, PAIR_SAVE); }
-static esp_err_t control_start_at(uint32_t id, const rf_control_request *request, int64_t admitted_ms) {
+static esp_err_t control_start_at(uint32_t id, const rf_control_request *request, int64_t admitted_ms, uint64_t cookie = 0) {
     if (!request) return ESP_ERR_INVALID_ARG;
     radio_request r = {}; r.action = CONTROL_START; r.admitted_ms = admitted_ms; rf_control_request chosen = *request;
     portENTER_CRITICAL(&status_lock);
@@ -125,6 +125,9 @@ static esp_err_t control_start_at(uint32_t id, const rf_control_request *request
                 if (result != ESP_OK) {
                     d->command_reserved = d->command_pending = false;
                     d->control = previous; d->control_error = previous_error;
+                } else {
+                    d->command_cookie = cookie;
+                    if (cookie) { d->result_cookie = cookie; d->tracked_result = d->control; d->tracked_error = 0; }
                 }
             }
         }
@@ -135,10 +138,13 @@ extern "C" esp_err_t radio_control_start(uint32_t id, const rf_control_request *
     return control_start_at(id, request, esp_timer_get_time() / 1000);
 }
 extern "C" esp_err_t radio_control_start_device(uint32_t id, const rf_control_request *request) {
+    return radio_control_start_device_tracked(id, request, 0);
+}
+extern "C" esp_err_t radio_control_start_device_tracked(uint32_t id, const rf_control_request *request, uint64_t cookie) {
     if (!request) return ESP_ERR_INVALID_ARG;
     rf_control_request chosen = *request; int64_t sampled_ms;
     if (!device_time_command_clock(&chosen.clock_seconds, &sampled_ms)) return RADIO_ERR_TIME_UNAVAILABLE;
-    return control_start_at(id, &chosen, sampled_ms);
+    return control_start_at(id, &chosen, sampled_ms, cookie);
 }
 static esp_err_t enqueue_mutation(uint32_t id, radio_action action, const rf_frame *imported, const char *name) {
     radio_request r = {}; r.action = action;
@@ -250,6 +256,9 @@ struct radio_worker {
             radiator_record &d = registry.records[i];
             if (d.command_reserved && !d.command_pending) {
                 d.control = controls[i].status; d.control_error = control_errors[i];
+                if (d.command_cookie) {
+                    d.result_cookie = d.command_cookie; d.tracked_result = d.control; d.tracked_error = d.control_error;
+                }
                 // Do not release a newly queued reservation before its worker handoff.
                 if (!rf_control_active(&d.control))
                     d.command_reserved = false;
@@ -276,6 +285,7 @@ struct radio_worker {
             if (!d.command_reserved) continue;
             controls[i].status.phase = d.control.phase = RF_CONTROL_ERROR;
             control_errors[i] = d.control_error = error;
+            if (d.command_cookie) { d.tracked_result = d.control; d.tracked_error = error; }
             d.command_pending = d.command_reserved = false;
         }
         if (pair_reserved) {
@@ -459,7 +469,10 @@ struct radio_worker {
                                 rf_control_receive(&controls[i], now / 1000, &frame);
                                 if (controls[i].status.phase == RF_CONTROL_MATCHED) control_errors[i] = 0;
                             } else if ((d.control.phase == RF_CONTROL_TIMEOUT || d.control.phase == RF_CONTROL_ERROR) &&
-                                       rf_control_reconcile(&d.control, now / 1000, &frame)) d.control_error = 0;
+                                       rf_control_reconcile(&d.control, now / 1000, &frame)) {
+                                d.control_error = 0;
+                                if (d.command_cookie) { d.tracked_result = d.control; d.tracked_error = 0; }
+                            }
                         }
                     }
                     if (valid) {
