@@ -107,7 +107,7 @@ void mqtt_bridge_puback(int mid) {
     if (pending_mid && (pending_mid == -1 || pending_mid == mid)) ack_mid = mid;
     mqtt_platform_unlock();
 }
-static bool build(const radiator_record *d) {
+static bool build(const radiator_record *d, bool removal) {
     char identity[64], topic[128], uid[96], entity[96];
     snprintf(identity, sizeof(identity), "cleverbox_%s_%u", bridge, (unsigned)d->id);
     snprintf(topic, sizeof(topic), "cleverbox/v1/%s/radiators/%u/state", bridge, (unsigned)d->id);
@@ -120,7 +120,7 @@ static bool build(const radiator_record *d) {
     cJSON *origin = cJSON_AddObjectToObject(root, "origin");
     cJSON_AddStringToObject(origin, "name", "Cleverbox");
     cJSON_AddStringToObject(origin, "support_url", "https://github.com/hemphen/cleverbox");
-    cJSON_AddStringToObject(root, "state_topic", topic);
+    if (!removal) cJSON_AddStringToObject(root, "state_topic", topic);
     char avail[96]; snprintf(avail, sizeof(avail), "cleverbox/v1/%s/availability", bridge);
     cJSON *components = cJSON_AddObjectToObject(root, "components");
     static const char *keys[] = {"temperature_centi_c", "target_centi_c", "mode", "fresh", "age", "admission", "delivery"};
@@ -129,6 +129,10 @@ static bool build(const radiator_record *d) {
     for (size_t i = 0; i < 7; ++i) {
         cJSON *c = cJSON_AddObjectToObject(components, keys[i]);
         cJSON_AddStringToObject(c, "platform", i == 3 ? "binary_sensor" : "sensor");
+        // HA's documented per-component removal shape. Retain it so an HA
+        // reconnect cannot miss cleanup after the broker has acknowledged it.
+        // A zero-length retained write would erase that recovery information.
+        if (removal) continue;
         snprintf(uid, sizeof(uid), "%s_%s", identity, keys[i]);
         snprintf(entity, sizeof(entity), "%s.cleverbox_%s_%u_%s", i == 3 ? "binary_sensor" : "sensor", bridge, (unsigned)d->id, entity_keys[i]);
         cJSON_AddStringToObject(c, "unique_id", uid);
@@ -210,12 +214,13 @@ void mqtt_discovery_tick(mqtt_client_ops *client) {
         if (!ids[slot]) continue;
         radiator_record d; bool remove = !enabled || radio_device_status(ids[slot], &d) != ESP_OK;
         if (!remove && advertised[slot] && !strcmp(names[slot], d.name)) continue;
-        if (!remove && !build(&d)) { error = MQTT_ERR_DISCOVERY_PAYLOAD; return; }
+        if (remove) { memset(&d, 0, sizeof(d)); d.id = ids[slot]; }
+        if (!build(&d, remove)) { error = MQTT_ERR_DISCOVERY_PAYLOAD; return; }
         char topic[128]; snprintf(topic, sizeof(topic), "homeassistant/device/cleverbox_%s_%u/config", bridge, (unsigned)ids[slot]);
         pending_id = ids[slot]; pending_delete = remove;
         if (!remove) strcpy(pending_name, d.name);
         mqtt_platform_lock(); pending_mid = -1; ack_mid = 0; mqtt_platform_unlock();
-        int sent = client->publish_confirmed(topic, remove ? "" : payload);
+        int sent = client->publish_confirmed(topic, payload);
         mqtt_platform_lock(); pending_mid = sent > 0 ? sent : 0; mqtt_platform_unlock();
         publish_failed = sent <= 0;
         if (publish_failed) { due = now()+MQTT_RETRY_MS; return; }

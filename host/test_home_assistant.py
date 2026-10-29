@@ -333,7 +333,10 @@ http:
         # A fresh subscription still receives unrelated retained data after cleanup.
         messages.clear(); observer.subscribe(unrelated)
         pump(lambda:any(t==unrelated and p==other and retained for t,p,retained in messages))
-        print('HA stable discovery IDs/grouping, rename, offline removal/disable and durable cleanup: passed',flush=True)
+        ha.stop(); ha = HomeAssistant(config,port)
+        pump(lambda:not discovered())
+        assert app.http()['simulation_tx']==[]
+        print('HA stable discovery IDs/grouping, rename/addition, offline removal/disable and durable cleanup markers: passed',flush=True)
     finally:
         if ha: ha.stop()
         app.stop(); observer.disconnect()

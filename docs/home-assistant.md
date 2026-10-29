@@ -84,9 +84,14 @@ device's supplied name; an explicit HA user name continues to take precedence.
   snapshots. Retained configs also allow HA to start while the bridge is offline;
   entities remain unavailable without current state. Identical configs are not
   republished every heartbeat. None of these paths calls RF command admission.
-- Removal/disable sends a retained empty payload to exactly the journaled config
-  topic. A broker QoS-1 PUBACK is required before removing its journal entry.
-  Unrelated retained broker data is untouched. HA removes devices once no other
+- Removal/disable replaces the config at exactly the journaled topic with HA's
+  documented **component-removal** payload (each component contains only its
+  platform). These small retained cleanup markers intentionally remain on the
+  broker, containing no active entity definitions. A zero-byte retained deletion
+  can be missed while HA reconnects, leaving old unavailable entities in its
+  registry. Retained markers replay cleanup when HA resubscribes. A broker QoS-1 PUBACK is required before removing its device-side journal entry.
+  Unrelated retained broker data is untouched. Re-enable replaces the marker for
+  a still-configured ID with the active config; re-pairing allocates a new ID. HA removes devices once no other
   entities/references remain; optional package helpers are independent.
 - Offline removal/disable survives restart and retries when this broker becomes
   reachable. If MQTT itself is disabled, Wi-Fi is down or command SUBACK is
@@ -109,7 +114,10 @@ device's supplied name; an explicit HA user name continues to take precedence.
   readback; a changed generation forces same-setting retries through NVS. Failed
   writes halt discovery until an explicit retry/restart, reporting uncertainty via
   `discovery_error`; reboot may load the old or new record. The journal is never
-  erased before replacement. Already acknowledged cleanup may safely replay.
+  erased before replacement. Already acknowledged cleanup may safely replay. Broker persistence must retain
+  cleanup markers across broker restarts; deliberately wiping broker data may
+  require deleting orphaned HA registry entries manually. Removed IDs leave one
+  small broker-side marker each, while device memory/storage remain bounded.
 
 Error codes: `0x7411` discovery PUBACK timeout, `0x7412` serialized payload exceeds
 its bound, `0x7413` publication refused by the client boundary; other values are
@@ -269,13 +277,12 @@ also be started interactively with `python host/serve.py --real-mqtt`; configure
 the broker through the normal HTTP page, and use the simulated Wi-Fi events in
 test-clock mode for automated tests.
 
-The local Work sandbox can install HA and validate the package, but blocks
-`ifaddr.get_adapters()`/`getifaddrs` with `PermissionError: [Errno 1] Operation not
-permitted`. This prevents HA's network/HTTP/MQTT startup. Do not count that local
-attempt as actual HA interaction passing; the CI test runs unmodified HA on a
-normal Linux runner. Broker-only/fake-client suites are separate evidence.
-Physical Wi-Fi, ESP-MQTT and RF/heating/flash acceptance remain pending regardless
-of software results. See [MQTT board acceptance](mqtt.md#validation-and-board-acceptance).
+A configuration-check result alone is not runtime evidence. Restricted sandboxes
+may prevent dependency installation or HA network-interface discovery; report such
+attempts separately. CI runs unmodified HA on a normal Linux runner and uploads
+its actual service/broker logs. Broker-only and fake-client suites remain separate
+evidence. Physical Wi-Fi, ESP-MQTT and RF/heating/flash acceptance remain pending
+regardless of software results. See [MQTT board acceptance](mqtt.md#validation-and-board-acceptance).
 
 Official documentation consulted for this design: [MQTT setup](https://www.home-assistant.io/integrations/mqtt/),
 [packages](https://www.home-assistant.io/docs/configuration/packages/),

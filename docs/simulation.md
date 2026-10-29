@@ -215,7 +215,9 @@ contains no admission, decoding or delivery policy.
 
 `make test-home-assistant` validates the shipped HA package and actual helper/
 button service calls using pinned HA Core 2026.10.4 and a real Mosquitto process.
-It restarts actual HA/bridge processes and the broker, checks replay suppression,
+It validates discovery IDs/devices, rename/add/remove/disable and durable offline
+cleanup as well as the retained Apply package. It restarts actual HA/bridge
+processes and the broker, checks replay suppression,
 RF independence, two devices, prerequisites, failures and observation expiry.
 See [prerequisites, commands and exact environment limitations](home-assistant.md#reproduce-validation).
 This is separate from fake-client tests and `test-mqtt-broker`; none establish

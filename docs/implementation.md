@@ -3,9 +3,9 @@
 ## Product behaviour
 
 The ESP32-C6 runs the appliance; the CC1101 supplies bidirectional radiator RF.
-Local HTTP is the first setup/control interface. Home Assistant will record
-readings and run schedules/automations through MQTT, initially with explicit
-configuration and then discovery. Matter is an
+Local HTTP is the setup/control interface. Home Assistant records readings
+and runs schedules/automations through MQTT, with opt-in discovery for observations
+and explicit draft/Apply controls. Matter is an
 optional later interface. Cleverbox holds current device state and saved setup,
 not historical readings.
 

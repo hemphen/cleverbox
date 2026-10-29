@@ -75,7 +75,7 @@ def run(directory):
         app.http('/api/radiators',dict(action='remove',id=1),202); app.advance(100)
         restart(fail=1); publications(app); app.advance(6000)
         assert app.http('/api/mqtt')['discovery_pending']>=1
-        restart(); rows=configs(); assert any(r['payload']=='' and r['retain'] for r in rows)
+        restart(); rows=configs(); assert any(all(set(c)=={'platform'} for c in r['payload']['components'].values()) and r['retain'] for r in rows)
         app.advance(100); assert app.http('/api/mqtt')['discovery_pending']==0
         assert app.http()['simulation_tx']==[]
         app.http('/api/mqtt',dict(action='discovery_disable'),202); app.advance(100)
@@ -89,10 +89,10 @@ def run(directory):
         app=App(storage)
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip'); app.advance(100)
         app.sim('mqtt_confirmed_mode',mode=2); connect(app)
-        rows=configs(2000); assert rows and all(r['payload']=='' for r in rows)
+        rows=configs(2000); assert rows and all(all(set(c)=={'platform'} for c in r['payload']['components'].values()) for r in rows)
         assert app.http('/api/mqtt')['discovery_pending']>=2*capacity
         restart(); rows=configs(20000)
-        assert any(r['payload'] and r['topic'].endswith('_1/config') for r in rows)
+        assert any(r['topic'].endswith('_1/config') and 'unique_id' in r['payload']['components']['mode'] for r in rows)
         assert app.http()['simulation_tx']==[]
         app.stop(); journal.write_bytes(b'broken'); app=App(storage)
         assert app.http('/api/mqtt')['discovery_error']
@@ -110,7 +110,7 @@ def payload_limit(directory):
         app.http('/api/network',dict(action='configure',ssid='synthetic',password='synthetic'),202)
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip'); app.advance(100); connect(app)
         app.advance(6000)
-        assert app.http('/api/mqtt')['discovery_error'] and app.http('/api/mqtt')['connected']
+        assert app.http('/api/mqtt')['discovery_error']==0x7412 and app.http('/api/mqtt')['connected']
         assert not any(r['topic'].startswith('homeassistant/') for r in publications(app))
         assert app.http()['simulation_tx']==[]
     finally: app.stop()
