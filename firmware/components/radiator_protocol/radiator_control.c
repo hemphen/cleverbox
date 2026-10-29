@@ -41,7 +41,7 @@ bool rf_control_next(const rf_control *c, int64_t now_ms, rf_frame *out)
         rf_frame state = {0}, report = {0};
         state.size = sizeof(c->state); memcpy(state.bytes, c->state, state.size);
         report.size = c->report_size; memcpy(report.bytes, c->report_bytes, report.size);
-        unsigned clock = (c->clock_seconds + (unsigned)((now_ms - c->started_ms) / 1000)) % 86400;
+        unsigned clock = (unsigned)((c->clock_seconds + (uint64_t)((now_ms - c->started_ms) / 1000)) % 86400);
         return rf_live_state(out, &state, &report, c->controller,
                              c->radiator, c->mode, c->centi_c, clock);
     }

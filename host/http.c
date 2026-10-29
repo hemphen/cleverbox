@@ -4,14 +4,15 @@
 #include "http_api.h"
 #include "simulation.h"
 #include "network_setup.h"
+#include "device_time.h"
 #include <stdio.h>
 #include <string.h>
-static httpd_uri_t routes[9];
+static httpd_uri_t routes[11];
 static size_t route_count;
 static httpd_req_t request;
 esp_err_t httpd_register_uri_handler(httpd_handle_t server, const httpd_uri_t *route) {
     (void)server;
-    if (route_count == 9) return ESP_FAIL;
+    if (route_count == 11) return ESP_FAIL;
     routes[route_count++] = *route; return ESP_OK;
 }
 esp_err_t httpd_req_get_hdr_value_str(httpd_req_t *r, const char *name, char *out, size_t n) {
@@ -33,7 +34,7 @@ esp_err_t httpd_resp_sendstr(httpd_req_t *r, const char *s) {
 esp_err_t httpd_resp_send_err(httpd_req_t *r, int code, const char *s) {
     (void)code; r->status="400 Bad Request"; return httpd_resp_sendstr(r,s);
 }
-void host_init(void) { simulation_init(); network_setup_start(); http_api_register(NULL); }
+void host_init(void) { simulation_init(); device_time_start(); network_setup_start(); http_api_register(NULL); }
 int host_request(int method, const char *path, const char *body, const char *type) {
     free(request.response);
     request=(httpd_req_t){.uri=path,.content_len=strlen(body),.body=body,.content_type=type,

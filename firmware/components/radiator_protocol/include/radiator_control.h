@@ -16,7 +16,7 @@ typedef struct {
     rf_frame state;
     rf_mode mode;
     int centi_c;
-    unsigned clock_seconds; // Local time at request acceptance, supplied by the client.
+    unsigned clock_seconds; // Local time at request acceptance, snapshotted by admission.
 } rf_control_request;
 typedef struct {
     rf_control_phase phase;

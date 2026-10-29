@@ -106,6 +106,22 @@ static void test_fatal_rx_failure() {
     }
     assert(radio_control_start(1, &command) == ESP_ERR_INVALID_STATE);
 }
+static void test_admission_clock_and_queue_delay() {
+    reset(); radio_worker worker;
+    command.state = b_state; command.clock_seconds = 86399;
+    assert(radio_control_start_device(2, &command) == RADIO_ERR_TIME_UNAVAILABLE);
+    assert(!queue_count && !registry.records[1].command_reserved);
+    assert(radio_control_start(2, &command) == ESP_OK);
+    test_now_us += 7300000; worker.step();
+    assert(worker.controls[1].started_ms == 1000);
+    assert(worker.controls[1].deadline_ms == test_now_us / 1000 + RF_CONTROL_WAIT_MS);
+    test_now_us += 3200000; hear(worker, report_b(false)); worker.step();
+    assert(transmitted_size == 59 && transmitted_bytes[52] == 0 && transmitted_bytes[53] == 0 && transmitted_bytes[54] == 9);
+    assert(worker.controls[1].status.attempts == 1);
+    test_now_us += 5000000; hear(worker, report_b(false)); worker.step();
+    assert(transmitted_bytes[54] == 14 && worker.controls[1].status.attempts == 2);
+    command.clock_seconds = 43200;
+}
 int main() {
     command.mode = RF_COMFORT; command.centi_c = 2050; command.clock_seconds = 43200;
     reset(); radio_worker worker;
@@ -149,7 +165,9 @@ int main() {
     assert(radio_pair_cancel(id) == ESP_OK); worker.step(); assert(!exchange_id);
     queue_full = true; assert(radio_control_start(1, &command) == ESP_ERR_TIMEOUT);
     assert(!registry.records[0].command_reserved); queue_full = false;
-    test_queue_capacity(); test_fair_turns(); test_compaction(); test_fatal_rx_failure();
+    test_queue_capacity(); test_fair_turns(); test_compaction(); test_fatal_rx_failure(); test_admission_clock_and_queue_delay();
     printf("Memory: capacity=%u record=%zu registry=%zu worker=%zu request=%zu\n", (unsigned)CLEVERBOX_RADIATOR_CAPACITY, sizeof(radiator_record), sizeof(registry), sizeof(radio_worker), sizeof(radio_request));
     puts("Independent reservations, fair turns, compaction, fatal radio failure, handoff and queue capacity: passed");
 }
+
+extern "C" bool device_time_command_clock(unsigned *, int64_t *) { return false; }

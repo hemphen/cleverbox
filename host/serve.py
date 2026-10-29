@@ -25,6 +25,7 @@ def main():
     lib.host_response.restype = lib.host_response_type.restype = ctypes.c_char_p
     lib.simulation_scenario.argtypes = lib.simulation_inject.argtypes = [ctypes.c_char_p]
     lib.host_wifi_storage_fault.argtypes = [ctypes.c_int]
+    lib.host_time_sync.argtypes = [ctypes.c_int64]
     lib.host_network_event.argtypes = [ctypes.c_char_p]
     lib.simulation_advance.argtypes = [ctypes.c_int]
     lib.host_init()
@@ -97,6 +98,9 @@ def main():
                         raise ValueError()
                 elif action == 'scenario' and isinstance(data.get('name'), str):
                     if not lib.simulation_scenario(data['name'].encode()):
+                        raise ValueError()
+                elif args.test_clock and action == 'time_sync' and type(data.get('unix_seconds')) is int:
+                    if not lib.host_time_sync(data['unix_seconds']):
                         raise ValueError()
                 elif args.test_clock and action == 'wifi_storage_fault' and type(data.get('mode')) is int:
                     if not lib.host_wifi_storage_fault(data['mode']):

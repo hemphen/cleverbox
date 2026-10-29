@@ -39,6 +39,7 @@ test:
 	  -c firmware/components/radiator_protocol/radiator_control.c -o $(BUILD_DIR)/transport_control.o
 	$(CXX) $(CPPFLAGS) -std=c++17 -Wall -Wextra -Werror -pedantic -g \
 	  -I$(BUILD_DIR)/transport_stubs -Ifirmware/components/radio_transport/test/stubs \
+	  -Ifirmware/components/device_time/include \
 	  -Ifirmware/components/radio_transport/include -Ifirmware/components/device_store/include \
 	  -Ifirmware/components/radiator_protocol/include \
 	  firmware/components/radio_transport/test/test_admission.cpp \
@@ -54,14 +55,21 @@ test:
 	  firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_store.c \
 	  firmware/components/network_setup/test/test_network_store.c -o $(BUILD_DIR)/test_network_store
 	./$(BUILD_DIR)/test_network_store
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ihost/include -Ifirmware/components/device_time/include \
+	  firmware/components/device_time/device_time.c firmware/components/device_time/time_store.c \
+	  firmware/components/device_time/test/test_time.c -o $(BUILD_DIR)/test_time
+	./$(BUILD_DIR)/test_time
 	node firmware/main/test_ui.js
 
 # Host simulation needs cJSON development headers/library (e.g. libcjson-dev).
 HOST_CFLAGS = -std=c11 -Wall -Wextra -Werror -pedantic -g -fPIC -MMD -MP -DCLEVERBOX_HOST \
-  -Ifirmware/components/network_setup/include -Ihost/include -Ifirmware/main -Ifirmware/components/radio_transport \
+  -Ifirmware/components/device_time/include -Ifirmware/components/network_setup/include -Ihost/include -Ifirmware/main -Ifirmware/components/radio_transport \
   -Ifirmware/components/radio_transport/include -Ifirmware/components/device_store/include \
   -Ifirmware/components/radiator_protocol/include $(shell pkg-config --cflags libcjson)
-HOST_CSOURCES = firmware/components/radiator_protocol/radiator_protocol.c \
+HOST_CSOURCES = firmware/components/device_time/device_time.c \
+  firmware/components/device_time/time_store.c host/time.c \
+  firmware/components/radiator_protocol/radiator_protocol.c \
   firmware/components/radiator_protocol/radiator_pairing.c \
   firmware/components/radiator_protocol/radiator_control.c \
   firmware/components/device_store/device_store.c firmware/main/http_api.c host/http.c host/storage.c \
@@ -89,6 +97,7 @@ test-http: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_http.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_registry.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_network.py
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_time.py
 
 -include $(HOST_OBJECTS:.o=.d) $(BUILD_DIR)/host/simulation.d
 

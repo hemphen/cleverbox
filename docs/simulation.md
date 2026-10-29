@@ -187,3 +187,16 @@ credentials. With `--test-clock`, `network_event` at `/api/simulation` injects
 `started`, `disconnected` or `got_ip`; the last supplies reserved documentation
 address `192.0.2.10`. `make test-http` covers this flow, RF continuity and reset
 isolation. See [network validation and board checks](networking.md).
+
+## Device clock
+
+The simulator starts with no usable time, just like an unsynchronized board.
+Before normal command testing, explicitly set UTC in **Device time → Offline
+bench**. Save a POSIX timezone if desired (default UTC0). The host never uses the
+browser/host wall clock automatically and never sets the computer's clock.
+Existing tests can retain explicit per-command `clock_seconds` overrides.
+`make test-http` includes `host/test_time.py` for device-selected time, persistence,
+corrections, DST and monotonic command/network timers. With `--test-clock` only,
+`{"action":"time_sync","unix_seconds":1767268800}` injects a successful sync
+through `/api/simulation`. This does not test DNS, UDP or a real NTP server.
+See the full [time policy and hardware checklist](time.md).

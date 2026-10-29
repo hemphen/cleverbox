@@ -40,6 +40,10 @@ esp_err_t radio_state_save(uint32_t id, const rf_frame *imported);
 esp_err_t radio_state_clear(uint32_t id);
 esp_err_t radio_device_rename(uint32_t id, const char *name);
 esp_err_t radio_device_remove(uint32_t id);
+// Normal admission snapshots device local time. No usable time queues nothing.
+#define RADIO_ERR_TIME_UNAVAILABLE 0x7301
+esp_err_t radio_control_start_device(uint32_t id, const rf_control_request *request);
+// Explicit time-of-day override retained for compatibility and bench tests.
 esp_err_t radio_control_start(uint32_t id, const rf_control_request *request);
 #ifdef __cplusplus
 }

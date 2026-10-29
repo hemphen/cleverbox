@@ -93,7 +93,9 @@ requests use a bounded queue owned by a dedicated task; a short periodic wake
 handles deadlines without blocking HTTP handlers, the ESP event loop or RF worker.
 The station is reset between trials while AP stays enabled. A fresh `STA_START`
 is the boundary before association; old disconnect/IP events before it are ignored.
-The HTTP server has ten URI slots: root, seven existing routes, network GET and POST.
+The HTTP server has twelve URI slots: root, seven existing routes, network GET/POST
+and device-time GET/POST. Device time uses nonblocking SNTP on station connection;
+see [time setup and offline operation](time.md). No network/time event creates an RF command.
 
 ## HTTP and software validation
 
