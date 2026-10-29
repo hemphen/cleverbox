@@ -221,7 +221,7 @@ async function refreshMqtt(){
       (s.host?' · Broker: '+s.host+':'+s.port:'')+(s.pending?' · Saving…':'')+
       (s.config_error?' · Save/load error: '+s.config_error:'')+
       (s.client_error?' · Client error: '+s.client_error:'')+
-      (s.subscription_error?' · Command subscription: '+({29697:'rejected',29698:'acknowledgement timed out',29699:'request failed'}[s.subscription_error]??s.subscription_error)+'; retrying at a bounded pace.':'')+
+      (s.subscription_error?' · Command subscription: '+({29697:'rejected',29698:'acknowledgement timed out',29699:'request failed'}[s.subscription_error]??s.subscription_error)+(s.enabled?'; retrying at a bounded pace.':'; MQTT disabled.'):'')+
       (s.persistence_uncertain?' · Persistence uncertain: check after restart or retry save/forget.':'');
     for(const id of ['mqttSave','mqttEnable','mqttDisable','mqttForget']) field(id).disabled=!!s.pending;
     field('mqttEnable').disabled=!!s.pending||!s.configured||s.enabled;
