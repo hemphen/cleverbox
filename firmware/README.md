@@ -28,6 +28,16 @@ preamble/sync and CC1101 framing belong to the upcoming transport.
 
 ## HTTP
 
+The [registry API](../docs/registry.md#http-identities) lists/selects radiators,
+adds pairings, renames and removes local records. Supply numeric `id` on every
+state mutation and live command. Omission is accepted only for an unambiguous
+single-radiator installation. Browser selection is local; it never redirects
+another client's request. `GET /api/radio?id=1` returns selected status, while
+`GET /api/radiators` lists every record. Delivery is globally serialized: only
+one pairing or command exchange; other exchanges return 409, with no backlog.
+Removal does not unpair or reset the physical radiator.
+
+
 `GET /` serves the page. `POST /api/preview` accepts JSON (maximum 1023 bytes).
 Invalid requests return 400. A successful response contains
 `status: "preview"`, `transmitted: false` and `frame` as hexadecimal.
@@ -110,7 +120,7 @@ application, bootloader, partition table, flash arguments and resolved dependenc
 lock. After extracting, flash from its `build` directory with
 `python -m esptool --chip esp32c6 --port PORT write_flash @flash_args`.
 
-## Pair one radiator
+## Pair / add one radiator at a time
 
 Attach the antenna and complete the receive check first. Disconnect the existing
 Touch E3 for the inclusion test, and put just one radiator into `rF.bi` mode.
@@ -137,17 +147,18 @@ radio task, outside the HTTP handlers.
 
 - `{"action":"start","source":"F1010203","destination":"F1100001"}`
   (synthetic source; select your own controller identity).
-- `{"action":"cancel"}` stops the remaining steps. An already transmitted bind
+- `{"action":"cancel","id":1}` stops the remaining steps. An already transmitted bind
   cannot be undone by cancelling.
-- `{"action":"save"}` retries a failed NVS write after inclusion completed,
+- `{"action":"save","id":1}` retries a failed NVS write after inclusion completed,
   without transmitting any RF frames again.
 
-202 means the action was queued. Read `pairing` in `/api/radio` for its phase,
-error code, controller/radiator addresses and `saved` flag. 400 means invalid
-input; 409 means unavailable/busy/already saved or blocked storage. The single
-saved radiator cannot be overwritten by starting another attempt. Removal and
-multiple-radiator handling come later. Unknown/corrupt NVS records are reported
-and retained; they never silently start a new inclusion.
+202 means the action was queued; start returns the new prospective `id`. Read
+`inclusion` in `/api/radio` for phase, ID, error, duplicate rejection and saved
+flag. Inspect the corresponding record for addresses. 400 means invalid input;
+409 means unavailable/busy, full capacity or blocked storage. Another attempt
+adds a new record; duplicate addresses never overwrite the existing one. Unknown,
+corrupt or oversized storage is retained and reported. See [migration and
+capacity behavior](../docs/registry.md).
 
 A completed/saved inclusion handshake does not confirm an applied target or
 working thermostat control. Restart loads the saved addresses and starts RX only;
@@ -181,7 +192,7 @@ controller to transmit using the saved source address. Disconnect it before
 testing Cleverbox control to avoid competing controllers.
 
 Explicitly save learned state or import-and-save to keep a fallback across restart.
-The [storage policy](../docs/controller-state.md#explicit-one-radiator-storage)
+The [storage policy](../docs/controller-state.md#explicit-state-storage-in-the-radiator-registry)
 describes compatibility, validation and failure handling. If no learned or saved
 state exists, commands without an import fail with 409.
 The manual import under **Manual template import and preview** remains a fallback:
@@ -210,7 +221,7 @@ Touch E3 is not contacted during this exchange.
 `POST /api/command` takes JSON:
 
 ```text
-{"mode":0,"centi_c":2050,"clock_seconds":43200}
+{"id":1,"mode":0,"centi_c":2050,"clock_seconds":43200}
 ```
 
 Omit `state` to select learned RAM state, then saved state; optionally add
@@ -246,9 +257,9 @@ Commands are not persisted, scheduled or resumed after restart.
 
 | Request | Effect |
 | --- | --- |
-| `{"action":"save"}` | Snapshot and save latest learned state. |
-| `{"action":"import","state":"<hex>"}` | Validate and save a same-radiator frame; preserve original source. |
-| `{"action":"clear"}` | Clear saved and learned state after commit; retain pairing and active command snapshot. |
+| `{"action":"save","id":1}` | Snapshot and save latest learned state. |
+| `{"action":"import","id":1,"state":"<hex>"}` | Validate and save a same-radiator frame; preserve original source. |
+| `{"action":"clear","id":1}` | Clear saved and learned state after commit; retain pairing and active command snapshot. |
 
 These actions do not request RF transmission. 202 means queued, not committed;
 400 means invalid action/frame and 409 means no pair/state or unavailable/busy.

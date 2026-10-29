@@ -7,6 +7,7 @@ extern "C" {
 void simulation_status(cJSON *);
 void simulation_init(void);
 void simulation_advance(int milliseconds);
+int simulation_device(int index);
 int simulation_scenario(const char *);
 int simulation_inject(const char *);
 void simulation_fixture(void);

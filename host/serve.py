@@ -20,7 +20,7 @@ def main():
     args = parser.parse_args()
     args.storage.parent.mkdir(parents=True, exist_ok=True)
     os.environ['CLEVERBOX_SIM_STORAGE'] = str(args.storage.resolve())
-    lib = ctypes.CDLL(str(ROOT / 'build/host/libcleverbox.so'))
+    lib = ctypes.CDLL(os.environ.get('CLEVERBOX_SIM_LIBRARY', str(ROOT / 'build/host/libcleverbox.so')))
     lib.host_request.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
     lib.host_response.restype = lib.host_response_type.restype = ctypes.c_char_p
     lib.simulation_scenario.argtypes = lib.simulation_inject.argtypes = [ctypes.c_char_p]
@@ -90,6 +90,9 @@ def main():
                 action = data.get('action')
                 if action == 'fixture':
                     lib.simulation_fixture()
+                elif action == 'device' and type(data.get('index')) is int:
+                    if not lib.simulation_device(data['index']):
+                        raise ValueError()
                 elif action == 'scenario' and isinstance(data.get('name'), str):
                     if not lib.simulation_scenario(data['name'].encode()):
                         raise ValueError()

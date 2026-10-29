@@ -56,53 +56,30 @@ from `DF`. Learning/import remains necessary for that concrete reason. Reusing
 opaque values while they may drift is itself an unverified prototype assumption;
 the UI exposes template age without inventing a protocol expiry interval.
 
-## Explicit one-radiator storage
+## Explicit state storage in the radiator registry
 
 Use **Save learned state / retry** after learning, or **Import and save / retry**
-with a complete same-radiator frame. Wait for **Latest explicit save: succeeded**
-before restarting. The save button snapshots learned RAM state when admitted;
-an imported save validates both CRCs and all tags/lengths in the supported 59-byte
-layout, plus the radiator destination. It preserves the entire original frame.
-As with existing per-command imports, an old controller source is allowed; only
-live transmission substitutes the paired controller source and recalculates CRCs.
-Passive learning still requires both paired addresses to match.
+with a complete same-radiator frame. Each operation carries the radiator's stable
+identity. Wait for that record's **Latest explicit save: succeeded** before
+restarting. Saved fallback changes only after commit. Passive learning never
+writes flash. Import-and-save preserves the exact original frame and source;
+only live transmission substitutes the configured controller address.
 
-The `cleverbox/pairing` version-1 nine-byte record is unchanged. The optional
-`cleverbox/control_state` record is version byte `01`, paired controller (4), paired
-radiator (4), and exact frame (59): 68 bytes, independent of C padding. Both saved
-identities must match the loaded pair; CRC/layout/destination validation runs
-again on boot. An identity-only nine-byte record is an explicit clear tombstone.
-There is no registry, automatic migration write or automatic reset. Missing state
-is normal for existing pairing-only installations. Unknown/corrupt state is shown
-as a load error without changing pairing or overwriting the bad record; learning
-and per-command imports remain available. Unknown/corrupt pairing blocks inclusion.
-An explicit save/import/clear may replace a readable state record; unreadable or
-oversized records block writes rather than risking their contents.
+**Clear saved and learned state** commits the record without saved state, then
+drops its RAM learned state. It retains pairing and an admitted command's frame
+snapshot. Failure retains the old saved and learned state. New RF traffic can
+learn again. A per-command import still overrides RAM learning, then saved
+fallback; an invalid explicit import never falls back silently.
 
-Storage work uses the existing radio worker queue. RAM's saved fallback changes
-only after a successful write and commit. Write failures leave the old fallback;
-commit failures trigger restoration of the previous bytes (or an empty tombstone
-if previously absent), because NVS may write before commit. Failure is reported,
-and the same save/import can be retried without pairing or RF. If storage also
-fails during restoration, an invalid-state error is returned: the old RAM fallback
-remains usable, but on-disk recovery cannot be guaranteed under continuing storage
-failure. Physical flash/power-loss durability still requires board testing.
-
-**Clear saved and learned state** commits a tombstone, then drops learned RAM state
-and saved fallback while keeping pairing. A failed clear keeps both available.
-An already admitted command retains its snapshot; later reception can learn again.
-The browser import text is independent and remains a per-command override until
-cleared. Successful import-and-save updates saved fallback, not learned RAM, so
-newer learned RAM still takes precedence according to the policy above.
-
-The status API distinguishes `missing`, `learned` and `saved` configuration, save/
-clear outcomes and storage errors. Save outcomes describe this boot's explicit
-attempts and reset to `not_attempted` on restart; they are not a saved audit log.
-Only learned state has monotonic capture age. Saved capture age is unknown, and
-loading it creates no radiator observation. Boot loads configuration and starts RX
-only: no inclusion, polling, settings transmission or pending-command replay.
-Saving captured `97`/`5B` avoids repeated capture; it neither proves indefinite
-validity nor enables capture-free installation. No synthetic defaults are added.
+Names, identities, pairings and saved state now live in one bounded versioned
+registry. Pairing-only and pairing-plus-state installations migrate on boot,
+without erasing the old usable keys. A present empty registry prevents removed
+records from returning. See [registry storage, failure handling and capacity](registry.md).
+Configuration loads create no observation or transmission. Unknown saved capture
+age is not reported as a fresh capture. Save/clear outcomes reset each boot.
+Delivery remains globally serialized; observations and command results are owned
+per radiator. Saving captured `97`/`5B` avoids repeated capture; it does not prove
+indefinite validity or enable capture-free installation.
 
 ## Software and physical validation
 

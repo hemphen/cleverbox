@@ -6,7 +6,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libcjson-dev pkg-config
-      - run: make test test-http
+      - run: make test test-http test-capacity
   firmware:
     runs-on: ubuntu-latest
     container: espressif/idf:v5.5.1

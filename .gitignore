@@ -17,3 +17,5 @@ nvs*.bin
 
 # Host protocol tests
 /build/
+
+__pycache__/

@@ -5,7 +5,7 @@
 #include "esp_err.h"
 typedef struct {
     size_t content_len, consumed;
-    const char *body, *content_type;
+    const char *body, *content_type, *uri;
     char *response;
     const char *status, *response_type;
 } httpd_req_t;
@@ -22,3 +22,6 @@ esp_err_t httpd_resp_set_type(httpd_req_t *, const char *);
 esp_err_t httpd_resp_set_hdr(httpd_req_t *, const char *, const char *);
 esp_err_t httpd_resp_sendstr(httpd_req_t *, const char *);
 esp_err_t httpd_register_uri_handler(httpd_handle_t, const httpd_uri_t *);
+
+size_t httpd_req_get_url_query_len(httpd_req_t *r);
+esp_err_t httpd_req_get_url_query_str(httpd_req_t *r, char *out, size_t n);

@@ -15,8 +15,10 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685
 <p id="trafficNotice">Pairing and the live command button transmit RF frames. Preview buttons prepare frames only.</p>
 <section id="simulationPanel" hidden>
 <h2>SIMULATION · no physical radio</h2>
-<p>One invented radiator: F1040506. The fixture below stands in for an original controller;
+<p>Two invented radiators: F1040506 and F1040507. The fixture below stands in for an original controller;
 this does not establish capture-free setup. No heating or RF compatibility is tested.</p>
+<label>Inclusion / fixture device <select id="simulationDevice"><option value="0">F1040506</option><option value="1">F1040507</option></select></label>
+<button id="simulationChoose">Choose simulated device</button>
 <label>Responses <select id="simulationScenario"><option value="normal">Normal</option><option value="delayed">Delayed (2.5 seconds)</option><option value="silence">Silence</option><option value="ack_only">ACK only after state TX</option></select></label>
 <button id="simulationApply">Apply response scenario</button>
 <button id="simulationFixture">Inject synthetic controller-state fixture</button>
@@ -25,16 +27,22 @@ this does not establish capture-free setup. No heating or RF compatibility is te
 <section>
 <h2>Radio receiver</h2>
 <p id="radioStatus" role="status">Checking radio…</p>
-<pre id="radioReport">No radiator report received.</pre>
-<details><summary>Receive diagnostics</summary><pre id="radioDiagnostics"></pre></details>
+<details><summary>Global receive diagnostics (all addresses)</summary><pre id="radioReport">No radiator report received.</pre><pre id="radioDiagnostics"></pre></details>
 </section>
 <section>
-<h2>Pair a radiator</h2>
+<h2>Radiators</h2>
+<p>Delivery is globally serialized: one pairing or command exchange at a time.</p>
+<label>Selected radiator <select id="radiatorSelect"></select></label>
+<label>Name <input id="radiatorName" maxlength="32"></label>
+<button id="renameRadiator">Save name</button><button id="removeRadiator">Remove local record</button>
+<small>Removal deletes this bridge's configuration only. It does not reset or unpair the physical radiator.</small>
+<p id="registryStatus" role="status"></p><p id="registryAction" role="status"></p>
+<h2>Pair / add a radiator</h2>
 <p>Put one radiator in <code>rF.bi</code> mode. Pairing can reset its settings.</p>
 <label>Controller address <input id="source" maxlength="8" placeholder="8 hexadecimal digits" autocomplete="off"></label>
 <label>Discovery destination <input id="destination" maxlength="8" placeholder="8 hexadecimal digits" autocomplete="off"></label>
 <small>Enter a controller address and discovery destination in the same F1 or D0 family.
-The radiator supplies its actual address in the reply. One saved radiator is supported.</small>
+The radiator supplies its actual address in the reply. Capacity is shown below; pairing adds a new stable identity.</small>
 <button id="pairStart" data-pair-action="start">Start pairing</button>
 <button id="pairCancel" data-pair-action="cancel" disabled>Cancel attempt</button>
 <button id="pairSave" data-pair-action="save" hidden>Retry save</button>
@@ -73,13 +81,41 @@ The radiator supplies its actual address in the reply. One saved radiator is sup
 <section><h2>Result</h2><pre id="result" role="status" aria-live="polite">No command prepared.</pre></section>
 <script>
 const field=id=>document.getElementById(id);
-let simulationConfigured=false;
+let simulationConfigured=false, selectedId=0, pairingId=0, selectionEpoch=0, refreshTimer;
+function resetSelection(id){
+  selectedId=id; selectionEpoch++;
+  field('state').value=''; field('radiatorName').value=''; field('pairedReport').textContent='Waiting for selected radiator status.';
+  field('templateStatus').textContent='Checking selected radiator…';
+  for(const id of ['sendTarget','saveState','importState','clearState']) field(id).disabled=true;
+  for(const id of ['commandAction','stateAction','commandStatus','stateStorageStatus']) field(id).textContent='';
+}
+field('radiatorSelect').addEventListener('change',()=>{resetSelection(Number(field('radiatorSelect').value)); refreshRadio();});
 const modes={0:'Comfort',1:'Off',2:'Frost',3:'Eco',4:'Boost',8:'Program Comfort',11:'Program Eco'};
 async function refreshRadio(){
+  clearTimeout(refreshTimer);
   try {
-    const response=await fetch('/api/radio',{cache:'no-store'});
+    const epoch=selectionEpoch;
+    const response=await fetch('/api/radio'+(selectedId?'?id='+selectedId:''),{cache:'no-store'});
+    if(epoch!==selectionEpoch) return;
+    if(response.status===404 && selectedId){resetSelection(0);refreshRadio();return;}
     if(!response.ok) throw new Error('Radio status unavailable');
     const data=await response.json();
+    if(epoch!==selectionEpoch) return;
+    const devices=data.radiators??[];
+    if(devices.length){
+      if(!devices.some(d=>d.id===selectedId)) resetSelection(devices[0].id);
+      field('radiatorSelect').replaceChildren(...devices.map(d=>{const o=document.createElement('option');o.value=String(d.id);o.textContent=d.name+' · '+d.pairing.radiator;return o;}));
+      field('radiatorSelect').value=String(selectedId);
+      Object.assign(data,devices.find(d=>d.id===selectedId));
+    }else if(selectedId) resetSelection(0);
+    if(!devices.length) field('radiatorSelect').replaceChildren();
+    field('renameRadiator').disabled=field('removeRadiator').disabled=!selectedId;
+    field('registryStatus').textContent=devices.length+' / '+data.capacity+' radiators · '
+      +(data.exchange_id?'Exchange active for identity '+data.exchange_id:'Delivery idle')
+      +(data.registry_error?' · Registry blocked: '+data.registry_problem+' ('+data.registry_error+')':'')
+      +(data.mutation_pending?' · Saving local configuration…':'')
+      +(data.mutation_error?' · Local configuration save failed: '+data.mutation_error:'');
+    pairingId=data.inclusion?.id??pairingId;
     field('radioStatus').textContent=data.ready
       ? 'Listening · '+data.valid_frames+' valid frames'
       : 'Radio unavailable · error '+data.error;
@@ -91,13 +127,15 @@ async function refreshRadio(){
         field('simulationScenario').value=data.scenario; simulationConfigured=true;
       }
     }
+    field('radiatorName').placeholder=data.name??'New name';
     const pair=data.pairing;
+    const inclusion=data.inclusion??pair;
     if(pair){
-      const active=['offer','waiting_reply','bind','waiting_ack'].includes(pair.phase);
-      field('pairStart').disabled=!data.ready||active||pair.phase==='complete';
+      const active=['offer','waiting_reply','bind','waiting_ack'].includes(inclusion.phase);
+      field('pairStart').disabled=!data.ready||!!data.exchange_id||devices.length>=data.capacity||!!data.registry_error;
       field('pairCancel').disabled=!active;
-      field('pairSave').hidden=pair.phase!=='complete'||pair.saved;
-      field('pairStatus').textContent=pair.saved
+      field('pairSave').hidden=inclusion.phase!=='complete'||inclusion.saved;
+      field('pairStatus').textContent=inclusion.duplicate ? 'Duplicate radiator: local record already exists.' : inclusion.error ? 'Inclusion / save error '+inclusion.error+' · '+inclusion.phase : pair.saved
         ? 'Saved pairing: '+pair.controller+' → '+pair.radiator
         : pair.phase==='complete'
           ? 'Inclusion acknowledged, but saving failed. Retry save. Error '+pair.error
@@ -118,7 +156,7 @@ async function refreshRadio(){
         +(command.state_load_error?' · Saved state could not be loaded: '+command.state_load_error:'')
         +(command.state_store_error?' · Storage operation failed: '+command.state_store_error+'; previous usable state retained. Retry explicitly.':'');
       const active=['poll','waiting_report','sending','waiting_readback'].includes(command.phase);
-      field('sendTarget').disabled=!data.ready||!pair?.saved||active;
+      field('sendTarget').disabled=!data.ready||!selectedId||!pair?.saved||active||!!data.exchange_id;
       field('commandStatus').textContent=command.phase==='idle' ? 'No live command requested.'
         : 'Command: '+command.phase+' · state transmissions: '+command.attempts
           +'\nRequested: '+command.requested_target_c+' °C · '+(modes[command.requested_mode]??command.requested_mode)
@@ -141,7 +179,7 @@ async function refreshRadio(){
       : 'No radiator report received.';
     field('radioDiagnostics').textContent=JSON.stringify(data,null,2);
   } catch(error){field('radioStatus').textContent=error.message;field('sendTarget').disabled=true;field('pairedReport').textContent='Status unavailable; the last observation cannot be refreshed.';}
-  setTimeout(refreshRadio,2000);
+  clearTimeout(refreshTimer); refreshTimer=setTimeout(refreshRadio,2000);
 }
 refreshRadio();
 async function simulationAction(body){
@@ -153,10 +191,23 @@ async function simulationAction(body){
       : 'Response scenario applied. Queued simulated responses cleared.';
   } catch(error){field('simulationAction').textContent=error.message;}
 }
+field('simulationChoose').addEventListener('click',()=>simulationAction({action:'device',index:Number(field('simulationDevice').value)}));
 field('simulationFixture').addEventListener('click',()=>simulationAction({action:'fixture'}));
 field('simulationApply').addEventListener('click',()=>simulationAction({action:'scenario',name:field('simulationScenario').value}));
+async function registryAction(action){
+  const body={action,id:selectedId};
+  if(action==='rename') body.name=field('radiatorName').value.trim();
+  try{
+    const response=await fetch('/api/radiators',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok) throw new Error(await response.text());
+    field('registryAction').textContent='Local configuration action queued; check save status.';
+    if(action==='remove') resetSelection(0);
+  }catch(error){field('registryAction').textContent=error.message;}
+}
+field('renameRadiator').addEventListener('click',()=>registryAction('rename'));
+field('removeRadiator').addEventListener('click',()=>registryAction('remove'));
 async function controllerStateAction(action){
-  const body={action};
+  const body={action,id:selectedId};
   if(action==='import') body.state=field('state').value.trim();
   try {
     const response=await fetch('/api/controller-state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -170,7 +221,7 @@ field('clearState').addEventListener('click',()=>controllerStateAction('clear'))
 field('sendTarget').addEventListener('click',async()=>{
   const button=field('sendTarget'); button.disabled=true;
   const now=new Date();
-  const body={mode:Number(field('mode').value),
+  const body={id:selectedId,mode:Number(field('mode').value),
     centi_c:Math.round(Number(field('temperature').value)*100),
     clock_seconds:now.getHours()*3600+now.getMinutes()*60+now.getSeconds()};
   const state=field('state').value.trim();
@@ -184,6 +235,7 @@ field('sendTarget').addEventListener('click',async()=>{
 document.querySelectorAll('button[data-pair-action]').forEach(button=>button.addEventListener('click',async()=>{
   const action=button.dataset.pairAction;
   const body={action};
+  if(action!=='start') body.id=pairingId;
   if(action==='start'){
     body.source=field('source').value.trim();
     body.destination=field('destination').value.trim();
@@ -192,7 +244,8 @@ document.querySelectorAll('button[data-pair-action]').forEach(button=>button.add
   try {
     const response=await fetch('/api/pairing',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!response.ok) throw new Error(await response.text());
-    field('pairAction').textContent='Action accepted. Status updates shortly.';
+    const result=await response.json(); pairingId=result.id;
+    field('pairAction').textContent='Action accepted for identity '+pairingId+'. Status updates shortly.';
   } catch(error){field('pairAction').textContent=error.message;}
   finally {button.disabled=false;}
 }));
