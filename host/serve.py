@@ -16,6 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=8080)
     parser.add_argument('--storage', type=Path, default=ROOT / 'local/simulation-pairing.bin')
+    parser.add_argument('--real-mqtt', action='store_true', help='Use real TCP MQTT I/O (paho-mqtt==2.1.0)')
     parser.add_argument('--test-clock', action='store_true', help='Freeze clock; enable test advance/inject API')
     args = parser.parse_args()
     args.storage.parent.mkdir(parents=True, exist_ok=True)
@@ -35,10 +36,16 @@ def main():
     lib.host_mqtt_pop.restype = ctypes.c_char_p
     lib.mqtt_bridge_input.argtypes = [ctypes.c_char_p,ctypes.c_size_t,ctypes.c_char_p,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_bool]
     lib.host_init()
+    adapter = None
+    if args.real_mqtt:
+        from mqtt_client import BrokerClient
+        adapter = BrokerClient(lib)
     last = time.monotonic()
 
     def tick():
         nonlocal last
+        if adapter:
+            adapter.poll()
         if not args.test_clock:
             now = time.monotonic()
             ms = int((now - last) * 1000)
@@ -162,6 +169,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        if adapter:
+            adapter.stop(b'cleverbox/v1/020000000001/availability')
         server.server_close()
 
 

@@ -109,6 +109,7 @@ test-http: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_network.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_time.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_mqtt.py
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_mqtt_tokens.py
 
 -include $(HOST_OBJECTS:.o=.d) $(BUILD_DIR)/host/simulation.d
 
@@ -121,3 +122,8 @@ test-capacity:
 .PHONY: test-mqtt-broker
 test-mqtt-broker: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_mqtt_broker.py
+
+# Optional actual Home Assistant + TCP broker integration (pinned Python deps).
+.PHONY: test-home-assistant
+test-home-assistant: host
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_home_assistant.py
