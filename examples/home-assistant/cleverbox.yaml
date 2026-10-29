@@ -13,6 +13,8 @@ mqtt:
       state_topic: cleverbox/v1/020000000001/radiators/1/state
       value_template: "{{ value_json.session }}"
       json_attributes_topic: cleverbox/v1/020000000001/radiators/1/state
+      # "available" is a reserved HA entity attribute; give the report flag a name.
+      json_attributes_template: "{{ dict(value_json, report_available=value_json.available) | to_json }}"
       expire_after: 15
       force_update: true
     - name: Cleverbox 2 snapshot
@@ -20,6 +22,8 @@ mqtt:
       state_topic: cleverbox/v1/020000000001/radiators/2/state
       value_template: "{{ value_json.session }}"
       json_attributes_topic: cleverbox/v1/020000000001/radiators/2/state
+      # "available" is a reserved HA entity attribute; give the report flag a name.
+      json_attributes_template: "{{ dict(value_json, report_available=value_json.available) | to_json }}"
       expire_after: 15
       force_update: true
   binary_sensor:
@@ -138,7 +142,7 @@ template:
           {{ is_state('binary_sensor.cleverbox_ready', 'on') and has_value(entity)
               and has_value('sensor.cleverbox_session')
               and states(entity) == states('sensor.cleverbox_session')
-              and state_attr(entity, 'available') == true
+              and state_attr(entity, 'report_available') == true
               and state_attr(entity, 'stale') == false
               and (state_attr(entity, 'age_ms') | float(300000))
                   + (as_timestamp(now()) - as_timestamp(snap.last_updated)) * 1000 < 300000 }}
@@ -150,7 +154,7 @@ template:
           {{ is_state('binary_sensor.cleverbox_ready', 'on') and has_value(entity)
               and has_value('sensor.cleverbox_session')
               and states(entity) == states('sensor.cleverbox_session')
-              and state_attr(entity, 'available') == true
+              and state_attr(entity, 'report_available') == true
               and state_attr(entity, 'stale') == false
               and (state_attr(entity, 'age_ms') | float(300000))
                   + (as_timestamp(now()) - as_timestamp(snap.last_updated)) * 1000 < 300000 }}
