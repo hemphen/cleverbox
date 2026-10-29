@@ -50,11 +50,11 @@ input_number:
 input_select:
   cleverbox_1_draft_mode:
     name: Radiator 1 draft mode
-    options: [Comfort, Off, Frost, Eco]
+    options: [Comfort, 'Off', Frost, Eco]
     initial: Comfort
   cleverbox_2_draft_mode:
     name: Radiator 2 draft mode
-    options: [Comfort, Off, Frost, Eco]
+    options: [Comfort, 'Off', Frost, Eco]
     initial: Comfort
 
 script:
@@ -73,7 +73,7 @@ script:
       - variables:
           rid: "{{ radiator_id | string }}"
       - condition: template
-        value_template: "{{ rid in ['1', '2'] }}"
+        value_template: "{{ (rid | string) in ['1', '2'] }}"
       - variables:
           snapshot: "{{ 'sensor.cleverbox_' ~ rid ~ '_snapshot' }}"
           mode_name: "{{ states('input_select.cleverbox_' ~ rid ~ '_draft_mode') }}"

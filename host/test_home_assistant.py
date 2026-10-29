@@ -169,7 +169,7 @@ http:
         before = len([t for t,p,r in messages if t.endswith('/set')])
         ha.call('input_select','select_option',entity_id='input_select.cleverbox_1_draft_mode',option='Eco')
         pump(); assert len([t for t,p,r in messages if t.endswith('/set')]) == before
-        apply(1); pump(lambda:phase(1,'matched') and app.http()['observed']['mode']==3)
+        apply(1); pump(lambda:phase(1,'matched') and app.http('/api/radio?id=1')['observed']['mode']==3)
         snapshots(); pump(lambda:state_is('sensor.cleverbox_1_observed_mode','Eco'))
         assert state_is('sensor.cleverbox_1_observed_target','22.0')
         print('HA controls, full commands, prerequisites and observations: passed', flush=True)
@@ -177,7 +177,7 @@ http:
         app.sim('scenario',name='silence_a'); snapshots()
         apply(1,23,'Comfort'); apply(1,24,'Eco')
         pump(lambda:admitted(1,'invalid_command_token'))
-        assert app.http()['command']['requested_target_c']==23
+        assert app.http('/api/radio?id=1')['command']['requested_target_c']==23
         snapshots(); apply(1)
         pump(lambda:admitted(1,'busy_or_unavailable_or_missing_template'))
         apply(2,16,'Eco'); pump(lambda:phase(2,'matched'))
@@ -185,7 +185,7 @@ http:
         snapshots(); pump(lambda:state_is('sensor.cleverbox_2_observed_target','16.0'))
         # Delivery timeout is a separate historical entity, not an observation.
         app.advance(151000); pump(lambda:state_is('sensor.cleverbox_1_last_delivery','timeout'))
-        assert app.http()['command']['attempts']==0
+        assert app.http('/api/radio?id=1')['command']['attempts']==0
         app.advance(305000); snapshots()
         pump(lambda:state_is('sensor.cleverbox_1_temperature','unavailable'))
         assert state_is('sensor.cleverbox_2_temperature','unavailable')
@@ -221,7 +221,7 @@ http:
         pump(lambda:state_is('sensor.cleverbox_2_last_delivery','matched'))
         result = ha.states()['sensor.cleverbox_2_last_delivery']['attributes']['result']
         assert result['session']==original_session
-        apply(1,20,'Off'); pump(lambda:phase(1,'matched') and app.http()['observed']['mode']==1)
+        apply(1,20,'Off'); pump(lambda:phase(1,'matched') and app.http('/api/radio?id=1')['observed']['mode']==1)
         # Restart actual bridge process with a pending command. Boot cannot resume it.
         snapshots(); app.sim('scenario',name='silence'); apply(2,19,'Eco')
         pump(lambda:app.http()['radiators'][1]['command']['pending'])
