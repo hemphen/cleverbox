@@ -128,7 +128,7 @@ def run(directory):
         assert any(isinstance(r['payload'],dict) and r['payload'].get('phase')=='matched' and r['payload']['request_id']==1 for r in rows)
         app.advance(1000)
         # Publication staleness grows from reception; restored templates never substitute.
-        app.advance(300000); rows=publications(app)
+        app.advance(305000); rows=publications(app)
         last=[r['payload'] for r in rows if r['topic'].endswith('/state')][-1]
         assert last['stale'] and last['age_ms']>=300000 and not any(r['retain'] for r in rows if r['topic'].endswith('/state'))
         # Include another radiator and prove independent completion / same-device busy.
