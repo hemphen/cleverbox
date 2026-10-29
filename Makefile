@@ -60,6 +60,11 @@ test:
 	  firmware/components/device_time/device_time.c firmware/components/device_time/time_store.c \
 	  firmware/components/device_time/test/test_time.c -o $(BUILD_DIR)/test_time
 	./$(BUILD_DIR)/test_time
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ihost/include -Ifirmware/components/device_time/include \
+	  firmware/components/device_time/device_time.c firmware/components/device_time/time_store.c \
+	  firmware/components/device_time/test/test_time_store.c -o $(BUILD_DIR)/test_time_store
+	./$(BUILD_DIR)/test_time_store
 	node firmware/main/test_ui.js
 
 # Host simulation needs cJSON development headers/library (e.g. libcjson-dev).

@@ -25,7 +25,12 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *in, size_t n
     memcpy(saved, in, n); saved_size = n;
     return storage_error; // Failure after mutation: no false rollback promise.
 }
-esp_err_t nvs_commit(nvs_handle_t h) { (void)h; return storage_error; }
+esp_err_t nvs_erase_key(nvs_handle_t h, const char *key) {
+    (void)h; assert(!strcmp(key, "timezone"));
+    if (!saved_size) return ESP_ERR_NVS_NOT_FOUND;
+    saved_size = 0; return ESP_OK;
+}
+esp_err_t nvs_commit(nvs_handle_t h) { (void)h; return ESP_OK; }
 void nvs_close(nvs_handle_t h) { (void)h; }
 static device_time_status status(void) { device_time_status s; device_time_get(&s); return s; }
 int main(void) {

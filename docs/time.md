@@ -76,8 +76,12 @@ negative/extended transition hours, whitespace and implicit libc DST rules are
 not accepted. These limits keep behavior shared by ESP-IDF newlib and host libc.
 
 Only the versioned `cleverbox/timezone` NVS key is written, on explicit saves.
-No UTC timestamp, manual clock, sync flag or age is stored. Save success includes
-fresh-handle readback. On error the active RAM rule is retained, with explicit
+No UTC timestamp, manual clock, sync flag or age is stored. Each explicit save
+erases and commits the timezone key before rewriting, committing and verifying
+through a fresh handle. This forces a new write even when retrying the cached
+old rule after a failed write whose effect may be deferred until restart.
+An ordinary same-value write/readback is not treated as resolving uncertainty.
+On error the active RAM rule is retained, with explicit
 persistence uncertainty: storage may contain the old/new/missing/invalid rule
 across restart, and there is no rollback or power-loss guarantee. Retry save and
 check status. At boot, the actual saved rule is validated; malformed/unreadable
@@ -147,7 +151,9 @@ unset boot; manual/source transitions; first sync; offline continuation;
 reconnect/resync; forward/backward corrections; exact command and network timer
 boundaries; queue residence; report-driven retries and midnight wrap; spring/fall
 DST conversion; invalid HTTP/POSIX input; timezone persistence, corrupt storage,
-write errors and restart without automatic RF. The page script is executed with
+write errors, deferred-write retries surviving NVS reinitialization, failed
+erase/commit/verification retaining uncertainty, and restart without automatic RF.
+The page script is executed with
 a DOM/fetch boundary. The host simulator never actually contacts an NTP server
 or sets host system time: interactive use starts unset and needs a manual action.
 With `--test-clock` only, `time_sync` plus integer `unix_seconds` in
