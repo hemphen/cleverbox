@@ -400,9 +400,14 @@ static esp_err_t network_action(httpd_req_t *r) {
         used += (size_t)n;
     }
     body[used] = 0;
-    // cJSON strings are NUL terminated. Reject escaped/embedded NUL rather than
-    // silently accepting a truncated SSID or password (also rejects literal \u0000).
-    bool valid = !memchr(body, 0, used) && !strstr(body, "\\u0000");
+    // cJSON strings are NUL terminated. Reject actual escaped/embedded NUL,
+    // while allowing literal backslash text in otherwise valid credentials.
+    bool valid = !memchr(body, 0, used);
+    for (size_t i = 0; valid && i + 1 < used; ++i) {
+        if (body[i] != '\\') continue;
+        if (i + 5 < used && !strncmp(body + i + 1, "u0000", 5)) valid = false;
+        ++i; // Skip the escaped character, including an escaped backslash.
+    }
     cJSON *j = valid ? cJSON_ParseWithOpts(body, NULL, true) : NULL;
     memset(body, 0, sizeof(body));
     const char *action = string(j, "action");

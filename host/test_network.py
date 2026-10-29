@@ -44,7 +44,7 @@ def run(directory):
     storage = Path(directory) / 'setup'
     wifi = Path(str(storage) + '.wifi')
     # Ephemeral generated test inputs; no saved household/credential fixtures.
-    ssid, password = secrets.token_hex(8), secrets.token_hex(12)
+    ssid, password = secrets.token_hex(8), secrets.token_hex(12) + chr(92) + 'u0000'
     other_ssid, other_password = secrets.token_hex(8), secrets.token_hex(12)
     app = App(storage)
     try:
