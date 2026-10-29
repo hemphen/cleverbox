@@ -114,6 +114,14 @@ async function main() {
   releaseStatus({status:404,ok:false}); await staleRefresh;
   assert.equal(vm.runInContext('selectedId',context),1);
   data.exchange_id=1; await vm.runInContext('refreshRadio()',context); assert.equal(fields.sendTarget.disabled,true);
+  data.exchange_id=0; data.active_commands=1; data.pairing.saved=true;
+  data.radiators[1].command.phase='waiting_report';
+  await vm.runInContext('refreshRadio()',context);
+  assert.equal(fields.sendTarget.disabled,false); // A selected, B pending.
+  assert.equal(fields.pairStart.disabled,true);
+  fields.radiatorSelect.value='2'; fields.radiatorSelect.handlers.change();
+  await new Promise(setImmediate);
+  assert.equal(fields.sendTarget.disabled,true);
   console.log('UI learned/missing state, optional import, preview, admission and error rendering: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

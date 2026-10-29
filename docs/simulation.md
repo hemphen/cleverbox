@@ -50,8 +50,8 @@ storage file. To change the port/storage path after building, run
 7. Choose delayed responses (2.5 seconds) to inspect the intermediate requested
    and observed states. Silence times out after the production 150-second wait.
    ACK-only supplies the initial poll report and state ACK but no matching
-   readback, so it also times out. There is no command backlog or independent
-   exchange progress while another radiator waits.
+   readback, so it also times out. `silence_a` lets B complete while A remains
+   pending and then times out. There is no second command backlog per radiator.
 
 The browser stores selection locally and sends an explicit identity on each
 mutation/command. Switching selection clears manual import text and the previous
@@ -150,7 +150,11 @@ make test test-http test-capacity
 controllable clock. Test-only `--test-clock` freezes time and enables
 `POST /api/simulation` actions `advance` (`ms`) and `inject` (`frame` hex).
 Neither action is available in interactive mode. Ordinary host-only actions are
-`device` (`index` 0 or 1), `fixture` for that device, and `scenario` with `name` normal/delayed/silence/ack_only.
+`device` (`index` 0 or 1), `fixture` for that device, and `scenario` with `name` normal/delayed/silence/silence_a/ack_only.
+`silence_a` suppresses replies from invented radiator A only. Start A, then B:
+B can receive readback and complete while A awaits its own timeout. Test-clock
+injection also exercises interleaved reports, independent bounded retries and
+late reconciliation. These results do not establish physical RF or heating behavior.
 Injected bytes enter the same FIFO as simulator responses; invalid CRCs and wrong
 addresses are rejected by production receive/application handling.
 

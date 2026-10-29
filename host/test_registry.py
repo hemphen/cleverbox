@@ -84,23 +84,57 @@ def two_devices(directory):
         app.http('/api/radiators', {'id': a, 'action': 'rename', 'name': 'x' * 33}, 400)
         app.http('/api/radiators', {'id': a, 'action': 'rename', 'name': 'line\nbreak'}, 400)
         app.http('/api/command', {'id': a, 'mode': 0, 'centi_c': 2050, 'clock_seconds': 0, 'state': STATE_B}, 400)
-        # A and B command results are separate; completing B cannot clear A.
+        # A stays silent while B finishes; both can be admitted before worker dequeue.
+        app.sim('scenario', name='silence_a')
         app.command(id=a)
         app.http('/api/radiators', {'id': b, 'action': 'select'})  # Another browser.
-        app.http('/api/command', {'id': b, 'mode': 3, 'centi_c': 1550, 'clock_seconds': 86399}, 409)
+        app.command(1550, 3, id=b)
+        assert app.http()['active_commands'] == 2
+        app.http('/api/command', {'id': a, 'mode': 0, 'centi_c': 2050, 'clock_seconds': 0}, 409)
         app.http('/api/radiators', {'id': a, 'action': 'remove'}, 409)
         app.http('/api/pairing', {'action': 'start', 'source': 'F1010203', 'destination': 'F1100001'}, 409)
         app.advance(1000)
-        assert selected(app, a)['command']['phase'] == 'matched'
-        app.command(1550, 3, id=b)
-        assert app.advance(1)['simulation_tx'][-1] == POLL_B
-        app.advance(301)
-        assert app.http()['simulation_tx'][-1] == ECO_B
-        app.advance(400)
         assert selected(app, b)['command']['phase'] == 'matched'
+        assert selected(app, a)['command']['phase'] == 'waiting_report'
+        assert app.http()['active_commands'] == 1
+        assert app.advance(149000)['active_commands'] == 1
+        assert selected(app, a)['command']['phase'] == 'waiting_report'
+        app.advance(1)
+        assert selected(app, a)['command']['phase'] == 'timeout'
+        assert selected(app, b)['command']['phase'] == 'matched'
+        app.sim('scenario', name='normal')
+        app.command(id=a)
+        assert app.advance(1000)['simulation_tx'][-1] == COMFORT
         assert selected(app, a)['command']['phase'] == 'matched'
         assert selected(app, a)['observed']['mode'] == 0
         assert selected(app, b)['observed']['mode'] == 3
+        # Interleaved reports drive separate state transmissions and retry bounds.
+        app.sim('scenario', name='silence')
+        app.command(id=a)
+        app.advance(1)
+        app.command(1550, 3, id=b)
+        app.advance(1)
+        app.sim('inject', frame=REPORT_B)
+        app.advance(3)
+        app.sim('inject', frame=REPORT)
+        app.advance(3)
+        assert selected(app, a)['command']['attempts'] == 1
+        assert selected(app, b)['command']['attempts'] == 1
+        app.sim('inject', frame=REPORT_B)
+        app.advance(2)
+        assert selected(app, b)['command']['attempts'] == 2
+        assert selected(app, a)['command']['attempts'] == 1
+        app.advance(150001)
+        assert selected(app, a)['command']['phase'] == 'timeout'
+        assert selected(app, b)['command']['phase'] == 'timeout'
+        # Matching late report reconciles only the attempted A command, without TX.
+        prior_tx = app.http()['simulation_tx']
+        matching = '23F1040506C6F1010203DF203000404B02A88A02B100E100641919DA000A000A0A47C783C11D'
+        app.sim('inject', frame=matching)
+        app.advance(1)
+        assert selected(app, a)['command']['phase'] == 'matched'
+        assert selected(app, b)['command']['phase'] == 'timeout'
+        assert app.http()['simulation_tx'] == prior_tx
         # Interleaved valid frames, wrong address pairs, corrupt frames and
         # distinct opaque controller bytes cannot contaminate another record.
         app.sim('scenario', name='silence')
@@ -261,7 +295,7 @@ def main():
         two_devices(directory)
         migration_and_capacity(directory)
         pairing_storage_failure(directory)
-    print('Two-radiator HTTP registry: identities/selection, migration/failure/retry, naming/state, sequential routing/readback/results, opaque bytes, busy, restart/removal, duplicate/full/capacity reduction: passed')
+    print('Two-radiator HTTP registry: independent delivery/timeouts/retries, late reports, identity routing, pairing exclusion, migration/restart/removal and capacity: passed')
 
 
 if __name__ == '__main__':

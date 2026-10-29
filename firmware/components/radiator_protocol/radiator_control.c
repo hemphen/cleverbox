@@ -18,7 +18,9 @@ bool rf_control_start(rf_control *c, const rf_control_request *request,
     c->status.phase = RF_CONTROL_POLL;
     c->status.mode = request->mode;
     c->status.centi_c = request->mode == RF_OFF ? 0 : request->centi_c;
-    c->request = *request;
+    memcpy(c->state, request->state.bytes, sizeof(c->state));
+    c->mode = request->mode; c->centi_c = request->centi_c;
+    c->clock_seconds = request->clock_seconds;
     c->started_ms = now_ms;
     memcpy(c->controller, controller, 4);
     memcpy(c->radiator, radiator, 4);
@@ -36,9 +38,12 @@ bool rf_control_next(const rf_control *c, int64_t now_ms, rf_frame *out)
     if (c->status.phase == RF_CONTROL_POLL)
         return rf_short(out, c->controller, c->radiator, RF_POLL);
     if (c->status.phase == RF_CONTROL_SEND) {
-        unsigned clock = (c->request.clock_seconds + (unsigned)((now_ms - c->started_ms) / 1000)) % 86400;
-        return rf_live_state(out, &c->request.state, &c->report, c->controller,
-                             c->radiator, c->request.mode, c->request.centi_c, clock);
+        rf_frame state = {0}, report = {0};
+        state.size = sizeof(c->state); memcpy(state.bytes, c->state, state.size);
+        report.size = c->report_size; memcpy(report.bytes, c->report_bytes, report.size);
+        unsigned clock = (c->clock_seconds + (unsigned)((now_ms - c->started_ms) / 1000)) % 86400;
+        return rf_live_state(out, &state, &report, c->controller,
+                             c->radiator, c->mode, c->centi_c, clock);
     }
     return false;
 }
@@ -73,7 +78,9 @@ void rf_control_receive(rf_control *c, int64_t now_ms, const rf_frame *frame)
     if (!rf_control_reconcile(&c->status, now_ms, frame) &&
         (c->status.phase == RF_CONTROL_WAIT_REPORT ||
          (c->status.phase == RF_CONTROL_WAIT_READBACK && c->status.attempts < RF_CONTROL_MAX_ATTEMPTS))) {
-        c->report = *frame;
+        if (frame->size > sizeof(c->report_bytes)) return;
+        memcpy(c->report_bytes, frame->bytes, frame->size);
+        c->report_size = frame->size;
         c->status.phase = RF_CONTROL_SEND;
     }
 }

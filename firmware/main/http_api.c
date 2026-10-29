@@ -234,6 +234,7 @@ static void device_json(cJSON *j, const radiator_record *d, int64_t now) {
     cJSON_AddStringToObject(command, "phase", rf_control_phase_name(d->control.phase));
     cJSON_AddNumberToObject(command, "error", d->control_error);
     cJSON_AddNumberToObject(command, "attempts", d->control.attempts);
+    cJSON_AddBoolToObject(command, "pending", d->command_reserved);
     cJSON_AddBoolToObject(command, "template_available", d->has_control_template || d->has_saved_template);
     cJSON_AddStringToObject(command, "template_source", d->has_control_template ? "learned" :
                            d->has_saved_template ? "saved" : "missing");
@@ -299,9 +300,12 @@ static esp_err_t radio_status_page(httpd_req_t *r) {
     cJSON_AddNumberToObject(j, "exchange_id", s.exchange_id);
     cJSON_AddBoolToObject(j, "mutation_pending", s.mutation_pending); cJSON_AddNumberToObject(j, "mutation_error", s.mutation_error);
     cJSON *devices = cJSON_AddArrayToObject(j, "radiators"); radiator_record d;
+    unsigned active_commands = 0;
     for (size_t i = 0; radio_device_at(i, &d) == ESP_OK; ++i) {
+        if (d.command_reserved) ++active_commands;
         cJSON *item = cJSON_CreateObject(); device_json(item, &d, now); cJSON_AddItemToArray(devices, item);
     }
+    cJSON_AddNumberToObject(j, "active_commands", active_commands);
     if (has_device) device_json(j, &selected, now);
     else if (s.device_count == 0) { radiator_record empty = {0}; device_json(j, &empty, now); cJSON_DeleteItemFromObjectCaseSensitive(j, "pairing"); }
     if (!has_device) {

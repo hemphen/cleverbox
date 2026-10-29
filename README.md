@@ -5,7 +5,7 @@ A small, local bridge for Purmo/LVI radiators, targeting the Elecram Sub-GHz
 
 **Status: locally runnable HTTP application with simulated RF traffic; physical
 firmware supports reception, a persistent multi-radiator registry with explicit HTTP routing,
-explicit controller-state saving and globally serialized report-driven commands. No hardware test yet.**
+explicit controller-state saving and independent per-radiator report-driven commands. No hardware test yet.**
 
 ## Run locally without hardware
 
@@ -37,8 +37,8 @@ defaults. See the [field assessment](docs/controller-state.md).
 
 ## Product direction
 
-Local HTTP setup/control comes first, with a persistent registry and globally serialized delivery implemented. Next come
-independent per-radiator delivery, home Wi-Fi/device time, then MQTT
+Local HTTP setup/control comes first, with a persistent registry and independent per-radiator delivery implemented. Next come
+home Wi-Fi/device time, then MQTT
 with Home Assistant discovery. Matter is
 an optional later interface. Interfaces will share the same command handling.
 Home Assistant supplies history, schedules, automations and notifications.

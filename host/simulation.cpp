@@ -54,7 +54,8 @@ void simulated_transmit(const uint8_t *p, size_t n) {
     char hex[RF_MAX_FRAME * 2 + 1]; rf_to_hex(&f, hex);
     if (transmissions.size() == 16) transmissions.pop_front();
     transmissions.push_back(hex);
-    if (scenario == "silence" || !rf_valid(&f)) return;
+    if (scenario == "silence" || !rf_valid(&f) ||
+        (scenario == "silence_a" && n >= 10 && !memcmp(p + 6, devices[0].address, 4))) return;
     // Offer is common; explicit inclusion selector chooses the responding device.
     if (!strcmp(hex, "0FF1010203C6F1100001000003011FF3EA1F")) {
         auto &d = devices[inclusion_device]; d.offered = true;
@@ -102,7 +103,8 @@ extern "C" void simulation_advance(int ms) {
     }
 }
 extern "C" int simulation_scenario(const char *name) {
-    if (!name || (strcmp(name,"normal") && strcmp(name,"delayed") && strcmp(name,"silence") && strcmp(name,"ack_only"))) return 0;
+    if (!name || (strcmp(name,"normal") && strcmp(name,"delayed") && strcmp(name,"silence") &&
+                  strcmp(name,"silence_a") && strcmp(name,"ack_only"))) return 0;
     scenario = name; deliveries.clear(); return 1;
 }
 extern "C" int simulation_inject(const char *hex) {

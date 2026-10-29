@@ -111,7 +111,7 @@ async function refreshRadio(){
     if(!devices.length) field('radiatorSelect').replaceChildren();
     field('renameRadiator').disabled=field('removeRadiator').disabled=!selectedId;
     field('registryStatus').textContent=devices.length+' / '+data.capacity+' radiators · '
-      +(data.exchange_id?'Exchange active for identity '+data.exchange_id:'Delivery idle')
+      +(data.exchange_id?'Pairing active for identity '+data.exchange_id:(data.active_commands||0)+' commands active')
       +(data.registry_error?' · Registry blocked: '+data.registry_problem+' ('+data.registry_error+')':'')
       +(data.mutation_pending?' · Saving local configuration…':'')
       +(data.mutation_error?' · Local configuration save failed: '+data.mutation_error:'');
@@ -132,7 +132,7 @@ async function refreshRadio(){
     const inclusion=data.inclusion??pair;
     if(pair){
       const active=['offer','waiting_reply','bind','waiting_ack'].includes(inclusion.phase);
-      field('pairStart').disabled=!data.ready||!!data.exchange_id||devices.length>=data.capacity||!!data.registry_error;
+      field('pairStart').disabled=!data.ready||!!data.exchange_id||!!data.active_commands||devices.length>=data.capacity||!!data.registry_error;
       field('pairCancel').disabled=!active;
       field('pairSave').hidden=inclusion.phase!=='complete'||inclusion.saved;
       field('pairStatus').textContent=inclusion.duplicate ? 'Duplicate radiator: local record already exists.' : inclusion.error ? 'Inclusion / save error '+inclusion.error+' · '+inclusion.phase : pair.saved
@@ -156,7 +156,7 @@ async function refreshRadio(){
         +(command.state_load_error?' · Saved state could not be loaded: '+command.state_load_error:'')
         +(command.state_store_error?' · Storage operation failed: '+command.state_store_error+'; previous usable state retained. Retry explicitly.':'');
       const active=['poll','waiting_report','sending','waiting_readback'].includes(command.phase);
-      field('sendTarget').disabled=!data.ready||!selectedId||!pair?.saved||active||!!data.exchange_id;
+      field('sendTarget').disabled=!data.ready||!selectedId||!pair?.saved||active||!!command.pending||!!data.exchange_id;
       field('commandStatus').textContent=command.phase==='idle' ? 'No live command requested.'
         : 'Command: '+command.phase+' · state transmissions: '+command.attempts
           +'\nRequested: '+command.requested_target_c+' °C · '+(modes[command.requested_mode]??command.requested_mode)

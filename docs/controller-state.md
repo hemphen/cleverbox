@@ -77,7 +77,7 @@ without erasing the old usable keys. A present empty registry prevents removed
 records from returning. See [registry storage, failure handling and capacity](registry.md).
 Configuration loads create no observation or transmission. Unknown saved capture
 age is not reported as a fresh capture. Save/clear outcomes reset each boot.
-Delivery remains globally serialized; observations and command results are owned
+Delivery progresses independently per radiator; CC1101 transmissions are serialized. Observations and command results are owned
 per radiator. Saving captured `97`/`5B` avoids repeated capture; it does not prove
 indefinite validity or enable capture-free installation.
 

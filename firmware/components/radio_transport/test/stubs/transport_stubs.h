@@ -26,20 +26,23 @@ inline void vTaskDelete(void *) { assert(false); }
 inline int xTaskCreate(void (*)(void *), const char *, int, void *, int, void *) { return pdPASS; }
 
 using QueueHandle_t = int;
-inline uint8_t queued_bytes[1024];
-inline size_t queue_item_size;
+inline uint8_t queued_bytes[65536];
+inline size_t queue_item_size, queue_capacity, queue_count, queue_head;
 inline bool queue_full;
 inline void (*dequeue_hook)() = nullptr;
-inline QueueHandle_t xQueueCreate(int, size_t size) {
-    assert(size <= sizeof(queued_bytes)); queue_item_size = size; return 1;
+inline QueueHandle_t xQueueCreate(int capacity, size_t size) {
+    assert((size_t)capacity * size <= sizeof(queued_bytes)); queue_item_size = size;
+    queue_capacity = capacity; queue_count = queue_head = 0; return 1;
 }
 inline int xQueueSend(QueueHandle_t, const void *item, int) {
-    if (queue_full) return 0;
-    memcpy(queued_bytes, item, queue_item_size); queue_full = true; return pdPASS;
+    if (queue_full || queue_count == queue_capacity) return 0;
+    memcpy(queued_bytes + ((queue_head + queue_count) % queue_capacity) * queue_item_size, item, queue_item_size);
+    ++queue_count; return pdPASS;
 }
 inline int xQueueReceive(QueueHandle_t, void *item, int) {
-    if (!queue_full) return 0;
-    memcpy(item, queued_bytes, queue_item_size); queue_full = false;
+    if (!queue_count) return 0;
+    memcpy(item, queued_bytes + queue_head * queue_item_size, queue_item_size);
+    queue_head = (queue_head + 1) % queue_capacity; --queue_count;
     if (dequeue_hook) dequeue_hook();
     return pdPASS;
 }
@@ -52,6 +55,10 @@ constexpr int RADIOLIB_CC1101_REG_PKTCTRL0 = 0, RADIOLIB_CC1101_REG_RXBYTES = 1,
               RADIOLIB_CC1101_REG_PKTCTRL1 = 4;
 inline void (*transmit_hook)() = nullptr;
 inline int transmit_result;
+inline int receive_result;
+inline uint8_t transmitted_bytes[64];
+inline size_t transmitted_size;
+inline unsigned transmit_count;
 inline uint8_t incoming_bytes[64];
 inline size_t incoming_size, incoming_used;
 class RadioLibHal {
@@ -96,11 +103,14 @@ public:
     explicit CC1101(Module *) {}
     int standby() { return 0; }
     int fixedPacketLengthMode(size_t) { return 0; }
-    int transmit(const uint8_t *, size_t) {
+    int transmit(const uint8_t *bytes, size_t size) {
+        assert(size <= sizeof(transmitted_bytes));
+        memcpy(transmitted_bytes, bytes, size); transmitted_size = size;
+        ++transmit_count;
         if (transmit_hook) transmit_hook();
         return transmit_result;
     }
-    int startReceive() { return 0; }
+    int startReceive() { return receive_result; }
     int begin(double, double, double, double, int, int) { return 0; }
     int getChipVersion() { return 1; }
     int setPreambleLength(int, int) { return 0; }
