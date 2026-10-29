@@ -51,8 +51,9 @@ preserves radiator setup. See [network setup, recovery and validation](docs/netw
 
 Local HTTP setup/control comes first, with a persistent registry and independent per-radiator delivery and [device-managed time](docs/time.md) implemented.
 [MQTT broker setup, commands and state publishing](docs/mqtt.md) are implemented.
-Home Assistant discovery is next. Matter is
-an optional later interface. Interfaces will share the same command handling.
+[Basic HA interaction](docs/home-assistant.md) uses a complete built-in package
+with explicit draft/Apply controls. Next: discovery and usability polish →
+endurance/upgrade and hardware acceptance → optional Matter. Interfaces will share the same command handling.
 Home Assistant supplies history, schedules, automations and notifications.
 No provider account or cloud service is intended to be required in normal operation.
 

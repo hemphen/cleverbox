@@ -1,7 +1,7 @@
 # MQTT transport (v1)
 
-MQTT transport is implemented; Home Assistant discovery is a separate next
-milestone. HTTP remains available. No discovery, scheduler, history, Matter or OTA
+MQTT transport and [manual Home Assistant interaction](home-assistant.md) are implemented;
+discovery is a separate next milestone. HTTP remains available. No discovery, scheduler, history, Matter or OTA
 is included. MQTT does not own or duplicate radio delivery machines.
 
 ## Setup and persistence
@@ -148,6 +148,46 @@ being delivered as fresh to a later subscriber. Availability is independent of
 per-radiator freshness. Removed IDs stop publishing; clients should expire their
 snapshots, not infer that a device is still present from historical messages.
 
+## Home Assistant single-use command tokens
+
+Each radiator snapshot additionally supplies a random 32-character hex
+`command_token`. Clients may replace `request_id` with that token, keeping a
+complete four-field command on the same `/set` topic:
+
+```json
+{"session":"<current session>","command_token":"<radiator snapshot token>","mode":3,"centi_c":1900}
+```
+
+The MQTT owner validates the current session, identity and exact current token,
+then atomically allocates `high_water + 1` from the **same** bridge-wide sequence
+used by numeric clients. It consumes/rotates the token **before** field validation
+and RF admission, including busy, missing time/template or invalid settings
+rejections. The next snapshot is scheduled immediately. Token consumption never
+queues RF by itself. A repeated/wrong/previously consumed token returns
+`invalid_command_token`; a token plus `request_id`, malformed token or invalid
+schema returns `invalid_fields`. Wrong sessions and retained messages do not
+consume the current token. At the maximum safe request ID, token admission fails
+closed with `request_id_exhausted` until a new connection session; no wrap occurs.
+
+Admission and delivery results echo `command_token` as well as the allocated
+numeric ID, so a client can correlate without preallocating a counter. An invalid
+or duplicate token has no allocated request ID. Existing numeric payloads and
+results remain compatible; every consumed numeric command for a known radiator
+also rotates that radiator's token. Numeric producers must still coordinate their
+own IDs, and may see rejection if another producer advanced the common sequence.
+The published `request_id_floor` is never an atomic allocator.
+
+There is one permit per configured identity in bounded static memory, no evicting
+dedup cache, flash writes, command persistence or external allocator. Unconsumed
+tokens remain stable between snapshots; all are replaced on a connection change,
+and removal discards that identity's token. Re-adding uses a new stable ID.
+Reports do not reset the token. It identifies an explicit complete Apply, not a
+compare-and-swap of reported settings or a partial setting patch. The HA package
+uses independent draft inputs and never fills a missing field from observations.
+If two producers or rapid actions use one token, only one can consume it. Inspect
+the rejection and explicitly Apply the intended complete draft again after a
+new snapshot; do not automatically retry old drafts.
+
 ## Session, delivery and resource policy
 
 MQTT 3.1.1, clean session, subscription QoS 0, all application publications QoS 0.
@@ -204,14 +244,18 @@ broker with anonymous access, real Paho MQTT 3.1.1 sockets and the production C
 MQTT service/HTTP/time/RF simulator. This test covers actual topics/JSON,
 admission/readback, duplicates, retained resubscription, graceful offline,
 abrupt-close last will, broker process restart and RF completion while offline.
-The Paho adapter has no routing policy; its reconnect after the forced socket
-loss is explicit in this test. Firmware's ESP-MQTT paced reconnect is separate.
+The Paho adapter has no routing policy; it reconnects at a five-second pace.
+The smoke test also explicitly reconnects after its forced socket loss. Firmware's ESP-MQTT paced reconnect is separate.
 The optional Python dependency is pinned in the test instructions and is never
 imported into the physical firmware or ordinary simulator.
 
 The MQTT firmware uses IDF's standard 1500 KiB single factory-app partition table
 because the default 1 MiB app slot was too small. Existing NVS/PHY/app offsets
 are preserved; see [firmware build notes](../firmware/README.md).
+
+The separate `make test-home-assistant` runs the pinned actual HA Core against
+a broker and this production simulator; see [setup and validation](home-assistant.md).
+It is distinct from these fake-client and broker-only tests.
 
 Physical acceptance remains required for broker authentication/DNS over actual
 Wi-Fi, AP/STA recovery while MQTT reconnects, keepalive/last will on power or

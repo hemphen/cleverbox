@@ -1,0 +1,6 @@
+# Optional integration-test runtime; Python 3.14. Not firmware dependencies.
+homeassistant==2026.10.4
+home-assistant-frontend==20260930.5
+paho-mqtt==2.1.0
+colorlog==6.10.1
+aiohasupervisor==0.6.0

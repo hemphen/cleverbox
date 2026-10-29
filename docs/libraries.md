@@ -1,7 +1,7 @@
 # Libraries
 
 Use C/C++ with ESP-IDF and RadioLib. Use ESP-IDF's HTTP server and RadioLib
-transport. MQTT transport is implemented; Home Assistant discovery follows;
+transport. MQTT transport and manual HA interaction are implemented; discovery follows;
 ESP-Matter is an optional later dependency.
 
 | Dependency | Use |

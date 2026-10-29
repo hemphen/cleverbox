@@ -204,3 +204,19 @@ corrections, DST and monotonic command/network timers. With `--test-clock` only,
 `{"action":"time_sync","unix_seconds":1767268800}` injects a successful sync
 through `/api/simulation`. This does not test DNS, UDP or a real NTP server.
 See the full [time policy and hardware checklist](time.md).
+
+## Actual MQTT / Home Assistant validation
+
+`python host/serve.py --real-mqtt` opts into Paho 2.1.0 socket I/O in the same
+production application; broker setup still uses `/api/mqtt`, and RF/time/Wi-Fi
+boundaries are unchanged. Without this flag the existing fake-client adapter
+remains the default. The socket adapter reconnects at a five-second pace and
+contains no admission, decoding or delivery policy.
+
+`make test-home-assistant` validates the shipped HA package and actual helper/
+button service calls using pinned HA Core 2026.10.4 and a real Mosquitto process.
+It restarts actual HA/bridge processes and the broker, checks replay suppression,
+RF independence, two devices, prerequisites, failures and observation expiry.
+See [prerequisites, commands and exact environment limitations](home-assistant.md#reproduce-validation).
+This is separate from fake-client tests and `test-mqtt-broker`; none establish
+physical ESP-MQTT/Wi-Fi/RF or heating acceptance.

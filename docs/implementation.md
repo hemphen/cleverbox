@@ -4,7 +4,8 @@
 
 The ESP32-C6 runs the appliance; the CC1101 supplies bidirectional radiator RF.
 Local HTTP is the first setup/control interface. Home Assistant will record
-readings and run schedules/automations through MQTT with discovery. Matter is an
+readings and run schedules/automations through MQTT, initially with explicit
+configuration and then discovery. Matter is an
 optional later interface. Cleverbox holds current device state and saved setup,
 not historical readings.
 
@@ -59,19 +60,29 @@ Use the [libraries and component boundaries](libraries.md).
    topics, session-bound immediate commands through device-time admission,
    correlated results and separate observations/availability. No RF replay on
    network loss/reconnect or boot. See [MQTT contract](mqtt.md).
-8. **Home Assistant discovery — next.** Publish discovery for supported measurements,
-   target/mode controls and availability using the MQTT v1 command/session contract.
-   Keep complete command fields explicit, observations separate and freshness honest.
-9. **Installation and endurance.** Validate physical pairing/control, power cycles,
-   multiple devices and continued operation without HA/Touch E3. Publish installation
-   and upgrade handling that preserves setup. Matter may be added later if useful.
+8. **Basic Home Assistant interaction.** Implemented: manual built-in HA package
+   for explicit stable radiator IDs, complete draft/Apply controls, single-use
+   session-bound tokens with bridge-side ID allocation, honest observation expiry
+   and separate results. Reproducible actual HA Core/broker/simulator tests are
+   separate from fake-client and broker-only tests. See [HA setup](home-assistant.md).
+9. **Discovery and usability polish — next.** Publish automatic discovery for the
+   supported measurements/controls and availability. Reuse the tested command
+   contract; keep requested values separate and freshness honest. Avoid changing
+   RF behavior or adding a custom HA integration merely for discovery.
+10. **Endurance/upgrade and hardware acceptance.** Validate long running operation,
+   configuration retention across upgrades/power cycles, physical pairing/control,
+   multiple devices and operation without HA/Touch E3. Record RF/heating behavior,
+   task/heap high-water marks and actual Wi-Fi/broker recovery.
+11. **Optional Matter.** Consider only after the MQTT/HA path and hardware
+   acceptance are useful and reliable. Reuse existing admission/delivery.
 
 Each milestone should end in a small demonstrable result. No placeholder features
 or broad framework are needed to start.
 
 ## Acceptance for the first prototype
 
-- HA discovers radiators through MQTT after the integration milestone.
+- HA controls explicit radiator IDs through MQTT after the basic interaction
+  milestone; automatic discovery follows separately.
 - Its measured temperature follows radiator reports.
 - A target change reaches that radiator and its observed state converges.
 - Unavailable/stale data is not shown as fresh or confirmed.
