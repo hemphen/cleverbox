@@ -85,8 +85,10 @@ def run(directory):
         # Seed an old retained command; it is never admitted on reconnect.
         observer.publish(BASE+'/radiators/1/set',payload,qos=1,retain=True)
         pump(lambda:len([p for t,p,r in messages if isinstance(p,dict) and p.get('reason')=='duplicate_or_out_of_order'])>=2)
+        before_offline=len([p for t,p,r in messages if p=='offline'])
         http('/api/mqtt',dict(action='disable'),202)
-        pump(lambda:any(p=='offline' for t,p,r in messages))
+        pump(lambda:not http('/api/mqtt')['pending'] and not http('/api/mqtt')['enabled'] and
+             len([p for t,p,r in messages if p=='offline'])>before_offline)
         http('/api/mqtt',dict(action='enable'),202)
         pump(lambda:http('/api/mqtt')['connected'] and http('/api/mqtt')['session']!=session)
         pump(lambda:any(isinstance(p,dict) and p.get('reason')=='retained_command' for t,p,r in messages))
