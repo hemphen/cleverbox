@@ -96,7 +96,7 @@ http:
                        stdout=check_log, stderr=check_log, check=True, timeout=90)
     port = free_port()
     conf = directory / 'mosquitto.conf'
-    conf.write_text(f'listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\nuser {pwd.getpwuid(os.geteuid()).pw_name}\n')
+    conf.write_text(f'listener {port} 127.0.0.1\nallow_anonymous true\npersistence true\npersistence_location {directory}/\nautosave_interval 1\nuser {pwd.getpwuid(os.geteuid()).pw_name}\n')
     broker_log = open(directory / 'broker.log', 'wb')
     def start_broker():
         process = subprocess.Popen([shutil.which('mosquitto'), '-c', str(conf)], stdout=broker_log, stderr=broker_log)
@@ -141,7 +141,7 @@ http:
         if mode is not None: ha.call('input_select','select_option',entity_id=f'input_select.cleverbox_{i}_draft_mode',option=mode)
         ha.call('button','press',entity_id=f'button.cleverbox_{i}_apply')
     def admitted(i, reason):
-        return state_is(f'sensor.cleverbox_{i}_last_admission', reason)
+        return state_is(f'sensor.cleverbox_020000000001_{i}_last_admission', reason)
     def phase(i, value):
         return app.http(f'/api/radio?id={i}')['command']['phase'] == value
     try:
@@ -149,12 +149,25 @@ http:
         app.http('/api/pairing', dict(action='start',source='F1010203',destination='F1100001'),202); app.advance(2000)
         assert len(app.http()['radiators']) == 2
         app.http('/api/mqtt',dict(action='configure',host='127.0.0.1',port=port,username='',password='',enabled=True),202)
+        app.http('/api/mqtt',dict(action='discovery_enable'),202)
         app.http('/api/network',dict(action='configure',ssid='synthetic',password='synthetic'),202)
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip')
         pump(lambda:app.http('/api/mqtt')['connected'])
         tx = app.http()['simulation_tx']
         ha = HomeAssistant(config,port); snapshots()
-        assert state_is('sensor.cleverbox_1_temperature','unavailable')
+        pump(lambda:state_is('sensor.cleverbox_020000000001_1_temperature','unavailable'))
+        def registry(): return ha.rpc(op='registries')
+        def discovered():
+            return [e for e in registry()['entities'] if e['unique_id'].startswith('cleverbox_020000000001_') and
+                    e['unique_id'].rsplit('_',1)[-1] in ('c','mode','fresh','age','admission','delivery')]
+        pump(lambda:len(discovered()) == 14)
+        entries = {e['unique_id']:e for e in discovered()}
+        assert len({e['device_id'] for e in entries.values()}) == 2
+        for i in (1,2):
+            assert len({e['device_id'] for uid,e in entries.items() if uid.startswith(f'cleverbox_020000000001_{i}_')}) == 1
+        app.http('/api/radiators',dict(action='rename',id=1,name='Living room renamed'),202)
+        pump(lambda:any(d['name']=='Living room renamed' for d in registry()['devices']))
+        assert {e['unique_id']:e for e in discovered()} == entries
         assert app.http()['simulation_tx'] == tx
         print('HA boot/package validation: passed', flush=True)
         apply(1,22,'Comfort'); pump(lambda:admitted(1,'time_unavailable'))
@@ -167,16 +180,16 @@ http:
         app.http('/api/controller-state',dict(action='save',id=2),202); app.advance(10)
         snapshots()
         apply(1,22,'Comfort'); pump(lambda:phase(1,'matched'))
-        snapshots(); pump(lambda:state_is('sensor.cleverbox_1_observed_target','22.0'))
-        assert state_is('sensor.cleverbox_1_observed_mode','Comfort')
-        assert float(state('sensor.cleverbox_1_temperature')) == 20
+        snapshots(); pump(lambda:state_is('sensor.cleverbox_020000000001_1_observed_target','22.0'))
+        assert state_is('sensor.cleverbox_020000000001_1_observed_mode','Comfort')
+        assert float(state('sensor.cleverbox_020000000001_1_temperature')) == 20
         # Target draft persists while mode alone changes; neither edit publishes.
         before = len([t for t,p,r in messages if t.endswith('/set')])
         ha.call('input_select','select_option',entity_id='input_select.cleverbox_1_draft_mode',option='Eco')
         pump(); assert len([t for t,p,r in messages if t.endswith('/set')]) == before
         apply(1); pump(lambda:phase(1,'matched') and app.http('/api/radio?id=1')['observed']['mode']==3)
-        snapshots(); pump(lambda:state_is('sensor.cleverbox_1_observed_mode','Eco'))
-        assert state_is('sensor.cleverbox_1_observed_target','22.0')
+        snapshots(); pump(lambda:state_is('sensor.cleverbox_020000000001_1_observed_mode','Eco'))
+        assert state_is('sensor.cleverbox_020000000001_1_observed_target','22.0')
         print('HA controls, full commands, prerequisites and observations: passed', flush=True)
         # Two Apply actions before a new token: exactly one admission/RF poll.
         app.sim('scenario',name='silence_a'); snapshots()
@@ -187,15 +200,15 @@ http:
         pump(lambda:admitted(1,'busy_or_unavailable_or_missing_template'))
         apply(2,16,'Eco'); pump(lambda:phase(2,'matched'))
         assert app.http()['radiators'][0]['command']['pending']
-        snapshots(); pump(lambda:state_is('sensor.cleverbox_2_observed_target','16.0'))
+        snapshots(); pump(lambda:state_is('sensor.cleverbox_020000000001_2_observed_target','16.0'))
         # Delivery timeout is a separate historical entity, not an observation.
-        app.advance(151000); pump(lambda:state_is('sensor.cleverbox_1_last_delivery','timeout'))
+        app.advance(151000); pump(lambda:state_is('sensor.cleverbox_020000000001_1_last_delivery','timeout'))
         assert app.http('/api/radio?id=1')['command']['attempts']==0
         app.advance(305000); snapshots()
-        pump(lambda:state_is('sensor.cleverbox_1_temperature','unavailable'))
-        assert state_is('sensor.cleverbox_2_temperature','unavailable')
+        pump(lambda:state_is('sensor.cleverbox_020000000001_1_temperature','unavailable'))
+        assert state_is('sensor.cleverbox_020000000001_2_temperature','unavailable')
         app.sim('inject',frame=REPORT); app.sim('inject',frame=REPORT_B); app.advance(10); snapshots()
-        pump(lambda:state_is('binary_sensor.cleverbox_1_observation_fresh','on'))
+        pump(lambda:state_is('binary_sensor.cleverbox_020000000001_1_observation_fresh','on'))
         print('HA rapid actions, busy rejection, two radiators, RF timeout, stale reports and recovery: passed', flush=True)
         # Missing snapshots expire in real HA wall time despite online availability.
         # --test-clock freezes publication while HA's native expire_after runs.
@@ -205,16 +218,16 @@ http:
             if state_is('sensor.cleverbox_1_snapshot','unavailable'): break
             time.sleep(.1)
         assert state_is('sensor.cleverbox_1_snapshot','unavailable')
-        assert state_is('sensor.cleverbox_1_temperature','unavailable')
+        assert state_is('sensor.cleverbox_020000000001_1_temperature','unavailable')
         assert state_is('button.cleverbox_1_apply','unavailable')
-        snapshots(); pump(lambda:state_is('binary_sensor.cleverbox_1_observation_fresh','on'))
+        snapshots(); pump(lambda:state_is('binary_sensor.cleverbox_020000000001_1_observation_fresh','on'))
         # HA restart preserves MQTT entry but never restores/replays an action.
         tx = app.http()['simulation_tx']; original_session = session()
         last_id = max(p['request_id'] for t,p,r in messages if isinstance(p,dict) and p.get('stage')=='admission' and p.get('accepted'))
         ha.stop(); ha = HomeAssistant(config,port); snapshots()
         assert session()==original_session and app.http()['simulation_tx']==tx
         apply(2,17,'Frost'); pump(lambda:phase(2,'matched') and app.http()['radiators'][1]['observed']['mode']==2)
-        pump(lambda: ha.states()['sensor.cleverbox_2_last_admission']['attributes']['result']['request_id'] > last_id)
+        pump(lambda: ha.states()['sensor.cleverbox_020000000001_2_last_admission']['attributes']['result']['request_id'] > last_id)
         print('HA missing-snapshot expiry, recovery and process restart without replay: passed', flush=True)
         # Admit RF then remove the broker. Delivery proceeds during network loss.
         snapshots(); app.sim('scenario',name='delayed'); apply(2,18,'Comfort')
@@ -225,12 +238,12 @@ http:
         pump(lambda:app.http('/api/mqtt')['connected'] and session()!=original_session,timeout=20)
         changed_session = session(); snapshots()
         assert app.http()['simulation_tx']==tx
-        pump(lambda:state_is('sensor.cleverbox_2_last_delivery','matched'))
-        result = ha.states()['sensor.cleverbox_2_last_delivery']['attributes']['result']
+        pump(lambda:state_is('sensor.cleverbox_020000000001_2_last_delivery','matched'))
+        result = ha.states()['sensor.cleverbox_020000000001_2_last_delivery']['attributes']['result']
         assert result['session']==original_session
         apply(1,20,'Off'); pump(lambda:phase(1,'matched') and app.http('/api/radio?id=1')['observed']['mode']==1)
-        pump(lambda: ha.states()['sensor.cleverbox_1_last_admission']['attributes']['result']['session'] == changed_session)
-        assert ha.states()['sensor.cleverbox_1_last_admission']['attributes']['result']['request_id'] == 1
+        pump(lambda: ha.states()['sensor.cleverbox_020000000001_1_last_admission']['attributes']['result']['session'] == changed_session)
+        assert ha.states()['sensor.cleverbox_020000000001_1_last_admission']['attributes']['result']['request_id'] == 1
         # Restart actual bridge process with a pending command. Boot cannot resume it.
         snapshots(); app.sim('scenario',name='silence'); apply(2,19,'Eco')
         pump(lambda:app.http()['radiators'][1]['command']['pending'])
@@ -240,18 +253,40 @@ http:
         pump(lambda:app.http('/api/mqtt')['connected'])
         assert session()!=changed_session and app.http()['simulation_tx']==[]
         assert not app.http('/api/time')['usable'] and all(r['command']['phase']=='idle' for r in app.http()['radiators'])
-        snapshots(); assert state_is('sensor.cleverbox_1_temperature','unavailable')
+        snapshots(); assert state_is('sensor.cleverbox_020000000001_1_temperature','unavailable')
         observer.publish(BASE+'/radiators/2/set',json.dumps(old_command))
         pump(lambda:admitted(2,'session_mismatch'))
         assert app.http()['simulation_tx']==[]
         app.http('/api/time',dict(action='manual',unix_seconds=1767268800)); snapshots()
         apply(2,19,'Eco'); pump(lambda:phase(2,'matched'))
-        pump(lambda: ha.states()['sensor.cleverbox_2_last_admission']['attributes']['result']['session'] == session())
-        assert ha.states()['sensor.cleverbox_2_last_admission']['attributes']['result']['request_id'] == 1
+        pump(lambda: ha.states()['sensor.cleverbox_020000000001_2_last_admission']['attributes']['result']['session'] == session())
+        assert ha.states()['sensor.cleverbox_020000000001_2_last_admission']['attributes']['result']['request_id'] == 1
         sets = [(p,r) for t,p,r in messages if t.endswith('/set')]
         assert sets and not any(retain for _,retain in sets)
         assert all(set(p)=={'session','command_token','mode','centi_c'} for p,_ in sets)
         print('HA broker/bridge restarts, new sessions, RF continuity and no reconnect replay: passed',flush=True)
+        # Keep retained configs across reconnect while removing a radiator offline.
+        broker.terminate(); broker.wait(timeout=5)
+        app.advance(6000)
+        app.http('/api/radiators',dict(action='remove',id=1),202); app.advance(10)
+        app.stop(); app = App(storage,real_mqtt=True)
+        app.sim('network_event',name='started'); app.sim('network_event',name='got_ip')
+        tx = app.http()['simulation_tx']
+        broker = start_broker(); observer.reconnect()
+        pump(lambda:app.http('/api/mqtt')['connected'],timeout=20)
+        pump(lambda:not any(e['unique_id'].startswith('cleverbox_020000000001_1_') for e in discovered()),timeout=20)
+        pump(lambda:len(discovered()) == 7)
+        assert app.http()['simulation_tx'] == tx
+        broker.terminate(); broker.wait(timeout=5); app.advance(6000)
+        app.http('/api/mqtt',dict(action='discovery_disable'),202); app.advance(10)
+        assert not app.http('/api/mqtt')['discovery_enabled']
+        app.stop(); app = App(storage,real_mqtt=True)
+        app.sim('network_event',name='started'); app.sim('network_event',name='got_ip')
+        broker = start_broker(); observer.reconnect()
+        pump(lambda:app.http('/api/mqtt')['connected'],timeout=20)
+        pump(lambda:not discovered(),timeout=20)
+        assert not app.http('/api/mqtt')['discovery_enabled'] and app.http()['simulation_tx']==[]
+        print('HA stable discovery IDs/grouping, rename, offline removal/disable and durable cleanup: passed',flush=True)
     finally:
         if ha: ha.stop()
         app.stop(); observer.disconnect()

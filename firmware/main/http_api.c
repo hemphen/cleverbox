@@ -521,6 +521,9 @@ static esp_err_t mqtt_status_page(httpd_req_t *r) {
     cJSON_AddBoolToObject(j, "broker_connected", s.broker_connected);
     cJSON_AddBoolToObject(j, "subscription_pending", s.subscription_pending);
     cJSON_AddNumberToObject(j, "subscription_error", s.subscription_error);
+    cJSON_AddBoolToObject(j, "discovery_enabled", s.discovery_enabled);
+    cJSON_AddNumberToObject(j, "discovery_error", s.discovery_error);
+    cJSON_AddNumberToObject(j, "discovery_pending", s.discovery_pending);
     cJSON_AddNumberToObject(j, "dropped_input", s.dropped_input); return json_response(r, j);
 }
 static esp_err_t mqtt_action(httpd_req_t *r) {

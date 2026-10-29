@@ -76,7 +76,7 @@ HOST_CFLAGS = -std=c11 -Wall -Wextra -Werror -pedantic -g -fPIC -MMD -MP -DCLEVE
   -Ifirmware/components/mqtt_bridge/include -Ifirmware/components/device_time/include -Ifirmware/components/network_setup/include -Ihost/include -Ifirmware/main -Ifirmware/components/radio_transport \
   -Ifirmware/components/radio_transport/include -Ifirmware/components/device_store/include \
   -Ifirmware/components/radiator_protocol/include $(shell pkg-config --cflags libcjson)
-HOST_CSOURCES = firmware/components/mqtt_bridge/mqtt_bridge.c firmware/components/mqtt_bridge/mqtt_store.c host/mqtt.c \
+HOST_CSOURCES = firmware/components/mqtt_bridge/mqtt_discovery.c firmware/components/mqtt_bridge/mqtt_bridge.c firmware/components/mqtt_bridge/mqtt_store.c host/mqtt.c \
   firmware/components/device_time/device_time.c \
   firmware/components/device_time/time_store.c host/time.c \
   firmware/components/radiator_protocol/radiator_protocol.c \

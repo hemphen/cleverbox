@@ -21,14 +21,17 @@ PUBLISH=C.CFUNCTYPE(C.c_bool,C.c_char_p,C.c_char_p,C.c_bool)
 NONCE=C.CFUNCTYPE(None,C.POINTER(C.c_char))
 
 
+SUBSCRIBE_CONFIRMED=C.CFUNCTYPE(C.c_int,C.c_char_p,C.c_char_p)
+
+
 class Ops(C.Structure):
-    _fields_=[('start',START),('stop',STOP),('subscribe',SUBSCRIBE),('publish',PUBLISH),('nonce',NONCE)]
+    _fields_=[('start',START),('stop',STOP),('subscribe',SUBSCRIBE),('publish',PUBLISH),('nonce',NONCE),('publish_confirmed',SUBSCRIBE_CONFIRMED)]
 
 
 class BrokerClient:
     def __init__(self,lib):
         self.lib=lib; self.client=None; self.connected=False; self.reconnect_at=0
-        self.ops=Ops(START(self.start),STOP(self.stop),SUBSCRIBE(self.subscribe),PUBLISH(self.publish),NONCE(self.nonce))
+        self.ops=Ops(START(self.start),STOP(self.stop),SUBSCRIBE(self.subscribe),PUBLISH(self.publish),NONCE(self.nonce),SUBSCRIBE_CONFIRMED(self.publish_confirmed))
         lib.mqtt_bridge_init.argtypes=[Ops,C.c_char_p]
         lib.mqtt_bridge_input.argtypes=[C.c_char_p,C.c_size_t,C.c_char_p,C.c_size_t,C.c_size_t,C.c_size_t,C.c_bool]
         lib.mqtt_bridge_connection.argtypes=[C.c_bool]
@@ -43,6 +46,7 @@ class BrokerClient:
         self.client.connect_timeout=1
         self.reconnect_at=time.monotonic()+5
         self.client.on_subscribe=self.on_subscribe
+        self.client.on_publish=lambda c,u,mid,r,p: self.lib.mqtt_bridge_puback(mid)
         self.client.on_connect=self.on_connect; self.client.on_disconnect=self.on_disconnect; self.client.on_message=self.on_message
         self.client.reconnect_delay_set(5,5)
         try: self.client.connect(s.host.decode(),s.port,30)
@@ -70,6 +74,11 @@ class BrokerClient:
 
     def publish(self,topic,payload,retain):
         return self.connected and self.client.publish(topic.decode(),payload,qos=0,retain=retain).rc==mqtt.MQTT_ERR_SUCCESS
+
+    def publish_confirmed(self,topic,payload):
+        if not self.connected: return -1
+        result=self.client.publish(topic.decode(),payload,qos=1,retain=True)
+        return result.mid if result.rc==mqtt.MQTT_ERR_SUCCESS else -1
 
     def nonce(self,out):
         C.memmove(out,secrets.token_hex(16).encode()+b'\0',33)

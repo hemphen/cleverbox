@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "mqtt_bridge.h"
+#include "mqtt_discovery.h"
 #include "radio_transport.h"
 #include "network_setup.h"
 #include "esp_timer.h"
@@ -16,6 +17,7 @@ static mqtt_client_ops client;
 static mqtt_settings settings, candidate;
 static mqtt_bridge_status status;
 static bool action_pending, link_connected, running;
+static int discovery_action;
 static unsigned link_epoch, owner_epoch;
 static int64_t retry_ms, state_ms;
 static int subscription_id, suback_id, suback_qos;
@@ -34,7 +36,7 @@ static tracking tracked[CLEVERBOX_RADIATOR_CAPACITY];
 // One single-use capability per configured identity, not an evicting replay cache.
 // Numeric clients retain their bridge-wide high-water contract. Token clients
 // let this owner allocate from that same sequence atomically at consumption.
-typedef struct { uint32_t id; char token[33]; } command_permit;
+typedef struct { uint32_t id; char token[33], admission[512]; } command_permit;
 static command_permit permits[CLEVERBOX_RADIATOR_CAPACITY];
 static command_permit *permit_for(uint32_t id) {
     for (size_t i = 0; i < CLEVERBOX_RADIATOR_CAPACITY; ++i)
@@ -62,11 +64,19 @@ void mqtt_bridge_init(mqtt_client_ops ops, const char bridge_id[13]) {
     snprintf(availability, sizeof(availability), "%s/availability", base);
     esp_err_t err = mqtt_store_load(&settings);
     if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) status.config_error = err;
-    update_settings_status();
+    update_settings_status(); mqtt_discovery_init(bridge_id);
+    mqtt_discovery_status(&status);
+}
+static void update_discovery_status(void) {
+    mqtt_bridge_status d = {0}; mqtt_discovery_status(&d);
+    mqtt_platform_lock(); status.discovery_enabled = d.discovery_enabled;
+    status.discovery_error = d.discovery_error; status.discovery_pending = d.discovery_pending; mqtt_platform_unlock();
 }
 void mqtt_bridge_get(mqtt_bridge_status *out) { mqtt_platform_lock(); *out = status; mqtt_platform_unlock(); }
 esp_err_t mqtt_bridge_configure(const mqtt_settings *s) {
     if (!mqtt_settings_valid(s) || !s->configured) return ESP_ERR_INVALID_ARG;
+    if (mqtt_discovery_has_records() && settings.configured &&
+        (strcmp(settings.host, s->host) || settings.port != s->port)) return ESP_ERR_INVALID_STATE;
     mqtt_platform_lock();
     esp_err_t err = status.pending ? ESP_ERR_INVALID_STATE : ESP_OK;
     if (err == ESP_OK) { candidate = *s; action_pending = status.pending = true; }
@@ -76,7 +86,12 @@ esp_err_t mqtt_bridge_action(const char *action) {
     if (!action) return ESP_ERR_INVALID_ARG;
     mqtt_platform_lock(); esp_err_t err = ESP_OK;
     if (status.pending) err = ESP_ERR_INVALID_STATE;
-    else if (!strcmp(action, "forget")) memset(&candidate, 0, sizeof(candidate));
+    else if (!strcmp(action, "discovery_enable") || !strcmp(action, "discovery_disable"))
+        discovery_action = !strcmp(action, "discovery_enable") ? 1 : -1;
+    else if (!strcmp(action, "forget")) {
+        if (mqtt_discovery_has_records()) err = ESP_ERR_INVALID_STATE;
+        else memset(&candidate, 0, sizeof(candidate));
+    }
     else if ((!strcmp(action, "enable") || !strcmp(action, "disable")) && settings.configured) {
         candidate = settings; candidate.enabled = !strcmp(action, "enable");
     } else err = ESP_ERR_INVALID_ARG;
@@ -137,7 +152,7 @@ static bool publish(const char *suffix, const char *payload, bool retain) {
     return client.publish(topic, payload, retain);
 }
 static bool json_publish(const char *suffix, cJSON *j) {
-    char payload[768]; bool ok = cJSON_PrintPreallocated(j, payload, sizeof(payload), false);
+    char payload[2048]; bool ok = cJSON_PrintPreallocated(j, payload, sizeof(payload), false);
     cJSON_Delete(j); return ok && publish(suffix, payload, false);
 }
 static cJSON *envelope(const char *s, uint64_t request_id) {
@@ -154,6 +169,11 @@ static void admission(uint32_t id, uint64_t request_id, const char *token, const
     cJSON_AddStringToObject(j, "reason", reason ? reason : "accepted"); cJSON_AddNumberToObject(j, "error", error);
     if (id) snprintf(suffix, sizeof(suffix), "radiators/%u/result", (unsigned)id);
     else strcpy(suffix, "errors");
+    if (id) {
+        radiator_record d;
+        command_permit *p = radio_device_status(id, &d) == ESP_OK ? permit_for(id) : NULL;
+        if (p) cJSON_PrintPreallocated(j, p->admission, sizeof(p->admission), false);
+    }
     json_publish(suffix, j);
 }
 static bool number(cJSON *j, const char *key, double low, double high, double *out) {
@@ -274,6 +294,23 @@ static void observations(void) {
         if (permit) cJSON_AddStringToObject(j, "command_token", permit->token);
         cJSON_AddNumberToObject(j, "id", d.id); cJSON_AddStringToObject(j, "name", d.name);
         cJSON_AddBoolToObject(j, "available", d.has_paired_report);
+        // Conservative 15-second headroom: HA expiry cannot carry a reported
+        // fresh value beyond the five-minute threshold between snapshots.
+        cJSON_AddBoolToObject(j, "fresh", d.has_paired_report && time-d.paired_report_time_us/1000 + 15000 < RF_REPORT_STALE_MS);
+        if (permit && permit->admission[0]) cJSON_AddItemToObject(j, "admission", cJSON_Parse(permit->admission));
+        cJSON *delivery = cJSON_AddObjectToObject(j, "delivery");
+        for (size_t k = 0; k < CLEVERBOX_RADIATOR_CAPACITY; ++k) {
+            tracking *t = &tracked[k];
+            if (t->id != d.id || t->cookie != d.result_cookie) continue;
+            cJSON_AddStringToObject(delivery, "session", t->session);
+            cJSON_AddNumberToObject(delivery, "request_id", (double)t->request_id);
+            if (t->command_token[0]) cJSON_AddStringToObject(delivery, "command_token", t->command_token);
+            cJSON_AddStringToObject(delivery, "phase", rf_control_phase_name(d.tracked_result.phase));
+            cJSON_AddNumberToObject(delivery, "error", d.tracked_error);
+            cJSON_AddNumberToObject(delivery, "attempts", d.tracked_result.attempts);
+            cJSON_AddNumberToObject(delivery, "requested_centi_c", d.tracked_result.centi_c);
+            cJSON_AddNumberToObject(delivery, "requested_mode", d.tracked_result.mode);
+        }
         if (d.has_paired_report) {
             int64_t age = time-d.paired_report_time_us/1000;
             cJSON_AddNumberToObject(j, "age_ms", (double)age);
@@ -287,7 +324,7 @@ static void observations(void) {
 }
 static void stop(void) {
     if (running) client.stop(availability);
-    running = false; mqtt_bridge_connection(false); session[0] = 0;
+    running = false; mqtt_bridge_connection(false); session[0] = 0; mqtt_discovery_disconnected();
 }
 static void subscription_failed(int error) {
     stop(); // Clear partial/queued input and destroy the subscription outbox.
@@ -299,6 +336,13 @@ void mqtt_bridge_tick(void) {
     mqtt_platform_lock(); action = action_pending;
     if (action) { change = candidate; memset(&candidate, 0, sizeof(candidate)); action_pending = false; }
     mqtt_platform_unlock();
+    if (action && discovery_action) {
+        int requested = discovery_action; discovery_action = 0;
+        esp_err_t err = mqtt_discovery_set(requested > 0);
+        update_discovery_status();
+        mqtt_platform_lock(); status.pending = false; status.config_error = err; mqtt_platform_unlock();
+        action = false;
+    }
     if (action) {
         esp_err_t err = mqtt_store_save(&change);
         if (err == ESP_OK) stop();
@@ -319,6 +363,7 @@ void mqtt_bridge_tick(void) {
     bool connected; unsigned epoch;
     mqtt_platform_lock(); connected = link_connected; epoch = link_epoch; mqtt_platform_unlock();
     if (epoch != owner_epoch) {
+        mqtt_discovery_disconnected();
         owner_epoch = epoch; session[0] = 0; high_water = 0; memset(permits, 0, sizeof(permits));
         if (connected) {
             char topic[MQTT_TOPIC_BYTES]; snprintf(topic, sizeof(topic), "%s/radiators/+/set", base);
@@ -359,10 +404,19 @@ void mqtt_bridge_tick(void) {
             status.subscription_error = ESP_OK; strcpy(status.session, session); became_ready = true;
         }
         mqtt_platform_unlock();
-        if (became_ready) { client.publish(availability, "online", true); state_ms = 0; }
+        if (became_ready) {
+            client.publish(availability, "online", true); state_ms = 0;
+            client.subscribe("homeassistant/status");
+            mqtt_discovery_replay();
+        }
     }
     mqtt_platform_lock(); current = epoch == link_epoch && link_connected && status.connected; mqtt_platform_unlock();
     if (!current || !session[0]) return;
+    mqtt_discovery_tick(&client); update_discovery_status();
+    mqtt_bridge_status discovery = {0}; mqtt_discovery_status(&discovery);
+    if (discovery.discovery_error == MQTT_ERR_SUBSCRIBE_TIMEOUT) {
+        stop(); retry_ms = now()+MQTT_RETRY_MS; return;
+    }
     results(became_ready);
     if (now() >= state_ms) { observations(); state_ms = now()+5000; }
     // Drain a bounded batch. Epoch checks discard work queued before link loss;
@@ -374,6 +428,10 @@ void mqtt_bridge_tick(void) {
         bool current = got && in.epoch == link_epoch && link_connected;
         mqtt_platform_unlock();
         if (!got) break;
-        if (current && in.epoch == owner_epoch) route(&in);
+        if (current && in.epoch == owner_epoch) {
+            if (!strcmp(in.topic, "homeassistant/status")) {
+                if (!strcmp(in.data, "online")) { mqtt_discovery_replay(); state_ms = 0; }
+            } else route(&in);
+        }
     }
 }

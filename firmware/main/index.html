@@ -55,6 +55,8 @@ Time setup never transmits radiator settings. Admitted commands keep their clock
 <label>Enable after saving <select id="mqttEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
 <button id="mqttSave">Save broker configuration</button>
 <button id="mqttEnable">Enable MQTT</button><button id="mqttDisable">Disable MQTT</button>
+<p>Home Assistant discovery (opt-in): observations and diagnostics appear automatically. Draft/Apply controls use the HA package.</p>
+<button id="mqttDiscoveryEnable">Enable HA discovery</button><button id="mqttDiscoveryDisable">Disable HA discovery and remove entities</button>
 <button id="mqttForget">Forget MQTT only</button>
 <p id="mqttAction" role="status"></p>
 <small>Local TCP broker; no TLS. Use a trusted LAN and broker topic ACLs. HTTP and NVS are unencrypted.
@@ -221,9 +223,10 @@ async function refreshMqtt(){
       (s.host?' · Broker: '+s.host+':'+s.port:'')+(s.pending?' · Saving…':'')+
       (s.config_error?' · Save/load error: '+s.config_error:'')+
       (s.client_error?' · Client error: '+s.client_error:'')+
+      ' · HA discovery: '+(s.discovery_enabled?'enabled':'disabled')+(s.discovery_pending?' · discovery/cleanup pending: '+s.discovery_pending:'')+(s.discovery_error?' · discovery error: '+s.discovery_error:'')+
       (s.subscription_error?' · Command subscription: '+({29697:'rejected',29698:'acknowledgement timed out',29699:'request failed'}[s.subscription_error]??s.subscription_error)+(s.enabled?'; retrying at a bounded pace.':'; MQTT disabled.'):'')+
       (s.persistence_uncertain?' · Persistence uncertain: check after restart or retry save/forget.':'');
-    for(const id of ['mqttSave','mqttEnable','mqttDisable','mqttForget']) field(id).disabled=!!s.pending;
+    for(const id of ['mqttDiscoveryEnable','mqttDiscoveryDisable','mqttSave','mqttEnable','mqttDisable','mqttForget']) field(id).disabled=!!s.pending;
     field('mqttEnable').disabled=!!s.pending||!s.configured||s.enabled;
     field('mqttDisable').disabled=!!s.pending||!s.configured||!s.enabled;
   }catch(error){field('mqttStatus').textContent=error.message;}
@@ -243,7 +246,7 @@ async function mqttAction(action){
   }catch(error){field('mqttAction').textContent=error.message;}
   finally{body.password=''; await refreshMqtt();}
 }
-for(const [id,action] of [['mqttSave','configure'],['mqttEnable','enable'],['mqttDisable','disable'],['mqttForget','forget']])
+for(const [id,action] of [['mqttDiscoveryEnable','discovery_enable'],['mqttDiscoveryDisable','discovery_disable'],['mqttSave','configure'],['mqttEnable','enable'],['mqttDisable','disable'],['mqttForget','forget']])
   field(id).addEventListener('click',()=>mqttAction(action));
 refreshMqtt();
 let simulationConfigured=false, selectedId=0, pairingId=0, selectionEpoch=0, refreshTimer;

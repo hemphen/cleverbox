@@ -8,7 +8,7 @@
 static bool started, connected;
 static int subscription_id, last_subscription_id, starts, subscribe_mode;
 
-static char publications[64][1024];
+static char publications[64][16384];
 static size_t head, count;
 void mqtt_platform_lock(void) {}
 void mqtt_platform_unlock(void) {}
@@ -36,6 +36,14 @@ int host_mqtt_subscribe_mode(int mode) {
 }
 int host_mqtt_subscription_id(void) { return last_subscription_id; }
 int host_mqtt_starts(void) { return starts; }
+static int confirmed_mode;
+int host_mqtt_confirmed_mode(int mode) { confirmed_mode = mode; return 1; }
+static int publish_confirmed(const char *topic, const char *payload) {
+    if (confirmed_mode == 1 || !publish(topic, payload, true)) return -1;
+    int id = ++subscription_id;
+    if (confirmed_mode != 2) mqtt_bridge_puback(id);
+    return id;
+}
 static void nonce(char out[33]) {
     unsigned char b[16]; FILE *f = fopen("/dev/urandom", "rb");
     if (!f || fread(b, 1, sizeof(b), f) != sizeof(b)) abort();
@@ -43,7 +51,7 @@ static void nonce(char out[33]) {
     for (size_t i = 0; i < sizeof(b); ++i) snprintf(out+i*2, 3, "%02x", b[i]);
 }
 esp_err_t mqtt_bridge_start(void) {
-    mqtt_client_ops ops = {start, stop, subscribe, publish, nonce}; mqtt_bridge_init(ops, "020000000001"); return ESP_OK;
+    mqtt_client_ops ops = {start, stop, subscribe, publish, nonce, publish_confirmed}; mqtt_bridge_init(ops, "020000000001"); return ESP_OK;
 }
 int host_mqtt_connection(int value) {
     if (!started) return 0;

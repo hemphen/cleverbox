@@ -18,6 +18,7 @@ extern "C" {
 #define MQTT_ERR_SUBSCRIBE_REJECTED 0x7401
 #define MQTT_ERR_SUBSCRIBE_TIMEOUT 0x7402
 #define MQTT_ERR_SUBSCRIBE_REQUEST 0x7403
+#define MQTT_DISCOVERY_PAYLOAD_BYTES 8192
 #define MQTT_RECORD_BYTES (4 + MQTT_HOST_BYTES+1 + MQTT_USER_BYTES+1 + MQTT_PASSWORD_BYTES+1)
 typedef struct {
     bool configured, enabled;
@@ -27,6 +28,9 @@ typedef struct {
 typedef struct {
     bool configured, enabled, connected, pending, persistence_uncertain;
     bool broker_connected, subscription_pending;
+    bool discovery_enabled;
+    int discovery_error;
+    unsigned discovery_pending;
     char bridge_id[13], session[33], host[MQTT_HOST_BYTES+1], username[MQTT_USER_BYTES+1];
     uint16_t port;
     int config_error, client_error, subscription_error;
@@ -40,6 +44,7 @@ typedef struct {
     int (*subscribe)(const char *topic); // MQTT packet ID (1..65535), negative on failure.
     bool (*publish)(const char *topic, const char *payload, bool retain);
     void (*nonce)(char out[33]);
+    int (*publish_confirmed)(const char *topic, const char *payload); // retained QoS1, packet ID
 } mqtt_client_ops;
 esp_err_t mqtt_bridge_start(void);
 void mqtt_bridge_get(mqtt_bridge_status *out);
@@ -63,3 +68,6 @@ void mqtt_platform_unlock(void);
 #ifdef __cplusplus
 }
 #endif
+
+// Discovery PUBACK callback only copies an ID; owner performs all work.
+void mqtt_bridge_puback(int message_id);

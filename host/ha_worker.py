@@ -35,6 +35,13 @@ async def main():
                     await hass.services.async_call(req['domain'], req['service'], req.get('data', {}), blocking=True)
                     await hass.async_block_till_done()
                     result = {'ok': True}
+                elif req['op'] == 'registries':
+                    from homeassistant.helpers import entity_registry as er, device_registry as dr
+                    result = {
+                        'entities': [dict(entity_id=e.entity_id, unique_id=e.unique_id, device_id=e.device_id)
+                                     for e in er.async_get(hass).entities.values()],
+                        'devices': [dict(id=d.id, name=d.name, identifiers=list(d.identifiers))
+                                    for d in dr.async_get(hass).devices.values()]}
                 elif req['op'] == 'states':
                     result = {s.entity_id: {'state': s.state, 'attributes': dict(s.attributes)} for s in hass.states.async_all()}
                 else:

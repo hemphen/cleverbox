@@ -23,6 +23,7 @@ static void event(void *arg, esp_event_base_t base, int32_t id, void *data) {
             (!e->error_handle || e->error_handle->error_type != MQTT_ERROR_TYPE_SUBSCRIBE_FAILED);
         mqtt_bridge_suback(e->msg_id, granted ? 0 : -1);
     }
+    else if (id == MQTT_EVENT_PUBLISHED) mqtt_bridge_puback(e->msg_id);
     else if (id == MQTT_EVENT_ERROR) mqtt_bridge_client_error(ESP_FAIL);
     else if (id == MQTT_EVENT_DATA && e->topic_len >= 0 && e->data_len >= 0 &&
              e->current_data_offset >= 0 && e->total_data_len >= 0)
@@ -38,7 +39,7 @@ static esp_err_t start(const mqtt_settings *s, const char *id, const char *will)
                     .disable_clean_session = false, .keepalive = 30, .protocol_ver = MQTT_PROTOCOL_V_3_1_1},
         .network = {.reconnect_timeout_ms = 5000, .timeout_ms = 1000},
         .buffer = {.size = 256, .out_size = 1024},
-        .outbox.limit = 1024,
+        .outbox.limit = MQTT_DISCOVERY_PAYLOAD_BYTES + 1024,
         .task.stack_size = 6144,
     };
     handle = esp_mqtt_client_init(&config);
@@ -61,6 +62,9 @@ static bool publish(const char *topic, const char *data, bool retain) {
     // Called only while connected. QoS0 never enters the IDF retransmit outbox.
     return handle && esp_mqtt_client_publish(handle, topic, data, 0, 0, retain) >= 0;
 }
+static int publish_confirmed(const char *topic, const char *data) {
+    return handle ? esp_mqtt_client_publish(handle, topic, data, 0, 1, true) : -1;
+}
 static void nonce(char out[33]) {
     uint8_t bytes[16]; esp_fill_random(bytes, sizeof(bytes));
     for (size_t i = 0; i < sizeof(bytes); ++i) snprintf(out+i*2, 3, "%02x", bytes[i]);
@@ -71,6 +75,6 @@ esp_err_t mqtt_bridge_start(void) {
     esp_log_level_set("mqtt_client", ESP_LOG_NONE);
     uint8_t mac[6]; esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_STA); if (err != ESP_OK) return err;
     char id[13]; for (size_t i = 0; i < sizeof(mac); ++i) snprintf(id+i*2, 3, "%02x", mac[i]);
-    mqtt_client_ops ops = {start, stop, subscribe, publish, nonce}; mqtt_bridge_init(ops, id);
+    mqtt_client_ops ops = {start, stop, subscribe, publish, nonce, publish_confirmed}; mqtt_bridge_init(ops, id);
     return xTaskCreate(task, "mqtt_bridge", 8192, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
