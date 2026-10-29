@@ -18,6 +18,7 @@ static mqtt_settings settings, candidate;
 static mqtt_bridge_status status;
 static bool action_pending, link_connected, running;
 static int discovery_action;
+static bool discovery_records;
 static unsigned link_epoch, owner_epoch;
 static int64_t retry_ms, state_ms;
 static int subscription_id, suback_id, suback_qos;
@@ -65,20 +66,20 @@ void mqtt_bridge_init(mqtt_client_ops ops, const char bridge_id[13]) {
     esp_err_t err = mqtt_store_load(&settings);
     if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) status.config_error = err;
     update_settings_status(); mqtt_discovery_init(bridge_id);
-    mqtt_discovery_status(&status);
+    mqtt_discovery_status(&status); discovery_records = mqtt_discovery_has_records();
 }
 static void update_discovery_status(void) {
     mqtt_bridge_status d = {0}; mqtt_discovery_status(&d);
-    mqtt_platform_lock(); status.discovery_enabled = d.discovery_enabled;
+    bool records = mqtt_discovery_has_records();
+    mqtt_platform_lock(); discovery_records = records; status.discovery_enabled = d.discovery_enabled;
     status.discovery_error = d.discovery_error; status.discovery_pending = d.discovery_pending; mqtt_platform_unlock();
 }
 void mqtt_bridge_get(mqtt_bridge_status *out) { mqtt_platform_lock(); *out = status; mqtt_platform_unlock(); }
 esp_err_t mqtt_bridge_configure(const mqtt_settings *s) {
     if (!mqtt_settings_valid(s) || !s->configured) return ESP_ERR_INVALID_ARG;
-    if (mqtt_discovery_has_records() && settings.configured &&
-        (strcmp(settings.host, s->host) || settings.port != s->port)) return ESP_ERR_INVALID_STATE;
     mqtt_platform_lock();
-    esp_err_t err = status.pending ? ESP_ERR_INVALID_STATE : ESP_OK;
+    esp_err_t err = status.pending || (discovery_records && settings.configured &&
+        (strcmp(settings.host, s->host) || settings.port != s->port)) ? ESP_ERR_INVALID_STATE : ESP_OK;
     if (err == ESP_OK) { candidate = *s; action_pending = status.pending = true; }
     mqtt_platform_unlock(); return err;
 }
@@ -89,7 +90,7 @@ esp_err_t mqtt_bridge_action(const char *action) {
     else if (!strcmp(action, "discovery_enable") || !strcmp(action, "discovery_disable"))
         discovery_action = !strcmp(action, "discovery_enable") ? 1 : -1;
     else if (!strcmp(action, "forget")) {
-        if (mqtt_discovery_has_records()) err = ESP_ERR_INVALID_STATE;
+        if (discovery_records) err = ESP_ERR_INVALID_STATE;
         else memset(&candidate, 0, sizeof(candidate));
     }
     else if ((!strcmp(action, "enable") || !strcmp(action, "disable")) && settings.configured) {

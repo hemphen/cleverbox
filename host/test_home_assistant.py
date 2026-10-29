@@ -149,7 +149,9 @@ http:
         app.http('/api/pairing', dict(action='start',source='F1010203',destination='F1100001'),202); app.advance(2000)
         assert len(app.http()['radiators']) == 2
         app.http('/api/mqtt',dict(action='configure',host='127.0.0.1',port=port,username='',password='',enabled=True),202)
+        app.advance(100)
         app.http('/api/mqtt',dict(action='discovery_enable'),202)
+        app.advance(100)
         app.http('/api/network',dict(action='configure',ssid='synthetic',password='synthetic'),202)
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip')
         pump(lambda:app.http('/api/mqtt')['connected'])

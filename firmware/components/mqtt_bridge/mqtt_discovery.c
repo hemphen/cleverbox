@@ -83,9 +83,16 @@ esp_err_t mqtt_discovery_set(bool value) {
 }
 void mqtt_discovery_status(mqtt_bridge_status *out) {
     out->discovery_enabled = enabled; out->discovery_error = error;
-    unsigned count = 0;
-    for (size_t i = 0; i < SLOTS; ++i) if (ids[i]) ++count;
-    out->discovery_pending = pending_mid || replay || !enabled ? count : 0;
+    unsigned count = pending_mid ? 1 : 0;
+    radiator_record d;
+    for (size_t i = 0; i < SLOTS; ++i)
+        if (ids[i] && (!enabled || radio_device_status(ids[i], &d) != ESP_OK)) ++count;
+    if (enabled) for (size_t i = 0; radio_device_at(i, &d) == ESP_OK; ++i) {
+        bool found = false;
+        for (size_t k = 0; k < SLOTS; ++k) if (ids[k] == d.id) found = true;
+        if (!found) ++count;
+    }
+    out->discovery_pending = count;
 }
 void mqtt_discovery_replay(void) { replay = true; cursor = 0; due = 0; }
 void mqtt_discovery_disconnected(void) {
@@ -208,7 +215,6 @@ void mqtt_discovery_tick(mqtt_client_ops *client) {
         cursor = slot+1;
         // One bounded sweep. Registry/name changes and HA birth schedule replay;
         // periodic replay also repairs broker persistence loss without RF.
-        
         return;
     }
     replay = true; cursor = 0; due = now()+5000;
