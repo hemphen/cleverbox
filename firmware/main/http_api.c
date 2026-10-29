@@ -10,6 +10,7 @@
 #include "radiator_protocol.h"
 #include "radio_transport.h"
 #include "http_api.h"
+#include "network_setup.h"
 #ifdef CLEVERBOX_HOST
 #include "simulation.h"
 #endif
@@ -371,8 +372,77 @@ static esp_err_t registry_action(httpd_req_t *r) {
     return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");
 }
 
+static esp_err_t network_status_page(httpd_req_t *r) {
+    network_status s;
+    if (network_get_status(&s) != ESP_OK) {
+        httpd_resp_set_status(r, "503 Service Unavailable");
+        return httpd_resp_sendstr(r, "Network status unavailable");
+    }
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddStringToObject(j, "state", network_state_name(s.state));
+    cJSON_AddStringToObject(j, "setup_result", network_setup_name(s.setup));
+    cJSON_AddBoolToObject(j, "configured", s.configured);
+    cJSON_AddBoolToObject(j, "persistence_uncertain", s.persistence_uncertain);
+    cJSON_AddBoolToObject(j, "recovery_ap", s.recovery_ap);
+    cJSON_AddNumberToObject(j, "attempts", s.attempts);
+    cJSON_AddStringToObject(j, "ip", s.ip);
+    cJSON_AddStringToObject(j, "error", s.error);
+    return json_response(r, j);
+}
+static esp_err_t network_action(httpd_req_t *r) {
+    char body[768], type[40];
+    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
+        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
+    size_t used = 0;
+    while (used < r->content_len) {
+        int n = httpd_req_recv(r, body + used, r->content_len - used);
+        if (n <= 0) { memset(body, 0, sizeof(body)); return ESP_FAIL; }
+        used += (size_t)n;
+    }
+    body[used] = 0;
+    // cJSON strings are NUL terminated. Reject actual escaped/embedded NUL,
+    // while allowing literal backslash text in otherwise valid credentials.
+    bool valid = !memchr(body, 0, used);
+    for (size_t i = 0; valid && i + 1 < used; ++i) {
+        if (body[i] != '\\') continue;
+        if (i + 5 < used && !strncmp(body + i + 1, "u0000", 5)) valid = false;
+        ++i; // Skip the escaped character, including an escaped backslash.
+    }
+    cJSON *j = valid ? cJSON_ParseWithOpts(body, NULL, true) : NULL;
+    memset(body, 0, sizeof(body));
+    const char *action = string(j, "action");
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+    network_credentials credentials = {0};
+    const char *ssid = string(j, "ssid"), *password = string(j, "password");
+    if (cJSON_IsObject(j) && action && !strcmp(action, "configure") &&
+        cJSON_GetArraySize(j) == 3 && ssid && password &&
+        strlen(ssid) < sizeof(credentials.ssid) && strlen(password) < sizeof(credentials.password)) {
+        strcpy(credentials.ssid, ssid); strcpy(credentials.password, password);
+        err = network_configure(&credentials);
+    } else if (cJSON_IsObject(j) && action && !strcmp(action, "forget") && cJSON_GetArraySize(j) == 1)
+        err = network_forget();
+    // Avoid retaining the password in the parsed request after admission.
+    cJSON *secret = cJSON_GetObjectItemCaseSensitive(j, "password");
+    if (cJSON_IsString(secret)) memset(secret->valuestring, 0, strlen(secret->valuestring));
+    memset(&credentials, 0, sizeof(credentials)); cJSON_Delete(j);
+    if (err == ESP_ERR_INVALID_ARG)
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use configure with SSID (1–32 bytes) and personal-network password (8–63 printable ASCII characters), or forget");
+    if (err != ESP_OK) {
+        httpd_resp_set_status(r, "409 Conflict");
+        return httpd_resp_sendstr(r, "Network setup busy or unavailable; check status and retry");
+    }
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    httpd_resp_set_type(r, "application/json"); httpd_resp_set_status(r, "202 Accepted");
+    return httpd_resp_sendstr(r, "{\"accepted\":true}");
+}
+
 void http_api_register(httpd_handle_t server)
 {
+    httpd_uri_t net_status = {.uri = "/api/network", .method = HTTP_GET, .handler = network_status_page};
+    httpd_uri_t net_action = {.uri = "/api/network", .method = HTTP_POST, .handler = network_action};
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &net_status));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &net_action));
     httpd_uri_t registry = {.uri = "/api/radiators", .method = HTTP_POST, .handler = registry_action};
     httpd_uri_t list = {.uri = "/api/radiators", .method = HTTP_GET, .handler = radio_status_page};
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &registry));

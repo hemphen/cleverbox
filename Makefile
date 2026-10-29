@@ -44,17 +44,28 @@ test:
 	  firmware/components/radio_transport/test/test_admission.cpp \
 	  $(BUILD_DIR)/transport_protocol.o $(BUILD_DIR)/transport_pairing.o $(BUILD_DIR)/transport_control.o -o $(BUILD_DIR)/test_admission
 	./$(BUILD_DIR)/test_admission
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ihost/include -Ifirmware/components/network_setup/include \
+	  firmware/components/network_setup/network_policy.c \
+	  firmware/components/network_setup/test/test_network.c -o $(BUILD_DIR)/test_network
+	./$(BUILD_DIR)/test_network
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ihost/include -Ifirmware/components/network_setup/include \
+	  firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_store.c \
+	  firmware/components/network_setup/test/test_network_store.c -o $(BUILD_DIR)/test_network_store
+	./$(BUILD_DIR)/test_network_store
 	node firmware/main/test_ui.js
 
 # Host simulation needs cJSON development headers/library (e.g. libcjson-dev).
 HOST_CFLAGS = -std=c11 -Wall -Wextra -Werror -pedantic -g -fPIC -MMD -MP -DCLEVERBOX_HOST \
-  -Ihost/include -Ifirmware/main -Ifirmware/components/radio_transport \
+  -Ifirmware/components/network_setup/include -Ihost/include -Ifirmware/main -Ifirmware/components/radio_transport \
   -Ifirmware/components/radio_transport/include -Ifirmware/components/device_store/include \
   -Ifirmware/components/radiator_protocol/include $(shell pkg-config --cflags libcjson)
 HOST_CSOURCES = firmware/components/radiator_protocol/radiator_protocol.c \
   firmware/components/radiator_protocol/radiator_pairing.c \
   firmware/components/radiator_protocol/radiator_control.c \
-  firmware/components/device_store/device_store.c firmware/main/http_api.c host/http.c host/storage.c
+  firmware/components/device_store/device_store.c firmware/main/http_api.c host/http.c host/storage.c \
+  firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_store.c host/network.c
 HOST_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/host/%.o,$(HOST_CSOURCES))
 
 $(BUILD_DIR)/host/%.o: %.c $(wildcard host/include/*.h) firmware/main/http_api.h
@@ -77,6 +88,7 @@ simulate: host
 test-http: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_http.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_registry.py
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_network.py
 
 -include $(HOST_OBJECTS:.o=.d) $(BUILD_DIR)/host/simulation.d
 

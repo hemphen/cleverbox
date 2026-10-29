@@ -19,6 +19,8 @@ async function main() {
     command: {phase: 'idle', attempts: 0, template_available: false}};
   data.radiators=[{id:1,name:'Living room',pairing:data.pairing,command:data.command}];
   data.capacity=8; data.exchange_id=0;
+  let network = {state:'disconnected',configured:false,recovery_ap:true,attempts:0,setup_result:'none',error:'none',ip:''};
+  let networkReadsFail=false;
   let lastRequest, responseOK = true, deferredStatus;
   const context = vm.createContext({
     document: {
@@ -27,8 +29,13 @@ async function main() {
       querySelectorAll(selector) { return selector.includes('data-command') ? buttons : []; }
     },
     Date: class { getHours() { return 12; } getMinutes() { return 34; } getSeconds() { return 56; } },
+    TextEncoder,
     setTimeout() {}, clearTimeout() {},
     async fetch(url, options) {
+      if(url==='/api/network' && !options.body){
+        if(networkReadsFail) throw new Error('unreachable');
+        return {ok:true,json:async()=>network};
+      }
       if (url.startsWith('/api/radio') && deferredStatus) { const next=deferredStatus;deferredStatus=undefined;return next; }
       if (url.startsWith('/api/radio')) return {ok: true, json: async () => data};
       lastRequest = {url, body: JSON.parse(options.body)};
@@ -122,6 +129,45 @@ async function main() {
   fields.radiatorSelect.value='2'; fields.radiatorSelect.handlers.change();
   await new Promise(setImmediate);
   assert.equal(fields.sendTarget.disabled,true);
+  assert.match(fields.networkStatus.textContent,/Wi-Fi: disconnected/);
+  assert.match(fields.networkAccess.textContent,/Protected Cleverbox AP available/);
+  assert.match(html, /id="wifiPassword" type="password"/);
+  fields.wifiSsid.value=''; fields.wifiPassword.value='x';
+  const before=lastRequest;
+  await fields.wifiSave.handlers.click(); assert.equal(lastRequest,before);
+  assert.equal(fields.wifiPassword.value,'');
+  fields.wifiSsid.value='ü'.repeat(17); fields.wifiPassword.value=String.fromCharCode(...Array.from({length:12},(_,i)=>65+i));
+  await fields.wifiSave.handlers.click(); assert.equal(lastRequest,before); // Bytes, not character count.
+  fields.wifiSsid.value=String.fromCharCode(...Array.from({length:12},(_,i)=>65+i));
+  const secret=String.fromCharCode(...Array.from({length:12},(_,i)=>97+i));
+  fields.wifiPassword.value=secret;
+  await fields.wifiSave.handlers.click();
+  assert.equal(lastRequest.url,'/api/network'); assert.equal(lastRequest.body.action,'configure');
+  assert.equal(lastRequest.body.password,secret); assert.equal(fields.wifiPassword.value,'');
+  assert.match(fields.networkAction.textContent,/Connection queued/);
+  network={...network,state:'connecting',setup_result:'pending',attempts:1};
+  await vm.runInContext('refreshNetwork()',context); assert.equal(fields.wifiSave.disabled,true);
+  network={...network,state:'failed',setup_result:'failed',error:'connection_failed'};
+  await vm.runInContext('refreshNetwork()',context); assert.equal(fields.wifiSave.disabled,false);
+  assert.match(fields.networkStatus.textContent,/Setup result: failed/);
+  network={...network,state:'connected',configured:true,ip:'192.0.2.10',setup_result:'saved',error:'none'};
+  await vm.runInContext('refreshNetwork()',context);
+  assert.match(fields.networkAccess.textContent,/http:\/\/192.0.2.10/);
+  assert.equal(fields.wifiPassword.value,'');
+  network={...network,persistence_uncertain:true,error:'persistence_uncertain'};
+  await vm.runInContext('refreshNetwork()',context);
+  assert.match(fields.networkStatus.textContent,/unknown after restart/);
+  assert.match(fields.networkAccess.textContent,/Persistence uncertain: AP stays open/);
+  network={...network,persistence_uncertain:false,error:'none'};
+  networkReadsFail=true; await vm.runInContext('refreshNetwork()',context);
+  assert.match(fields.networkStatus.textContent,/join the home network/);
+  assert.match(fields.networkAccess.textContent,/192.0.2.10/); // Retain last station address across AP closure.
+  networkReadsFail=false; responseOK=false; fields.wifiPassword.value=secret;
+  await fields.wifiSave.handlers.click(); assert.equal(fields.wifiPassword.value,'');
+  assert.match(fields.networkAction.textContent,/failed or is busy/);
+  responseOK=true; await fields.wifiForget.handlers.click();
+  assert.deepEqual(lastRequest,{url:'/api/network',body:{action:'forget'}});
+  for(const field of Object.values(fields)) assert(!field.textContent.includes(secret));
   console.log('UI learned/missing state, optional import, preview, admission and error rendering: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

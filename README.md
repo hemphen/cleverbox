@@ -5,7 +5,8 @@ A small, local bridge for Purmo/LVI radiators, targeting the Elecram Sub-GHz
 
 **Status: locally runnable HTTP application with simulated RF traffic; physical
 firmware supports reception, a persistent multi-radiator registry with explicit HTTP routing,
-explicit controller-state saving and independent per-radiator report-driven commands. No hardware test yet.**
+explicit controller-state saving, independent per-radiator report-driven commands and
+persistent home Wi-Fi setup/recovery. No hardware test yet.**
 
 ## Run locally without hardware
 
@@ -35,10 +36,20 @@ construction remains
 blocked by unresolved fields `97` and `5B`; synthetic bytes are not physical-device
 defaults. See the [field assessment](docs/controller-state.md).
 
+## Physical startup and network recovery
+
+Read the USB serial console at 115200 baud for the random per-boot **Cleverbox**
+AP password. Join it and open **http://192.168.4.1/**. Enter home Wi-Fi in the
+existing page; credentials are saved after DHCP success. Open the station IP
+shown on the page/serial from the home network. The protected setup AP closes
+60 seconds after connection and reopens on network loss. An uncertain storage
+result keeps the AP open and is shown explicitly. **Forget home Wi-Fi only**
+preserves radiator setup. See [network setup, recovery and validation](docs/networking.md).
+
 ## Product direction
 
 Local HTTP setup/control comes first, with a persistent registry and independent per-radiator delivery implemented. Next come
-home Wi-Fi/device time, then MQTT
+device-managed time, then MQTT
 with Home Assistant discovery. Matter is
 an optional later interface. Interfaces will share the same command handling.
 Home Assistant supplies history, schedules, automations and notifications.
