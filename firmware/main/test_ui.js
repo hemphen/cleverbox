@@ -171,6 +171,12 @@ async function main() {
   assert.match(fields.networkAction.textContent,/failed or is busy/);
   responseOK=true; await fields.wifiForget.handlers.click();
   assert.deepEqual(lastRequest,{url:'/api/network',body:{action:'forget'}});
+  await fields.mqttDiscoveryEnable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'discovery_enable'}});
+  await fields.mqttDiscoveryDisable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'discovery_disable'}});
+  mqtt={...mqtt,discovery_enabled:false,discovery_pending:2,discovery_error:0x7413};
+  await vm.runInContext('refreshMqtt()',context);
+  assert.match(fields.mqttStatus.textContent,/cleanup pending: 2/);
+  assert.match(fields.mqttStatus.textContent,/publication failed; retrying/);
   for(const field of Object.values(fields)) assert(!field.textContent.includes(secret));
   await vm.runInContext('refreshTime()',context);
   assert.match(fields.timeStatus.textContent,/Time unavailable/);
@@ -211,6 +217,12 @@ async function main() {
   await fields.mqttDisable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'disable'}});
   await fields.mqttEnable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'enable'}});
   await fields.mqttForget.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'forget'}});
+  await fields.mqttDiscoveryEnable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'discovery_enable'}});
+  await fields.mqttDiscoveryDisable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'discovery_disable'}});
+  mqtt={...mqtt,discovery_enabled:false,discovery_pending:2,discovery_error:0x7413};
+  await vm.runInContext('refreshMqtt()',context);
+  assert.match(fields.mqttStatus.textContent,/cleanup pending: 2/);
+  assert.match(fields.mqttStatus.textContent,/publication failed; retrying/);
   for(const field of Object.values(fields)) assert(!field.textContent.includes(secret));
   console.log('UI learned/missing state, optional import, preview, admission and error rendering: passed');
 }

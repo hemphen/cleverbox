@@ -59,10 +59,11 @@ Time setup never transmits radiator settings. Admitted commands keep their clock
 <button id="mqttDiscoveryEnable">Enable HA discovery</button><button id="mqttDiscoveryDisable">Disable HA discovery and remove entities</button>
 <button id="mqttForget">Forget MQTT only</button>
 <p id="mqttAction" role="status"></p>
+<p><a href="https://github.com/hemphen/cleverbox/blob/main/docs/home-assistant.md">Home Assistant setup and migration guide</a></p>
 <small>Local TCP broker; no TLS. Use a trusted LAN and broker topic ACLs. HTTP and NVS are unencrypted.
 Each configuration save replaces all fields; re-enter the password when saving. Stored passwords are never returned.
 Disable/enable keeps credentials. Forget preserves radiators, Wi-Fi, time and admitted RF commands.
-MQTT state is separate from requested settings; commands require the current session and a new request ID (see docs/mqtt.md).</small>
+MQTT state is separate from requested settings; commands require the current session and a single-use token or new request ID (see docs/mqtt.md).</small>
 </section>
 <section id="simulationPanel" hidden>
 <h2>SIMULATION · no physical radio</h2>
@@ -223,7 +224,7 @@ async function refreshMqtt(){
       (s.host?' · Broker: '+s.host+':'+s.port:'')+(s.pending?' · Saving…':'')+
       (s.config_error?' · Save/load error: '+s.config_error:'')+
       (s.client_error?' · Client error: '+s.client_error:'')+
-      ' · HA discovery: '+(s.discovery_enabled?'enabled':'disabled')+(s.discovery_pending?' · discovery/cleanup pending: '+s.discovery_pending:'')+(s.discovery_error?' · discovery error: '+s.discovery_error:'')+
+      ' · HA discovery: '+(s.discovery_enabled?'enabled':'disabled')+(s.discovery_pending?' · discovery/cleanup pending: '+s.discovery_pending:'')+(s.discovery_error?' · Discovery: '+({29713:'publication acknowledgement timed out; reconnecting',29714:'configuration exceeds payload limit',29715:'publication failed; retrying'}[s.discovery_error]??('storage error '+s.discovery_error)):'')+
       (s.subscription_error?' · Command subscription: '+({29697:'rejected',29698:'acknowledgement timed out',29699:'request failed'}[s.subscription_error]??s.subscription_error)+(s.enabled?'; retrying at a bounded pace.':'; MQTT disabled.'):'')+
       (s.persistence_uncertain?' · Persistence uncertain: check after restart or retry save/forget.':'');
     for(const id of ['mqttDiscoveryEnable','mqttDiscoveryDisable','mqttSave','mqttEnable','mqttDisable','mqttForget']) field(id).disabled=!!s.pending;
@@ -241,7 +242,7 @@ async function mqttAction(action){
   field('mqttPassword').value='';
   try{
     const r=await fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!r.ok) throw new Error('MQTT request failed or is busy. Check status.');
+    if(!r.ok) throw new Error(await r.text());
     field('mqttAction').textContent='MQTT configuration queued. Check status for save errors. No radiator command requested.';
   }catch(error){field('mqttAction').textContent=error.message;}
   finally{body.password=''; await refreshMqtt();}

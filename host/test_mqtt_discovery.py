@@ -30,6 +30,11 @@ def run(directory):
         assert not configs()
         name='"\\'*16
         app.http('/api/radiators',dict(action='rename',id=1,name=name),202); app.advance(100)
+        # Storage failure can occur after durable mutation; halt until explicit retry.
+        app.sim('discovery_storage_fault',mode=1)
+        app.http('/api/mqtt',dict(action='discovery_enable'),202); app.advance(100)
+        assert app.http('/api/mqtt')['discovery_error'] and not app.http('/api/mqtt')['discovery_enabled']
+        assert not configs()
         app.http('/api/mqtt',dict(action='discovery_enable'),202)
         rows=configs(); assert rows
         c=rows[-1]['payload']; assert c['device']['name']==name and len(json.dumps(c).encode())<8192
@@ -37,6 +42,9 @@ def run(directory):
         assert len({x['unique_id'] for x in c['components'].values()})==7
         assert all(x['unique_id'].startswith('cleverbox_020000000001_1_') for x in c['components'].values())
         assert all(r['retain'] for r in rows) and app.http()['simulation_tx']==[]
+        app.advance(100); journal_before=Path(str(storage)+'.ha_discovery').read_bytes()
+        assert not configs(15000)
+        assert Path(str(storage)+'.ha_discovery').read_bytes()==journal_before
         app.http('/api/mqtt',dict(action='configure',host='other.test',port=1883,username='',password='',enabled=True),409)
         app.http('/api/mqtt',dict(action='forget'),409)
         app.sim('mqtt_input',topic='homeassistant/status',payload='online'); app.advance(100)

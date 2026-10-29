@@ -119,6 +119,8 @@ def main():
                     if not lib.host_mqtt_connection(int(data['connected'])): raise ValueError()
                 elif args.test_clock and action == 'mqtt_subscribe_mode' and type(data.get('mode')) is int:
                     if not lib.host_mqtt_subscribe_mode(data['mode']): raise ValueError()
+                elif args.test_clock and action == 'discovery_storage_fault':
+                    lib.host_discovery_storage_fault(data['mode'])
                 elif args.test_clock and action == 'mqtt_confirmed_mode':
                     lib.host_mqtt_confirmed_mode(data['mode'])
                 elif args.test_clock and action == 'mqtt_suback' and type(data.get('id')) is int and type(data.get('qos')) is int:

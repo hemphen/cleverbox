@@ -21,17 +21,17 @@ PUBLISH=C.CFUNCTYPE(C.c_bool,C.c_char_p,C.c_char_p,C.c_bool)
 NONCE=C.CFUNCTYPE(None,C.POINTER(C.c_char))
 
 
-SUBSCRIBE_CONFIRMED=C.CFUNCTYPE(C.c_int,C.c_char_p,C.c_char_p)
+PUBLISH_CONFIRMED=C.CFUNCTYPE(C.c_int,C.c_char_p,C.c_char_p)
 
 
 class Ops(C.Structure):
-    _fields_=[('start',START),('stop',STOP),('subscribe',SUBSCRIBE),('publish',PUBLISH),('nonce',NONCE),('publish_confirmed',SUBSCRIBE_CONFIRMED)]
+    _fields_=[('start',START),('stop',STOP),('subscribe',SUBSCRIBE),('publish',PUBLISH),('nonce',NONCE),('publish_confirmed',PUBLISH_CONFIRMED)]
 
 
 class BrokerClient:
     def __init__(self,lib):
         self.lib=lib; self.client=None; self.connected=False; self.reconnect_at=0
-        self.ops=Ops(START(self.start),STOP(self.stop),SUBSCRIBE(self.subscribe),PUBLISH(self.publish),NONCE(self.nonce),SUBSCRIBE_CONFIRMED(self.publish_confirmed))
+        self.ops=Ops(START(self.start),STOP(self.stop),SUBSCRIBE(self.subscribe),PUBLISH(self.publish),NONCE(self.nonce),PUBLISH_CONFIRMED(self.publish_confirmed))
         lib.mqtt_bridge_init.argtypes=[Ops,C.c_char_p]
         lib.mqtt_bridge_input.argtypes=[C.c_char_p,C.c_size_t,C.c_char_p,C.c_size_t,C.c_size_t,C.c_size_t,C.c_bool]
         lib.mqtt_bridge_connection.argtypes=[C.c_bool]

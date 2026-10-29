@@ -117,10 +117,18 @@ http:
         value = m.payload.decode()
         messages.append((m.topic, json.loads(value) if value.startswith('{') else value, m.retain))
     observer.on_message = received; observer.connect('127.0.0.1', port, 30)
+    def advance(ms):
+        # Real socket I/O runs between HTTP requests. Do not jump beyond the
+        # production ACK timeout while starving that boundary of poll turns.
+        # RF/report deadlines still advance faster than wall time.
+        while ms > 0:
+            step=min(ms,100)
+            app.advance(step); ms-=step
+
     def pump(predicate=lambda: True, timeout=10, step=100):
         until = time.monotonic()+timeout
         while time.monotonic() < until:
-            app.advance(step); observer.loop(timeout=.002)
+            advance(step); observer.loop(timeout=.002)
             if predicate(): return
             time.sleep(.02)
         raise AssertionError(('condition timed out', messages[-8:], ha.states() if ha else None))
@@ -131,7 +139,7 @@ http:
     def session():
         return app.http('/api/mqtt')['session']
     def snapshots():
-        app.advance(5100)
+        advance(5100)
         pump(lambda: state_is('sensor.cleverbox_session', session()) and
              all(state_is(f'sensor.cleverbox_{i}_snapshot', session()) for i in (1,2)))
         # Ensure attributes, not only the unchanged session-valued state, arrived.
@@ -146,12 +154,12 @@ http:
         return app.http(f'/api/radio?id={i}')['command']['phase'] == value
     try:
         app.sim('device', index=1)
-        app.http('/api/pairing', dict(action='start',source='F1010203',destination='F1100001'),202); app.advance(2000)
+        app.http('/api/pairing', dict(action='start',source='F1010203',destination='F1100001'),202); advance(2000)
         assert len(app.http()['radiators']) == 2
         app.http('/api/mqtt',dict(action='configure',host='127.0.0.1',port=port,username='',password='',enabled=True),202)
-        app.advance(100)
+        advance(100)
         app.http('/api/mqtt',dict(action='discovery_enable'),202)
-        app.advance(100)
+        advance(100)
         app.http('/api/network',dict(action='configure',ssid='synthetic',password='synthetic'),202)
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip')
         pump(lambda:app.http('/api/mqtt')['connected'])
@@ -177,9 +185,9 @@ http:
         app.http('/api/time',dict(action='manual',unix_seconds=1767268800)); snapshots()
         apply(1); pump(lambda:admitted(1,'busy_or_unavailable_or_missing_template'))
         assert app.http()['simulation_tx'] == tx
-        app.http('/api/controller-state',dict(action='import',id=1,state=STATE),202); app.advance(10)
-        app.sim('fixture'); app.advance(10) # B was selected explicitly above.
-        app.http('/api/controller-state',dict(action='save',id=2),202); app.advance(10)
+        app.http('/api/controller-state',dict(action='import',id=1,state=STATE),202); advance(10)
+        app.sim('fixture'); advance(10) # B was selected explicitly above.
+        app.http('/api/controller-state',dict(action='save',id=2),202); advance(10)
         snapshots()
         apply(1,22,'Comfort'); pump(lambda:phase(1,'matched'))
         snapshots(); pump(lambda:state_is('sensor.cleverbox_020000000001_1_observed_target','22.0'))
@@ -205,20 +213,20 @@ http:
         assert app.http()['radiators'][0]['command']['pending']
         snapshots(); pump(lambda:state_is('sensor.cleverbox_020000000001_2_observed_target','16.0'))
         # Delivery timeout is a separate historical entity, not an observation.
-        app.advance(151000); pump(lambda:state_is('sensor.cleverbox_020000000001_1_last_delivery','timeout'))
+        advance(151000); pump(lambda:state_is('sensor.cleverbox_020000000001_1_last_delivery','timeout'))
         assert app.http('/api/radio?id=1')['command']['attempts']==0
-        app.advance(305000); snapshots()
+        advance(305000); snapshots()
         pump(lambda:state_is('sensor.cleverbox_020000000001_1_temperature','unavailable'))
         assert state_is('sensor.cleverbox_020000000001_2_temperature','unavailable')
-        app.sim('inject',frame=REPORT); app.sim('inject',frame=REPORT_B); app.advance(10); snapshots()
+        app.sim('inject',frame=REPORT); app.sim('inject',frame=REPORT_B); advance(10); snapshots()
         pump(lambda:state_is('binary_sensor.cleverbox_020000000001_1_observation_fresh','on'))
         # A fresh report can explicitly lack the measured-temperature field.
         missing=bytearray.fromhex(REPORT); missing[16:18]=bytes.fromhex('084C'); missing[16]^=1
-        app.sim('inject',frame=changed_frame(missing.hex(),16)); app.advance(10); snapshots()
+        app.sim('inject',frame=changed_frame(missing.hex(),16)); advance(10); snapshots()
         pump(lambda:state_is('sensor.cleverbox_020000000001_1_temperature','unavailable'))
         assert state_is('binary_sensor.cleverbox_020000000001_1_observation_fresh','on')
         assert state_is('sensor.cleverbox_020000000001_1_observed_target','21.0')
-        app.sim('inject',frame=REPORT); app.advance(10); snapshots()
+        app.sim('inject',frame=REPORT); advance(10); snapshots()
         print('HA rapid actions, busy rejection, two radiators, RF timeout, stale/missing measurements and recovery: passed', flush=True)
         # Missing snapshots expire in real HA wall time despite online availability.
         # --test-clock freezes publication while HA's native expire_after runs.
@@ -243,10 +251,10 @@ http:
         snapshots(); app.sim('scenario',name='delayed'); apply(2,18,'Comfort')
         pump(lambda:app.http()['radiators'][1]['command']['pending'],step=100)
         broker.terminate(); broker.wait(timeout=5)
-        app.advance(6000); assert phase(2,'matched')
+        advance(6000); assert phase(2,'matched')
         tx = app.http()['simulation_tx']; broker = start_broker(); observer.reconnect()
         pump(lambda:app.http('/api/mqtt')['connected'] and session()!=original_session,timeout=20)
-        changed_session = session(); snapshots()
+        changed_session = session(); snapshots(); assert session()==changed_session
         assert app.http()['simulation_tx']==tx
         pump(lambda:state_is('sensor.cleverbox_020000000001_2_last_delivery','matched'))
         result = ha.states()['sensor.cleverbox_020000000001_2_last_delivery']['attributes']['result']
@@ -284,18 +292,18 @@ http:
         observer.publish('homeassistant/status','online')
         pump(lambda:len([t for t,p,r in messages if t.startswith('homeassistant/device/')])>before)
         assert app.http()['simulation_tx']==tx
-        app.http('/api/mqtt',dict(action='discovery_disable'),202); app.advance(100)
+        app.http('/api/mqtt',dict(action='discovery_disable'),202); advance(100)
         pump(lambda:not discovered(),timeout=20)
         pump(lambda:app.http('/api/mqtt')['discovery_pending']==0)
         assert app.http()['simulation_tx']==tx
-        app.http('/api/mqtt',dict(action='discovery_enable'),202); app.advance(100)
+        app.http('/api/mqtt',dict(action='discovery_enable'),202); advance(100)
         pump(lambda:len(discovered())==14,timeout=20)
         assert {e['unique_id'] for e in discovered()}==set(entries)
         assert app.http()['simulation_tx']==tx
         # Keep retained configs across reconnect while removing a radiator offline.
         broker.terminate(); broker.wait(timeout=5)
-        app.advance(6000)
-        app.http('/api/radiators',dict(action='remove',id=1),202); app.advance(10)
+        advance(6000)
+        app.http('/api/radiators',dict(action='remove',id=1),202); advance(10)
         app.stop(); app = App(storage,real_mqtt=True)
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip')
         tx = app.http()['simulation_tx']
@@ -308,13 +316,13 @@ http:
         app.sim('device',index=0)
         added=app.http('/api/pairing',dict(action='start',source='F1010203',destination='F1100001'),202)['id']
         assert added==3
-        app.advance(2000)
+        advance(2000)
         pump(lambda:len(discovered())==14,timeout=20)
         assert len({e['device_id'] for e in discovered()})==2
         assert any(e['unique_id']=='cleverbox_020000000001_3_temperature_centi_c' for e in discovered())
         assert state_is('sensor.cleverbox_020000000001_3_temperature','unavailable')
-        broker.terminate(); broker.wait(timeout=5); app.advance(6000)
-        app.http('/api/mqtt',dict(action='discovery_disable'),202); app.advance(10)
+        broker.terminate(); broker.wait(timeout=5); advance(6000)
+        app.http('/api/mqtt',dict(action='discovery_disable'),202); advance(10)
         assert not app.http('/api/mqtt')['discovery_enabled']
         app.stop(); app = App(storage,real_mqtt=True)
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip')

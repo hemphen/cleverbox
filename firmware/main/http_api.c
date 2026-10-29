@@ -560,7 +560,7 @@ static esp_err_t mqtt_action(httpd_req_t *r) {
     memset(&settings, 0, sizeof(settings)); cJSON_Delete(j);
     if (err == ESP_ERR_INVALID_ARG) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST,
         "Use configure with host, port, username, password and enabled, or enable/disable/forget");
-    if (err != ESP_OK) { httpd_resp_set_status(r, "409 Conflict"); return httpd_resp_sendstr(r, "MQTT setup busy; check status"); }
+    if (err != ESP_OK) { httpd_resp_set_status(r, "409 Conflict"); return httpd_resp_sendstr(r, "MQTT setup busy, or discovery records remain. Disable discovery and finish cleanup before changing or forgetting the broker."); }
     httpd_resp_set_status(r, "202 Accepted"); httpd_resp_set_type(r, "application/json");
     return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");
 }
