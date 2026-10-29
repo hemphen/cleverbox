@@ -55,6 +55,10 @@ constexpr int RADIOLIB_CC1101_REG_PKTCTRL0 = 0, RADIOLIB_CC1101_REG_RXBYTES = 1,
               RADIOLIB_CC1101_REG_PKTCTRL1 = 4;
 inline void (*transmit_hook)() = nullptr;
 inline int transmit_result;
+inline int receive_result;
+inline uint8_t transmitted_bytes[64];
+inline size_t transmitted_size;
+inline unsigned transmit_count;
 inline uint8_t incoming_bytes[64];
 inline size_t incoming_size, incoming_used;
 class RadioLibHal {
@@ -99,11 +103,14 @@ public:
     explicit CC1101(Module *) {}
     int standby() { return 0; }
     int fixedPacketLengthMode(size_t) { return 0; }
-    int transmit(const uint8_t *, size_t) {
+    int transmit(const uint8_t *bytes, size_t size) {
+        assert(size <= sizeof(transmitted_bytes));
+        memcpy(transmitted_bytes, bytes, size); transmitted_size = size;
+        ++transmit_count;
         if (transmit_hook) transmit_hook();
         return transmit_result;
     }
-    int startReceive() { return 0; }
+    int startReceive() { return receive_result; }
     int begin(double, double, double, double, int, int) { return 0; }
     int getChipVersion() { return 1; }
     int setPreambleLength(int, int) { return 0; }

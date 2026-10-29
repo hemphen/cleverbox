@@ -16,6 +16,9 @@ frame per tick in round-robin order and restores receive mode after every TX.
 Report waits never reserve the CC1101. After timeout/TX failure,
 matching late reports can reconcile the per-device result without another send.
 There is no per-radiator backlog or replacement policy.
+If the radio cannot restore reception and the worker stops, every admitted
+command, including those still queued for handoff, receives a terminal error.
+No command is resumed or transmitted automatically after restart.
 
 ## HTTP identities
 
@@ -131,9 +134,11 @@ registry 2064 bytes, worker 1960 bytes and queue payload at most 1116 bytes
 (plus RTOS queue metadata). At capacity three, worker size was 944 bytes.
 Each additional slot adds 256 registry bytes, about 203 worker bytes and 124
 queue payload bytes, plus 210 bytes in the two static storage wire buffers.
-The storage buffers remain BSS; the worker lives on the 6144-byte radio task
-stack on firmware. HTTP keeps its 8192-byte stack. Physical task high-water
-marks, actual queue allocation and flash durability need board acceptance.
+The storage buffers and capacity-dependent worker live in static memory on
+firmware. The radio task keeps its 6144-byte stack for temporary frames and
+function calls; HTTP keeps its 8192-byte stack. At capacity 32, the host ABI
+worker measures 6856 bytes, which cannot fit on that task stack. Physical task
+high-water marks, actual queue allocation and flash durability need board acceptance.
 
 `make test test-http test-capacity` exercises the default and three-slot builds,
 including generated full/oversized records and the same two-device HTTP walkthrough.

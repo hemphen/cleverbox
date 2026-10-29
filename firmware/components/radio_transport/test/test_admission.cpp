@@ -21,8 +21,8 @@ static void reset() {
     }
     mutation_pending = exchange_pending = pair_reserved = queue_full = false; exchange_id = 0;
     dequeue_hook = transmit_hook = delay_hook = nullptr; store_result = 0;
-    transmit_result = 0; test_now_us = 1000000; checks = 0;
-    incoming_size = incoming_used = 0; radio_requests = xQueueCreate(1, sizeof(radio_request));
+    transmit_result = receive_result = 0; transmit_count = 0; test_now_us = 1000000; checks = 0;
+    incoming_size = incoming_used = 0; radio_requests = xQueueCreate(CLEVERBOX_RADIATOR_CAPACITY + 1, sizeof(radio_request));
 }
 static void hear(radio_worker &worker, const rf_frame &frame) {
     memcpy(incoming_bytes, frame.bytes, frame.size); incoming_size = frame.size; incoming_used = 0;
@@ -33,6 +33,78 @@ static void during_dequeue() {
     command.state = b_state;
     assert(radio_control_start(2, &command) == ESP_OK); // Admission during A handoff.
     ++checks;
+}
+static rf_frame report_b(bool matching) {
+    rf_frame f = {};
+    const char *hex = matching
+        ? "23F1040507C6F1010203DF203000404B02A88A02B100E100641919DA000A000A0A47C6D3D4FD"
+        : "23F1040507C6F1010203DF203000404B02A88A02BA00E100641919DA000A000A0A47CC18D07D";
+    assert(rf_parse_hex(hex, f.bytes, sizeof(f.bytes), &f.size) && rf_valid(&f));
+    return f;
+}
+static void test_queue_capacity() {
+    reset(); radio_request in = {}, out = {};
+    for (unsigned i = 0; i < CLEVERBOX_RADIATOR_CAPACITY + 1; ++i) {
+        in.id = i + 1; assert(xQueueSend(radio_requests, &in, 0) == pdPASS);
+    }
+    assert(xQueueSend(radio_requests, &in, 0) != pdPASS);
+    for (unsigned i = 0; i < CLEVERBOX_RADIATOR_CAPACITY + 1; ++i) {
+        assert(xQueueReceive(radio_requests, &out, 0) == pdPASS && out.id == i + 1);
+    }
+    assert(!queue_count);
+}
+static void test_fair_turns() {
+    reset(); radio_worker worker;
+    rf_control_request a = command, b = command;
+    a.state = state_frame(); b.state = b_state;
+    assert(rf_control_start(&worker.controls[0], &a, registry.records[0].pair.controller,
+                            registry.records[0].pair.radiator, test_now_us / 1000));
+    assert(rf_control_start(&worker.controls[1], &b, registry.records[1].pair.controller,
+                            registry.records[1].pair.radiator, test_now_us / 1000));
+    registry.records[0].command_reserved = registry.records[1].command_reserved = true;
+    for (unsigned i = 0; i < 6; ++i) {
+        // Both devices remain ready at every turn; exactly one frame is sent per step.
+        worker.controls[0].status.phase = worker.controls[1].status.phase = RF_CONTROL_POLL;
+        worker.step();
+        assert(transmit_count == i + 1 && transmitted_size == 16);
+        assert(transmitted_bytes[9] == 6 + i % 2);
+    }
+}
+static void test_compaction() {
+    reset(); radio_worker worker; command.state = b_state;
+    assert(radio_control_start(2, &command) == ESP_OK); worker.step();
+    assert(registry.records[1].control.phase == RF_CONTROL_WAIT_REPORT);
+    assert(radio_device_remove(1) == ESP_OK); worker.step();
+    assert(registry.count == 1 && registry.records[0].id == 2);
+    assert(registry.records[0].command_reserved && worker.controls[0].radiator[3] == 7);
+    hear(worker, report_b(false)); worker.step();
+    assert(registry.records[0].control.phase == RF_CONTROL_WAIT_READBACK);
+    hear(worker, report_b(true));
+    assert(registry.records[0].control.phase == RF_CONTROL_MATCHED);
+    assert(!registry.records[0].command_reserved);
+}
+static void test_fatal_rx_failure() {
+    reset(); radio_worker worker;
+    registry.count = 3; registry.next_id = 4;
+    registry.records[2] = registry.records[0]; registry.records[2].id = 3;
+    registry.records[2].pair.radiator[3] = 8;
+    rf_frame cstate = {};
+    assert(rf_parse_hex("38F1010203C6F10405084500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0078B20C000045403973",
+                        cstate.bytes, sizeof(cstate.bytes), &cstate.size) && rf_valid(&cstate));
+    command.state = state_frame();
+    assert(radio_control_start(1, &command) == ESP_OK); worker.step();
+    assert(registry.records[0].control.phase == RF_CONTROL_WAIT_REPORT);
+    command.state = b_state; assert(radio_control_start(2, &command) == ESP_OK);
+    command.state = cstate; assert(radio_control_start(3, &command) == ESP_OK);
+    assert(queue_count == 2 && registry.records[2].command_pending);
+    receive_result = -77; worker.step(); // B transmits; restoring RX fails while C is still queued.
+    assert(!status.ready && status.error == -77 && queue_count == 1);
+    for (unsigned i = 0; i < 3; ++i) {
+        auto &d = registry.records[i];
+        assert(d.control.phase == RF_CONTROL_ERROR && d.control_error == -77);
+        assert(!d.command_reserved && !d.command_pending);
+    }
+    assert(radio_control_start(1, &command) == ESP_ERR_INVALID_STATE);
 }
 int main() {
     command.mode = RF_COMFORT; command.centi_c = 2050; command.clock_seconds = 43200;
@@ -62,17 +134,14 @@ int main() {
     worker.step();
     assert(registry.records[0].control.phase == RF_CONTROL_WAIT_REPORT);
     assert(registry.records[1].control.phase == RF_CONTROL_WAIT_REPORT);
-    rf_frame b_report = {};
-    assert(rf_parse_hex("23F1040507C6F1010203DF203000404B02A88A02BA00E100641919DA000A000A0A47CC18D07D", b_report.bytes, sizeof(b_report.bytes), &b_report.size));
-    hear(worker, b_report); worker.step();
+    hear(worker, report_b(false)); worker.step();
     assert(registry.records[1].control.phase == RF_CONTROL_WAIT_READBACK);
-    rf_frame b_match = b_report;
-    // B readback target is 20.5 C; reconstruct CRC using codec's target builder? Use independent fixture below.
-    assert(rf_parse_hex("23F1040507C6F1010203DF203000404B02A88A02B100E100641919DA000A000A0A47C6A43227", b_match.bytes, sizeof(b_match.bytes), &b_match.size));
-    if (rf_valid(&b_match)) hear(worker, b_match);
+    hear(worker, report_b(true));
+    assert(registry.records[0].control.phase == RF_CONTROL_WAIT_REPORT);
+    assert(registry.records[1].control.phase == RF_CONTROL_MATCHED);
     test_now_us += (RF_CONTROL_WAIT_MS + 1) * 1000LL; worker.step();
     assert(registry.records[0].control.phase == RF_CONTROL_TIMEOUT);
-    assert(registry.records[1].control.phase == RF_CONTROL_TIMEOUT || registry.records[1].control.phase == RF_CONTROL_MATCHED);
+    assert(registry.records[1].control.phase == RF_CONTROL_MATCHED);
     assert(!registry.records[0].command_reserved && !registry.records[1].command_reserved);
     assert(radio_pair_start(c, candidate, &id) == ESP_OK);
     assert(radio_control_start(1, &command) == ESP_ERR_INVALID_STATE);
@@ -80,6 +149,7 @@ int main() {
     assert(radio_pair_cancel(id) == ESP_OK); worker.step(); assert(!exchange_id);
     queue_full = true; assert(radio_control_start(1, &command) == ESP_ERR_TIMEOUT);
     assert(!registry.records[0].command_reserved); queue_full = false;
+    test_queue_capacity(); test_fair_turns(); test_compaction(); test_fatal_rx_failure();
     printf("Memory: capacity=%u record=%zu registry=%zu worker=%zu request=%zu\n", (unsigned)CLEVERBOX_RADIATOR_CAPACITY, sizeof(radiator_record), sizeof(registry), sizeof(radio_worker), sizeof(radio_request));
-    puts("Independent reservations, worker handoff, pairing exclusion, timeout: passed");
+    puts("Independent reservations, fair turns, compaction, fatal radio failure, handoff and queue capacity: passed");
 }

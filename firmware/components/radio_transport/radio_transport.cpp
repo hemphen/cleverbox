@@ -251,6 +251,34 @@ struct radio_worker {
         status.exchange_id = exchange_id; status.device_count = registry.count;
         portEXIT_CRITICAL(&status_lock);
     }
+    void fail(int error) {
+        // The worker is about to stop. Queued commands have not reached controls[]
+        // yet, so terminate reservations in the registry as well as active machines.
+        portENTER_CRITICAL(&status_lock);
+        for (size_t i = 0; i < registry.count; ++i) {
+            radiator_record &d = registry.records[i];
+            if (d.state_save_result == RADIO_STORE_PENDING || d.state_clear_result == RADIO_STORE_PENDING) {
+                if (d.state_save_result == RADIO_STORE_PENDING) d.state_save_result = RADIO_STORE_FAILED;
+                if (d.state_clear_result == RADIO_STORE_PENDING) d.state_clear_result = RADIO_STORE_FAILED;
+                d.state_store_error = error;
+            }
+            if (!d.command_reserved) continue;
+            controls[i].status.phase = d.control.phase = RF_CONTROL_ERROR;
+            control_errors[i] = d.control_error = error;
+            d.command_pending = d.command_reserved = false;
+        }
+        if (pair_reserved) {
+            pair.phase = status.pairing.phase = RF_PAIR_ERROR;
+            pair_error = status.pairing_error = error;
+            pair_reserved = exchange_pending = false;
+            exchange_id = status.exchange_id = 0;
+        }
+        if (mutation_pending) {
+            status.mutation_error = error;
+            mutation_pending = status.mutation_pending = false;
+        }
+        portEXIT_CRITICAL(&status_lock);
+    }
     void step() {
         radio_request request;
         if (xQueueReceive(radio_requests, &request, 0) == pdPASS) {
@@ -350,7 +378,7 @@ struct radio_worker {
             status.ready = rx_result == RADIOLIB_ERR_NONE;
             portEXIT_CRITICAL(&status_lock);
         }
-        if (!radio_transport_status().ready) { publish(); return; }
+        if (!radio_transport_status().ready) { fail(status.error); return; }
         uint8_t count = 0;
         bool stable = receive_count(count);
         bool restart = stable && (count & 0x80) != 0;
@@ -452,10 +480,7 @@ struct radio_worker {
             portEXIT_CRITICAL(&status_lock);
             if (result != RADIOLIB_ERR_NONE) {
                 ESP_LOGE("radio", "Receive failed: %d", result);
-                if (rf_pair_active(&pair)) pair.phase = RF_PAIR_ERROR;
-                for (size_t i = 0; i < registry.count; ++i)
-                    if (rf_control_active(&controls[i].status)) { controls[i].status.phase = RF_CONTROL_ERROR; control_errors[i] = result; }
-                pair_error = result; publish(); return;
+                fail(result); return;
             }
             frame = {};
             started = 0;
@@ -466,7 +491,8 @@ struct radio_worker {
 
 static void receive_task(void *)
 {
-    radio_worker worker;
+    // Capacity-dependent machines reside in BSS, not the fixed-size task stack.
+    static radio_worker worker;
     for (;;) {
         worker.step();
         if (!radio_transport_status().ready) { vTaskDelete(nullptr); return; }
