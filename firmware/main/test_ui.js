@@ -154,6 +154,11 @@ async function main() {
   await vm.runInContext('refreshNetwork()',context);
   assert.match(fields.networkAccess.textContent,/http:\/\/192.0.2.10/);
   assert.equal(fields.wifiPassword.value,'');
+  network={...network,persistence_uncertain:true,error:'persistence_uncertain'};
+  await vm.runInContext('refreshNetwork()',context);
+  assert.match(fields.networkStatus.textContent,/unknown after restart/);
+  assert.match(fields.networkAccess.textContent,/Persistence uncertain: AP stays open/);
+  network={...network,persistence_uncertain:false,error:'none'};
   networkReadsFail=true; await vm.runInContext('refreshNetwork()',context);
   assert.match(fields.networkStatus.textContent,/join the home network/);
   assert.match(fields.networkAccess.textContent,/192.0.2.10/); // Retain last station address across AP closure.

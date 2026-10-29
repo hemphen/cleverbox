@@ -31,7 +31,8 @@ preamble/sync and CC1101 framing belong to the upcoming transport.
 The protected **Cleverbox** AP starts at boot. Read its random per-boot password
 on USB serial (115200 baud), open **http://192.168.4.1/** and configure home Wi-Fi.
 The application also serves the station IP shown on the page and serial. The AP
-closes 60 seconds after DHCP success and reopens on network loss. Wrong credentials
+closes 60 seconds after DHCP success and reopens on network loss; uncertain
+Wi-Fi persistence keeps it open with an explicit warning. Wrong credentials
 leave recovery access available. **Forget home Wi-Fi only** preserves all radiator
 configuration. Full [network/recovery policy and hardware checklist](../docs/networking.md).
 

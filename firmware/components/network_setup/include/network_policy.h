@@ -7,13 +7,15 @@
 extern "C" {
 #endif
 // WPA2 personal networks only, byte lengths excluding NUL. No credentials in status.
+// Write/erase failed and the previous persistent record could not be restored and verified.
+#define NETWORK_ERR_PERSISTENCE_UNCERTAIN ((esp_err_t)0x7e01)
 typedef struct { char ssid[33]; char password[64]; } network_credentials;
 typedef enum { NET_DISCONNECTED, NET_CONNECTING, NET_CONNECTED, NET_FAILED } network_state;
 typedef enum { NET_SETUP_NONE, NET_SETUP_PENDING, NET_SETUP_SAVED, NET_SETUP_FAILED } network_setup_result;
 typedef struct {
     network_state state;
     network_setup_result setup;
-    bool configured, recovery_ap;
+    bool configured, recovery_ap, persistence_uncertain;
     unsigned attempts;
     char ip[16];
     const char *error;

@@ -49,6 +49,11 @@ test:
 	  firmware/components/network_setup/network_policy.c \
 	  firmware/components/network_setup/test/test_network.c -o $(BUILD_DIR)/test_network
 	./$(BUILD_DIR)/test_network
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ihost/include -Ifirmware/components/network_setup/include \
+	  firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_store.c \
+	  firmware/components/network_setup/test/test_network_store.c -o $(BUILD_DIR)/test_network_store
+	./$(BUILD_DIR)/test_network_store
 	node firmware/main/test_ui.js
 
 # Host simulation needs cJSON development headers/library (e.g. libcjson-dev).

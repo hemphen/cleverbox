@@ -102,6 +102,31 @@ int main(void) {
     assert(p.status.state == NET_FAILED && !strcmp(p.status.error, "storage_invalid") && ap_on);
     // Recover from corrupt storage by explicit successful replacement.
     network_policy_configure(&p, &a, 1); ip(&p, 2); assert(p.status.configured);
+    // Uncertain persistence is distinct from an ordinary verified rollback.
+    network_policy_tick(&p, 60002); assert(!ap_on);
+    forget_error = NETWORK_ERR_PERSISTENCE_UNCERTAIN;
+    network_policy_forget(&p, 60003);
+    assert(p.status.persistence_uncertain && p.status.configured && ap_on);
+    assert(!strcmp(p.status.error, "persistence_uncertain"));
+    network_policy_disconnected(&p, 60004); network_policy_tick(&p, 65004); ip(&p, 65005);
+    network_policy_tick(&p, 200000);
+    network_policy_got_ip(&p, "192.0.2.12", 200000);
+    assert(p.status.state == NET_CONNECTED && ap_on && p.status.persistence_uncertain);
+    assert(!strcmp(p.status.error, "persistence_uncertain"));
+    // Ordinary later failure/new trial cannot clear uncertainty; a verified save can.
+    forget_error = ESP_FAIL; network_policy_forget(&p, 200001);
+    assert(p.status.persistence_uncertain);
+    save_error = NETWORK_ERR_PERSISTENCE_UNCERTAIN;
+    network_policy_configure(&p, &b, 200002); ip(&p, 200003);
+    assert(p.status.persistence_uncertain && p.status.setup == NET_SETUP_FAILED);
+    save_error = ESP_OK;
+    network_policy_configure(&p, &b, 200004); ip(&p, 200005);
+    assert(!p.status.persistence_uncertain && p.status.setup == NET_SETUP_SAVED);
+    assert(!strcmp(p.status.error, "none"));
+    forget_error = NETWORK_ERR_PERSISTENCE_UNCERTAIN; network_policy_forget(&p, 200006);
+    assert(p.status.persistence_uncertain);
+    forget_error = ESP_OK; network_policy_forget(&p, 200007);
+    assert(!p.status.persistence_uncertain && !p.status.configured && ap_on);
     assert(associates && stops && saves && forgets);
     puts("Network policy setup/restart, rollback, loss/recovery, pacing, storage failures and reset: passed");
 }

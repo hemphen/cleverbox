@@ -45,7 +45,8 @@ Use the [libraries and component boundaries](libraries.md).
    command queued for a busy radiator. See [registry](registry.md).
 5. **Persistent home Wi-Fi and recovery.** Implemented: local HTTP provisioning,
    save after DHCP, previous-setup retention, protected serial-password recovery AP,
-   bounded attempts/paced reconnect and network-only forget. Production policy and
+   bounded attempts/paced reconnect and network-only forget. Storage errors trigger
+   best-effort rollback/readback; unresolved persistence is reported and keeps AP access. Production policy and
    HTTP paths are software-tested; physical Wi-Fi/RF acceptance remains pending.
    See [networking](networking.md).
 6. **Device-managed time.** Add a clock with explicit timezone behavior. Current

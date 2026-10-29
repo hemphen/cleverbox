@@ -42,7 +42,8 @@ Read the USB serial console at 115200 baud for the random per-boot **Cleverbox**
 AP password. Join it and open **http://192.168.4.1/**. Enter home Wi-Fi in the
 existing page; credentials are saved after DHCP success. Open the station IP
 shown on the page/serial from the home network. The protected setup AP closes
-60 seconds after connection and reopens on network loss. **Forget home Wi-Fi only**
+60 seconds after connection and reopens on network loss. An uncertain storage
+result keeps the AP open and is shown explicitly. **Forget home Wi-Fi only**
 preserves radiator setup. See [network setup, recovery and validation](docs/networking.md).
 
 ## Product direction

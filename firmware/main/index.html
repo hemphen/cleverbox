@@ -20,12 +20,12 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685
 <label>SSID <input id="wifiSsid" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
 <label>Password <input id="wifiPassword" type="password" maxlength="63" autocomplete="new-password"></label>
 <small>2.4 GHz WPA2 personal network. SSID: 1–32 bytes; password: 8–63 printable ASCII characters.
-Credentials are saved only after an IP address is acquired. A failed replacement keeps the previous setup.</small>
+Credentials are saved only after an IP address is acquired. Connection failures keep the previous setup; storage failures report whether restoration was verified or persistence is uncertain.</small>
 <button id="wifiSave">Connect and save</button>
 <button id="wifiForget">Forget home Wi-Fi only</button>
 <p id="networkAction" role="status"></p>
 <small>Setup/recovery: join Cleverbox with the random password printed to serial at boot, then open http://192.168.4.1.
-The AP stays available while connecting, closes 60 seconds after connection, and reopens on network loss.
+The AP stays available while connecting, closes 60 seconds after connection unless persistence is uncertain, and reopens on network loss.
 Forgetting Wi-Fi preserves all radiator configuration and admitted commands. Local HTTP has no login; use a trusted network.</small>
 </section>
 <section id="simulationPanel" hidden>
@@ -103,10 +103,10 @@ async function refreshNetwork(){
     const response=await fetch('/api/network',{cache:'no-store'});
     if(!response.ok) throw new Error('Network status unavailable.');
     const s=await response.json();
-    field('networkStatus').textContent='Wi-Fi: '+s.state+'. Saved setup: '+(s.configured?'yes':'no')+
+    field('networkStatus').textContent='Wi-Fi: '+s.state+'. Saved setup: '+(s.persistence_uncertain?'unknown after restart (RAM fallback: '+(s.configured?'yes':'no')+')':s.configured?'yes':'no')+
       '. Attempts: '+s.attempts+'. Setup result: '+s.setup_result+'.'+(s.error!=='none'?' Error: '+s.error+'.':'');
     field('networkAccess').textContent=(s.ip?'Application: http://'+s.ip+'. ':'')+
-      (s.recovery_ap?'Protected Cleverbox AP available at http://192.168.4.1. It closes 60 seconds after connection.':'Setup AP closed.');
+      (s.recovery_ap?'Protected Cleverbox AP available at http://192.168.4.1. '+(s.persistence_uncertain?'Persistence uncertain: AP stays open; retry save or forget.':'It closes 60 seconds after connection.'):'Setup AP closed.');
     field('wifiSave').disabled=s.state==='connecting'||s.setup_result==='pending';
   } catch(error){
     field('networkStatus').textContent='Network status unavailable. If the setup AP closed, join the home network and open the station IP shown above or on serial. Otherwise use the recovery AP.';

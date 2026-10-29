@@ -4,6 +4,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+int host_wifi_storage_fault(int mode);
 void host_network_tick(void);
 int host_network_event(const char *);
 void simulation_status(cJSON *);

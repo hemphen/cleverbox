@@ -382,6 +382,7 @@ static esp_err_t network_status_page(httpd_req_t *r) {
     cJSON_AddStringToObject(j, "state", network_state_name(s.state));
     cJSON_AddStringToObject(j, "setup_result", network_setup_name(s.setup));
     cJSON_AddBoolToObject(j, "configured", s.configured);
+    cJSON_AddBoolToObject(j, "persistence_uncertain", s.persistence_uncertain);
     cJSON_AddBoolToObject(j, "recovery_ap", s.recovery_ap);
     cJSON_AddNumberToObject(j, "attempts", s.attempts);
     cJSON_AddStringToObject(j, "ip", s.ip);

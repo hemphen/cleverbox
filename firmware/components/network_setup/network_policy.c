@@ -43,7 +43,8 @@ static void failed_attempt(network_policy *p, int64_t now) {
         memset(&p->candidate, 0, sizeof(p->candidate));
         p->status.setup = NET_SETUP_FAILED;
     }
-    // Saved setup remains authoritative after failed replacement. Reconnect in
+    // Keep the saved RAM fallback after failed replacement. Persistence errors
+    // distinguish a verified rollback from an uncertain restart outcome. Reconnect in
     // bounded batches, even after DHCP timeout or a router disappearing later.
     p->next_ms = now + NETWORK_RECOVERY_RETRY_MS;
 }
@@ -62,11 +63,18 @@ void network_policy_configure(network_policy *p, const network_credentials *c, i
     if (!network_credentials_valid(c) || p->candidate_active) return;
     p->candidate = *c; p->candidate_active = true;
     p->status.setup = NET_SETUP_PENDING; p->status.attempts = 0;
-    p->status.error = "none"; start(p, now);
+    if (!p->status.persistence_uncertain) p->status.error = "none";
+    start(p, now);
+}
+static void storage_failure(network_policy *p, esp_err_t err) {
+    if (err == NETWORK_ERR_PERSISTENCE_UNCERTAIN) p->status.persistence_uncertain = true;
+    p->status.error = p->status.persistence_uncertain ? "persistence_uncertain" : "storage_failed";
+    if (p->status.persistence_uncertain) { p->close_ap_ms = 0; ap(p, true); }
 }
 void network_policy_forget(network_policy *p, int64_t now) {
     (void)now;
-    if (p->platform.forget() != ESP_OK) { p->status.error = "storage_failed"; return; }
+    esp_err_t err = p->platform.forget();
+    if (err != ESP_OK) { storage_failure(p, err); return; }
     p->platform.stop(); p->attempting = p->ready = p->candidate_active = false;
     memset(&p->saved, 0, sizeof(p->saved)); memset(&p->candidate, 0, sizeof(p->candidate));
     p->status = (network_status){.state = NET_DISCONNECTED, .error = "none", .recovery_ap = p->status.recovery_ap};
@@ -105,19 +113,21 @@ void network_policy_got_ip(network_policy *p, const char *ip, int64_t now) {
     }
     if (!p->attempting || !p->ready) return;
     if (p->candidate_active) {
-        if (p->platform.save(&p->candidate) != ESP_OK) {
-            p->status.error = "storage_failed";
+        esp_err_t err = p->platform.save(&p->candidate);
+        if (err != ESP_OK) {
+            storage_failure(p, err);
             p->status.attempts = NETWORK_MAX_ATTEMPTS;
             failed_attempt(p, now); return;
         }
         p->saved = p->candidate; p->status.configured = true;
+        p->status.persistence_uncertain = false;
         memset(&p->candidate, 0, sizeof(p->candidate)); p->candidate_active = false;
         p->status.setup = NET_SETUP_SAVED;
     }
     p->status.state = NET_CONNECTED;
-    if (p->status.setup != NET_SETUP_FAILED) p->status.error = "none";
+    if (p->status.setup != NET_SETUP_FAILED && !p->status.persistence_uncertain) p->status.error = "none";
     strcpy(p->status.ip, ip); p->attempting = false;
-    p->close_ap_ms = now + NETWORK_AP_GRACE_MS;
+    p->close_ap_ms = p->status.persistence_uncertain ? 0 : now + NETWORK_AP_GRACE_MS;
 }
 const char *network_state_name(network_state s) {
     static const char *names[] = {"disconnected", "connecting", "connected", "failed"}; return names[s];

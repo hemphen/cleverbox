@@ -41,14 +41,30 @@ to **three attempts**. An immediate driver rejection can finish a batch sooner.
 The HTTP page distinguishes `connecting`, `connected` with `ip`, `disconnected`
 between attempts, and `failed` after the batch. `setup_result` separately reports
 `none`, `pending`, `saved` or `failed`, so a rejected replacement remains visible
-even if the old setup later reconnects. `configured` means saved credentials exist,
-not that the station is online. Errors contain fixed codes, never credentials.
+even if the old setup later reconnects. Normally `configured` means saved credentials
+exist, not that the station is online. When `persistence_uncertain` is true it means
+only that this boot has a configured RAM fallback; the saved record after restart
+may be old, new, absent or invalid. Errors contain fixed codes, never credentials.
 
 - Without saved credentials, failed setup leaves the AP open until another explicit
   setup/forget action or a restart. Credentials are not automatically retried forever.
-- A failed replacement or failed save preserves the previous saved setup. After a
-  **60-second recovery pause**, the old setup is tried again. It remains authoritative
-  across restart. A storage failure is shown as `storage_failed`; fix/retry explicitly.
+- A failed connection trial does not write flash and preserves the previous setup.
+  After a **60-second recovery pause**, the old setup is tried again.
+- A failed Wi-Fi write/commit is **not** assumed to leave storage unchanged. The
+  store snapshots the previous raw Wi-Fi record (or its absence), attempts to restore
+  it, commits and checks it using a fresh NVS handle. Restoring an existing record
+  erases then rewrites it so NVS's same-value cache optimization cannot skip the
+  restoring write. A verified rollback reports `storage_failed`; the old setup is
+  retained. No partition erase/reinitialization is attempted: other components use NVS.
+- If restoration or verification fails, status reports `persistence_uncertain: true`
+  and error `persistence_uncertain`. The policy retains only the old **RAM** fallback;
+  there is **no promise about which record will load after restart**. The protected
+  AP stays open even when that fallback reconnects, and the warning survives retries
+  and DHCP renewal. A new verified save or verified forget clears it. If forget finds
+  only cached absence after an uncertain error, it cannot certify deletion; provision
+  successfully or restart, inspect status and retry forget. A previously oversized
+  corrupt key cannot be backed up within this bounded store; failed repair also reports
+  uncertainty. Successful repair/reset is still allowed.
 - Loss of station connectivity or its IP reopens the protected AP immediately,
   using the **same password for this boot**, and clears the station IP in status.
   Reconnection starts after 5 seconds. Saved credentials are retried in bounded
@@ -58,12 +74,17 @@ not that the station is online. Errors contain fixed codes, never credentials.
   recovery AP access; no automatic NVS erase. Explicit successful provisioning may
   replace it, or use **Forget home Wi-Fi only**.
 
+These are best-effort software-error recovery steps, not a power-loss transaction:
+interrupting a write/rollback can leave an old, new, missing or invalid record. At
+boot Cleverbox reads what NVS actually exposes and supplies its recovery AP.
+
 **Forget home Wi-Fi only** cancels network setup/retries, disconnects STA and erases
 only the Wi-Fi key. It leaves the recovery AP available. It preserves radiator
 identities, names, pairings, saved controller state and admitted commands. A failed
-erase reports `storage_failed` and retains the current setup; check status before
-assuming reset completed. No network event starts pairing, changes targets, or
-replays a command.
+erase also attempts restoration and verification of the previous record. A verified
+rollback reports `storage_failed`; failed restoration reports `persistence_uncertain`
+and keeps recovery access available. Check status before assuming reset completed.
+No network event starts pairing, changes targets, or replays a command.
 
 There is one outstanding configuration action at a time; configuration while a
 trial/reconnect is active returns busy. Forget remains available during attempts.
@@ -77,7 +98,7 @@ The HTTP server has ten URI slots: root, seven existing routes, network GET and 
 ## HTTP and software validation
 
 - `GET /api/network`: `state`, `setup_result`, `configured`, `recovery_ap`,
-  `attempts`, `ip`, `error`. No SSID or password, including after restart.
+  `attempts`, `ip`, `error`, `persistence_uncertain`. No SSID or password, including after restart.
 - `POST /api/network`, JSON action `configure` with `ssid` and `password`, or
   action `forget` alone. Returns 202 for admission, 400 for invalid input and 409
   for busy/unavailable. Read status for the eventual result. Responses are no-store.
@@ -85,12 +106,17 @@ The HTTP server has ten URI slots: root, seven existing routes, network GET and 
 `make test test-http test-capacity` exercises the production policy with fake Wi-Fi
 operations/events, the real HTTP handlers/page and versioned store. Tests cover
 setup/restart, invalid credentials, replacement rollback, timeouts, paced recovery,
-late events, corrupt storage, save/forget failures, credential non-disclosure and
+late events, corrupt storage, save/forget failures (including errors after durable
+mutation, deferred effects on NVS reinitialization and failed rollback/readback),
+uncertainty status/AP retention, credential non-disclosure and
 RF command completion during network loss and forget. Test credentials are generated
 in memory at runtime and temporary storage is deleted. The host adapter does not
 associate to a real router: its test-only `network_event` injection in
 `/api/simulation` (requires `--test-clock`) delivers `started`, `disconnected` or
-`got_ip` to the same policy. It never guesses success from an SSID/password.
+`got_ip` to the same policy. It never guesses success from an SSID/password. With
+`--test-clock`, `wifi_storage_fault` modes 1 and 2 inject a Wi-Fi-key mutation followed
+by an error, with mode 2 also failing rollback; mode 0 disables the fault. These are
+host-only NVS boundary faults, not a second storage policy.
 
 **Board acceptance still required:** actual association/authentication and DHCP;
 AP accessibility while STA connects, including AP channel changes; IP event ordering

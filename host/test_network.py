@@ -9,7 +9,7 @@ from test_http import App
 
 def status(app):
     s = app.http('/api/network')
-    assert set(s) == {'state', 'setup_result', 'configured', 'recovery_ap', 'attempts', 'ip', 'error'}
+    assert set(s) == {'state', 'setup_result', 'configured', 'recovery_ap', 'attempts', 'ip', 'error', 'persistence_uncertain'}
     return s
 
 
@@ -147,13 +147,73 @@ def run(directory):
         configure(app, ssid, password)
         s = connect(app)
         assert s['state'] == 'failed' and s['setup_result'] == 'failed'
-        assert s['error'] == 'storage_failed' and s['recovery_ap'] and not s['configured']
+        assert s['error'] == 'persistence_uncertain' and s['persistence_uncertain'] and s['recovery_ap'] and not s['configured']
         app.http('/api/network', {'action': 'forget'}, 202)
-        assert status(app)['error'] == 'storage_failed' and registry.read_bytes() == before
+        assert status(app)['error'] == 'persistence_uncertain' and registry.read_bytes() == before
         (wifi / "blocker").unlink()
         wifi.rmdir()
+        # Resolve uncertainty with an actual successful write before forgetting.
+        configure(app, ssid, password); connect(app)
+        assert not status(app)['persistence_uncertain']
         app.http('/api/network', {'action': 'forget'}, 202)
         assert status(app)['error'] == 'none'
+    finally:
+        app.stop()
+
+    # Post-mutation NVS errors: real store rollback and real process restarts.
+    app = App(storage)
+    try:
+        configure(app, ssid, password); connect(app); saved = wifi.read_bytes()
+        app.sim('wifi_storage_fault', mode=1)
+        configure(app, other_ssid, other_password); s = connect(app)
+        assert s['error'] == 'storage_failed' and not s['persistence_uncertain']
+        assert s['configured'] and wifi.read_bytes() == saved
+    finally:
+        app.stop()
+    app = App(storage)
+    try:
+        assert status(app)['configured'] and wifi.read_bytes() == saved
+        connect(app)
+        app.sim('wifi_storage_fault', mode=1)
+        app.http('/api/network', {'action': 'forget'}, 202)
+        assert status(app)['error'] == 'storage_failed' and wifi.read_bytes() == saved
+    finally:
+        app.stop()
+    app = App(storage)
+    try:
+        assert status(app)['configured'] and wifi.read_bytes() == saved
+        connect(app)
+        app.sim('wifi_storage_fault', mode=2)
+        configure(app, other_ssid, other_password); s = connect(app)
+        assert s['persistence_uncertain'] and s['error'] == 'persistence_uncertain'
+        assert s['configured'] and s['recovery_ap'] and wifi.read_bytes() != saved
+        # Old RAM fallback reconnects, but must not hide the uncertainty or close AP.
+        app.advance(60000); connect(app); app.advance(60000)
+        s = status(app)
+        assert s['state'] == 'connected' and s['persistence_uncertain'] and s['recovery_ap']
+        assert s['error'] == 'persistence_uncertain'
+        assert registry.read_bytes() == before
+    finally:
+        app.stop()
+    app = App(storage)
+    try:
+        # A failed save really can select different credentials after restart.
+        assert status(app)['configured'] and wifi.read_bytes() != saved
+        connect(app)
+        app.sim('wifi_storage_fault', mode=2)
+        app.http('/api/network', {'action': 'forget'}, 202)
+        s = status(app)
+        assert s['persistence_uncertain'] and s['error'] == 'persistence_uncertain'
+        assert s['configured'] and s['recovery_ap'] and not wifi.exists()
+        assert registry.read_bytes() == before
+    finally:
+        app.stop()
+    app = App(storage)
+    try:
+        # An erase which reports failure can still take effect across restart.
+        assert not status(app)['configured'] and status(app)['recovery_ap']
+        assert app.http()['pairing']['saved'] and app.http()['command']['saved_available']
+        assert app.http()['simulation_tx'] == [] and registry.read_bytes() == before
     finally:
         app.stop()
 
