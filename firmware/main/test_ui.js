@@ -21,6 +21,7 @@ async function main() {
   data.capacity=8; data.exchange_id=0;
   let network = {state:'disconnected',configured:false,recovery_ap:true,attempts:0,setup_result:'none',error:'none',ip:''};
   let networkReadsFail=false;
+  let clock={usable:false,source:'unsynchronized',timezone:'UTC0',synchronized_this_boot:false,sync_age_ms:null};
   let lastRequest, responseOK = true, deferredStatus;
   const context = vm.createContext({
     document: {
@@ -28,10 +29,11 @@ async function main() {
       createElement() { return {}; },
       querySelectorAll(selector) { return selector.includes('data-command') ? buttons : []; }
     },
-    Date: class { getHours() { return 12; } getMinutes() { return 34; } getSeconds() { return 56; } },
+    Date,
     TextEncoder,
     setTimeout() {}, clearTimeout() {},
     async fetch(url, options) {
+      if(url==='/api/time' && !options.body) return {ok:true,json:async()=>clock};
       if(url==='/api/network' && !options.body){
         if(networkReadsFail) throw new Error('unreachable');
         return {ok:true,json:async()=>network};
@@ -48,7 +50,7 @@ async function main() {
   assert.equal(fields.simulationPanel.hidden, true);
   fields.mode.value = '3'; fields.temperature.value = '15.5';
   await fields.sendTarget.handlers.click();
-  assert.deepEqual(lastRequest, {url: '/api/command', body: {id: 1, mode: 3, centi_c: 1550, clock_seconds: 45296}});
+  assert.deepEqual(lastRequest, {url: '/api/command', body: {id: 1, mode: 3, centi_c: 1550}});
   assert.match(fields.commandAction.textContent, /delivery is not yet established/);
   fields.state.value = '  explicit-import  ';
   await fields.sendTarget.handlers.click();
@@ -168,6 +170,28 @@ async function main() {
   responseOK=true; await fields.wifiForget.handlers.click();
   assert.deepEqual(lastRequest,{url:'/api/network',body:{action:'forget'}});
   for(const field of Object.values(fields)) assert(!field.textContent.includes(secret));
+  await vm.runInContext('refreshTime()',context);
+  assert.match(fields.timeStatus.textContent,/Time unavailable/);
+  assert.match(fields.timeStatus.textContent,/Synchronized this boot: no/);
+  clock={...clock,usable:true,source:'manual',local:'2026-01-01T12:00:00+0000',utc:'2026-01-01T12:00:00Z'};
+  await vm.runInContext('refreshTime()',context);
+  assert.match(fields.timeStatus.textContent,/Source: manual/);
+  clock={...clock,source:'network',synchronized_this_boot:true,sync_age_ms:61000};
+  await vm.runInContext('refreshTime()',context);
+  assert.match(fields.timeStatus.textContent,/latest sync 61 s ago/);
+  assert.match(fields.timeStatus.textContent,/Offline/);
+  fields.timezone.value='CET-1CEST,M3.5.0/2,M10.5.0/3';
+  await fields.saveTimezone.handlers.click();
+  assert.deepEqual(lastRequest,{url:'/api/time',body:{action:'timezone',timezone:fields.timezone.value}});
+  fields.manualUtc.value=''; const beforeTime=lastRequest;
+  await fields.setManualTime.handlers.click(); assert.equal(lastRequest,beforeTime);
+  fields.manualUtc.value='2026-01-01T12:00:00';
+  await fields.setManualTime.handlers.click();
+  assert.deepEqual(lastRequest,{url:'/api/time',body:{action:'manual',unix_seconds:1767268800}});
+  assert.match(fields.timeAction.textContent,/Manual UTC time set/);
+  responseOK=false; await fields.saveTimezone.handlers.click();
+  assert.equal(fields.timeAction.textContent,'No learned controller state');
+  assert(!html.includes('getHours()')); assert(!html.includes('clock_seconds:'));
   console.log('UI learned/missing state, optional import, preview, admission and error rendering: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

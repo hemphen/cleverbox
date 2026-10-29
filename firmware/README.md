@@ -219,7 +219,9 @@ This removes mandatory pasting, not protocol template dependence. In particular,
 The [field assessment](../docs/controller-state.md) identifies the exact blockers,
 source revisions and assumptions. Synthetic example bytes are not device defaults.
 
-The browser supplies its current local clock (seconds since midnight). After an
+Normal commands use device local time; see [time setup, provenance, timezone/DST
+and admission policy](../docs/time.md). An unsynchronized boot requires SNTP or
+an explicit manual UTC set; no browser clock is required. After an
 initial poll, the worker waits for a new radiator report addressed to the saved
 controller. Each state transmission refreshes the temperature echo (including
 unavailable), copies that report's raw E1 values, zeros DA as in the documented
@@ -232,13 +234,15 @@ Touch E3 is not contacted during this exchange.
 `POST /api/command` takes JSON:
 
 ```text
-{"id":1,"mode":0,"centi_c":2050,"clock_seconds":43200}
+{"id":1,"mode":0,"centi_c":2050}
 ```
 
 Omit `state` to select learned RAM state, then saved state; optionally add
 `"state":"<same-radiator controller-state hex>"` for the old import behavior.
 An explicitly empty, null, non-string, malformed or invalid frame is rejected.
-202 means queued; 400 means invalid data/template; 409 means busy, radio
+An explicit `clock_seconds` override remains for compatibility/tests only; it
+takes precedence over device time. The normal page omits it.
+202 means queued; 400 means invalid data/template; 409 means time unavailable, busy, radio
 unavailable, no saved pairing or no learned/saved state. HTTP and future Matter command handling share
 the portable command state machine. Target limits/quantization are the same as
 for previews. Off transmits raw 320 and is shown as a requested target of 0 °C.

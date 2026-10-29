@@ -7,6 +7,7 @@
 #include "radio_transport.h"
 #include "esp_log.h"
 #include "device_store.h"
+#include "device_time.h"
 #include "freertos/queue.h"
 #include <string.h>
 
@@ -55,6 +56,7 @@ struct radio_request {
     uint8_t controller[4], candidate[4];
     uint8_t state[CONTROLLER_STATE_BYTES];
     rf_mode mode; int centi_c; unsigned clock_seconds;
+    int64_t admitted_ms;
     char name[RADIATOR_NAME_BYTES + 1];
 };
 static QueueHandle_t radio_requests;
@@ -97,9 +99,9 @@ static esp_err_t pair_action(uint32_t id, radio_action action) {
 }
 extern "C" esp_err_t radio_pair_cancel(uint32_t id) { return pair_action(id, PAIR_CANCEL); }
 extern "C" esp_err_t radio_pair_save(uint32_t id) { return pair_action(id, PAIR_SAVE); }
-extern "C" esp_err_t radio_control_start(uint32_t id, const rf_control_request *request) {
+static esp_err_t control_start_at(uint32_t id, const rf_control_request *request, int64_t admitted_ms) {
     if (!request) return ESP_ERR_INVALID_ARG;
-    radio_request r = {}; r.action = CONTROL_START; rf_control_request chosen = *request;
+    radio_request r = {}; r.action = CONTROL_START; r.admitted_ms = admitted_ms; rf_control_request chosen = *request;
     portENTER_CRITICAL(&status_lock);
     radiator_record *d = find_device(id);
     esp_err_t result = ESP_ERR_INVALID_STATE;
@@ -111,7 +113,7 @@ extern "C" esp_err_t radio_control_start(uint32_t id, const rf_control_request *
         }
         if (chosen.state.size) {
             rf_control check = {};
-            if (!rf_control_start(&check, &chosen, d->pair.controller, d->pair.radiator, esp_timer_get_time() / 1000))
+            if (!rf_control_start(&check, &chosen, d->pair.controller, d->pair.radiator, admitted_ms))
                 result = ESP_ERR_INVALID_ARG;
             else {
                 r.id = d->id; memcpy(r.state, chosen.state.bytes, CONTROLLER_STATE_BYTES);
@@ -128,6 +130,15 @@ extern "C" esp_err_t radio_control_start(uint32_t id, const rf_control_request *
         }
     }
     portEXIT_CRITICAL(&status_lock); return result;
+}
+extern "C" esp_err_t radio_control_start(uint32_t id, const rf_control_request *request) {
+    return control_start_at(id, request, esp_timer_get_time() / 1000);
+}
+extern "C" esp_err_t radio_control_start_device(uint32_t id, const rf_control_request *request) {
+    if (!request) return ESP_ERR_INVALID_ARG;
+    rf_control_request chosen = *request; int64_t sampled_ms;
+    if (!device_time_command_clock(&chosen.clock_seconds, &sampled_ms)) return RADIO_ERR_TIME_UNAVAILABLE;
+    return control_start_at(id, &chosen, sampled_ms);
 }
 static esp_err_t enqueue_mutation(uint32_t id, radio_action action, const rf_frame *imported, const char *name) {
     radio_request r = {}; r.action = action;
@@ -331,7 +342,7 @@ struct radio_worker {
                     memcpy(command.state.bytes, request.state, CONTROLLER_STATE_BYTES);
                     command.mode = request.mode; command.centi_c = request.centi_c; command.clock_seconds = request.clock_seconds;
                     bool started = rf_control_start(&controls[index], &command, d->pair.controller, d->pair.radiator,
-                                                    esp_timer_get_time() / 1000);
+                                                    request.admitted_ms);
                     portENTER_CRITICAL(&status_lock);
                     d->command_pending = false;
                     if (started) control_errors[index] = 0;

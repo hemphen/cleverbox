@@ -49,9 +49,13 @@ Use the [libraries and component boundaries](libraries.md).
    best-effort rollback/readback; unresolved persistence is reported and keeps AP access. Production policy and
    HTTP paths are software-tested; physical Wi-Fi/RF acceptance remains pending.
    See [networking](networking.md).
-6. **Device-managed time.** Add a clock with explicit timezone behavior. Current
-   commands still use the browser clock; no schedules or networking-triggered commands.
-7. **MQTT and Home Assistant discovery.** Expose measurements, targets, supported
+6. **Device-managed time.** Implemented: asynchronous ESP-IDF SNTP, explicit
+   persistent POSIX timezone (UTC0 default), manual UTC bench setup and honest
+   source/sync-age status. Normal commands snapshot device local time and advance
+   it monotonically across delivery/retries; unset boot rejects them. No timestamps
+   or commands are restored, and time/network events never send settings. See
+   [time policy and validation](time.md). Physical time/RF acceptance remains pending.
+7. **MQTT and Home Assistant discovery — next.** Expose measurements, targets, supported
    modes and honest availability through the existing command handling. Test
    network loss/reconnect without arbitrary settings changes.
 8. **Installation and endurance.** Validate physical pairing/control, power cycles,

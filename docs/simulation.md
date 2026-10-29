@@ -27,7 +27,8 @@ storage file. To change the port/storage path after building, run
    discovery destination `F1100001`. Start pairing and wait about two seconds for
    inclusion to be saved. No physical inclusion mode is needed.
 2. Select the added radiator, name it **Living room**, save the name and check
-   local configuration status. With the import empty, send a command: missing
+   local configuration status. Set manual UTC under **Device time → Offline bench**.
+   With the import empty, send a command: missing
    controller state is visibly rejected. Inject the **synthetic controller-state
    fixture**, then **Save learned state / retry**. Wait for save success. This
    separate original-controller stand-in is not a radiator report.
@@ -35,13 +36,14 @@ storage file. To change the port/storage path after building, run
    Select the new record, name it **Bedroom**, inject its fixture and explicitly
    save it. Its opaque template bytes differ from Living room's. The selector
    controls simulator inclusion/fixture injection only, not application routing.
-4. Select Living room, set a target/mode and send. Requested settings appear
-   before readback. While waiting, a request for Bedroom receives busy (the UI
-   disables send). After matching readback, select Bedroom and send a different
-   target/mode. Switching back retains Living room's observations and result.
+4. Explicitly set manual UTC under **Device time → Offline bench**. Select
+   Living room, set a target/mode and send. Requested settings appear before
+   readback. While waiting, Bedroom can receive its own command; a second command
+   for the same busy radiator is rejected. Switching back retains each result.
 5. Stop with Ctrl-C and restart `make simulate`. Both identities, names, pairings
    and saved templates remain. Commands are idle, observations/learned state are
-   empty and TX diagnostics are empty. Send to either using saved state and a
+   empty and TX diagnostics are empty. Set manual UTC again, then send to either
+   using saved state and a
    fresh report, with no new fixture or manual import.
 6. Remove Living room's **local record**. Restart; Bedroom remains and can still
    be controlled. Removal does not reset/unpair a physical radiator. Re-adding
@@ -82,10 +84,12 @@ post /api/radiators '{"action":"rename","id":2,"name":"Bedroom"}'
 post /api/simulation '{"action":"fixture"}'
 post /api/controller-state '{"action":"save","id":2}'
 curl -sS "$base/api/radio?id=2" # Wait for command.save_status=succeeded.
-post /api/command '{"id":1,"mode":0,"centi_c":2050,"clock_seconds":43200}'
+# Explicit fixed UTC example for offline simulation; use the actual UTC time on hardware.
+post /api/time '{"action":"manual","unix_seconds":1767268800}'
+post /api/command '{"id":1,"mode":0,"centi_c":2050}'
 post /api/radiators '{"action":"select","id":2}' # Stateless second-client selection.
 curl -sS "$base/api/radio?id=1" # Wait for command.phase=matched.
-post /api/command '{"id":2,"mode":3,"centi_c":1550,"clock_seconds":43200}'
+post /api/command '{"id":2,"mode":3,"centi_c":1550}'
 curl -sS "$base/api/radio?id=2" # Wait for matching readback; A's result remains.
 ```
 
@@ -187,3 +191,16 @@ credentials. With `--test-clock`, `network_event` at `/api/simulation` injects
 `started`, `disconnected` or `got_ip`; the last supplies reserved documentation
 address `192.0.2.10`. `make test-http` covers this flow, RF continuity and reset
 isolation. See [network validation and board checks](networking.md).
+
+## Device clock
+
+The simulator starts with no usable time, just like an unsynchronized board.
+Before normal command testing, explicitly set UTC in **Device time → Offline
+bench**. Save a POSIX timezone if desired (default UTC0). The host never uses the
+browser/host wall clock automatically and never sets the computer's clock.
+Existing tests can retain explicit per-command `clock_seconds` overrides.
+`make test-http` includes `host/test_time.py` for device-selected time, persistence,
+corrections, DST and monotonic command/network timers. With `--test-clock` only,
+`{"action":"time_sync","unix_seconds":1767268800}` injects a successful sync
+through `/api/simulation`. This does not test DNS, UDP or a real NTP server.
+See the full [time policy and hardware checklist](time.md).

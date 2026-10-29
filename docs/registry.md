@@ -44,7 +44,11 @@ Use JSON numeric `id` on every mutation/command:
 | `POST /api/pairing` | `{"action":"start","source":"F1010203","destination":"F1100001"}` reserves a new identity; HTTP 202 returns `id`. |
 | `POST /api/pairing` | `{"action":"cancel","id":2}` or `{"action":"save","id":2}` addresses that inclusion attempt; save explicitly retries failed persistence. |
 | `POST /api/controller-state` | `{"action":"save","id":1}`, `{"action":"import","id":1,"state":"<hex>"}` or `{"action":"clear","id":1}`. |
-| `POST /api/command` | `{"id":1,"mode":0,"centi_c":2050,"clock_seconds":43200}`; optional per-command `state` retains import precedence. |
+| `POST /api/command` | `{"id":1,"mode":0,"centi_c":2050}`; optional per-command `state` retains import precedence. |
+
+Normal commands use [device time](time.md) and reject an unset boot. Explicit
+`clock_seconds` remains a documented compatibility/test override; the normal page
+omits it. Time setup and synchronization do not mutate radiator records.
 
 IDs are nonzero uint32 values, monotonically assigned to committed records and
 never renumbered or reused after removal. Names contain 1–32 UTF-8 bytes, without

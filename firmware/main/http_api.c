@@ -11,6 +11,7 @@
 #include "radio_transport.h"
 #include "http_api.h"
 #include "network_setup.h"
+#include "device_time.h"
 #ifdef CLEVERBOX_HOST
 #include "simulation.h"
 #endif
@@ -149,9 +150,10 @@ static esp_err_t live_command(httpd_req_t *r)
     body[used] = 0;
     cJSON *j = cJSON_ParseWithOpts(body, NULL, true);
     rf_control_request command = {0};
-    int mode, target, clock; uint32_t id = 0;
+    int mode, target, clock = 0; uint32_t id = 0;
+    bool override = cJSON_GetObjectItemCaseSensitive(j, "clock_seconds") != NULL;
     bool valid = identity(j, &id) && integer(j, "mode", 0, 3, &mode) && integer(j, "centi_c", 0, 3000, &target) &&
-                 integer(j, "clock_seconds", 0, 86399, &clock);
+                 (!override || integer(j, "clock_seconds", 0, 86399, &clock));
     // Omission selects learned RAM state, then saved state. Explicit invalid imports must
     // fail, rather than silently falling back to a different template.
     if (valid && cJSON_GetObjectItemCaseSensitive(j, "state"))
@@ -161,7 +163,13 @@ static esp_err_t live_command(httpd_req_t *r)
         command.mode = (rf_mode)mode; command.centi_c = target; command.clock_seconds = clock;
     }
     cJSON_Delete(j);
-    esp_err_t result = valid ? radio_control_start(id, &command) : ESP_ERR_INVALID_ARG;
+    esp_err_t result = !valid ? ESP_ERR_INVALID_ARG : override ?
+        radio_control_start(id, &command) : radio_control_start_device(id, &command);
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    if (result == RADIO_ERR_TIME_UNAVAILABLE) {
+        httpd_resp_set_status(r, "409 Conflict");
+        return httpd_resp_sendstr(r, "Device time unavailable. Connect home Wi-Fi for SNTP or explicitly set UTC time in Device time, then retry.");
+    }
     if (result == ESP_ERR_INVALID_ARG)
         return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid target, mode, clock or radiator template");
     if (result != ESP_OK) {
@@ -437,8 +445,75 @@ static esp_err_t network_action(httpd_req_t *r) {
     return httpd_resp_sendstr(r, "{\"accepted\":true}");
 }
 
+static esp_err_t time_status_page(httpd_req_t *r) {
+    device_time_status s; device_time_get(&s);
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddBoolToObject(j, "usable", s.usable);
+    cJSON_AddStringToObject(j, "source", s.source == TIME_NETWORK ? "network" : s.source == TIME_MANUAL ? "manual" : "unsynchronized");
+    cJSON_AddStringToObject(j, "timezone", s.timezone);
+    cJSON_AddBoolToObject(j, "synchronized_this_boot", s.synchronized_this_boot);
+    cJSON_AddBoolToObject(j, "network_connected", s.network_connected);
+    if (s.synchronized_this_boot) cJSON_AddNumberToObject(j, "sync_age_ms", s.sync_age_ms);
+    else cJSON_AddNullToObject(j, "sync_age_ms");
+    cJSON_AddNumberToObject(j, "config_error", s.config_error);
+    cJSON_AddNumberToObject(j, "sntp_error", s.sntp_error);
+    cJSON_AddBoolToObject(j, "persistence_uncertain", s.persistence_uncertain);
+    if (s.usable) {
+        cJSON_AddNumberToObject(j, "unix_seconds", (double)s.unix_seconds);
+        cJSON_AddStringToObject(j, "utc", s.utc);
+        cJSON_AddStringToObject(j, "local", s.local);
+    }
+    return json_response(r, j);
+}
+static esp_err_t time_action(httpd_req_t *r) {
+    char body[256], type[40];
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
+        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
+    size_t used = 0;
+    while (used < r->content_len) {
+        int n = httpd_req_recv(r, body + used, r->content_len - used);
+        if (n <= 0) return ESP_FAIL;
+        used += (size_t)n;
+    }
+    body[used] = 0;
+    bool valid = !memchr(body, 0, used);
+    for (size_t i = 0; valid && i + 1 < used; ++i) {
+        if (body[i] != '\\') continue;
+        if (i + 5 < used && !strncmp(body + i + 1, "u0000", 5)) valid = false;
+        ++i;
+    }
+    cJSON *j = valid ? cJSON_ParseWithOpts(body, NULL, true) : NULL;
+    const char *action = string(j, "action");
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+    if (cJSON_IsObject(j) && cJSON_GetArraySize(j) == 2 && action) {
+        if (!strcmp(action, "timezone")) err = device_time_timezone(string(j, "timezone"));
+        else if (!strcmp(action, "manual")) {
+            cJSON *v = cJSON_GetObjectItemCaseSensitive(j, "unix_seconds");
+            if (cJSON_IsNumber(v) && isfinite(v->valuedouble) &&
+                v->valuedouble >= DEVICE_TIME_MIN && v->valuedouble <= DEVICE_TIME_MAX &&
+                floor(v->valuedouble) == v->valuedouble)
+                err = device_time_manual((int64_t)v->valuedouble);
+        }
+    }
+    cJSON_Delete(j);
+    if (err == ESP_ERR_INVALID_ARG)
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use timezone with a supported POSIX rule, or manual with integer UTC unix_seconds (2020–2099)");
+    if (err != ESP_OK) {
+        httpd_resp_set_status(r, "409 Conflict");
+        return httpd_resp_sendstr(r, "Time update failed. Check time status; timezone persistence may be uncertain. Retry explicitly.");
+    }
+    httpd_resp_set_type(r, "application/json");
+    return httpd_resp_sendstr(r, "{\"updated\":true,\"transmitted\":false}");
+}
+
 void http_api_register(httpd_handle_t server)
 {
+    httpd_uri_t time_status = {.uri = "/api/time", .method = HTTP_GET, .handler = time_status_page};
+    httpd_uri_t time_set = {.uri = "/api/time", .method = HTTP_POST, .handler = time_action};
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &time_status));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &time_set));
     httpd_uri_t net_status = {.uri = "/api/network", .method = HTTP_GET, .handler = network_status_page};
     httpd_uri_t net_action = {.uri = "/api/network", .method = HTTP_POST, .handler = network_action};
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &net_status));

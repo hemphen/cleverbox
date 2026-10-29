@@ -28,6 +28,23 @@ Credentials are saved only after an IP address is acquired. Connection failures 
 The AP stays available while connecting, closes 60 seconds after connection unless persistence is uncertain, and reopens on network loss.
 Forgetting Wi-Fi preserves all radiator configuration and admitted commands. Local HTTP has no login; use a trusted network.</small>
 </section>
+<section>
+<h2>Device time</h2>
+<p id="timeStatus" role="status" aria-live="polite">Checking device time…</p>
+<label>Timezone (POSIX rule) <input id="timezone" maxlength="95" placeholder="UTC0" spellcheck="false"></label>
+<small>Default UTC0 (no DST). Sweden: CET-1CEST,M3.5.0/2,M10.5.0/3. DST needs explicit M transition rules.
+Saving the timezone affects new commands only.</small>
+<button id="saveTimezone">Save timezone</button>
+<details><summary>Offline bench: explicitly set UTC time</summary>
+<label>UTC date and time <input id="manualUtc" type="datetime-local" step="1"></label>
+<small>Enter UTC, not local time (2020–2099). This is an explicit manual clock, cleared at reboot.
+Network synchronization can replace it later.</small>
+<button id="setManualTime">Set manual UTC time</button>
+</details>
+<p id="timeAction" role="status"></p>
+<small>Commands use device time. If time is unavailable, connect home Wi-Fi for SNTP or set it manually here.
+Time setup never transmits radiator settings. Admitted commands keep their clock snapshot and advance monotonically through retries.</small>
+</section>
 <section id="simulationPanel" hidden>
 <h2>SIMULATION · no physical radio</h2>
 <p>Two invented radiators: F1040506 and F1040507. The fixture below stands in for an original controller;
@@ -46,7 +63,7 @@ this does not establish capture-free setup. No heating or RF compatibility is te
 </section>
 <section>
 <h2>Radiators</h2>
-<p>Delivery is globally serialized: one pairing or command exchange at a time.</p>
+<p>One pending command per radiator; transmissions share one radio. Pairing is exclusive.</p>
 <label>Selected radiator <select id="radiatorSelect"></select></label>
 <label>Name <input id="radiatorName" maxlength="32"></label>
 <button id="renameRadiator">Save name</button><button id="removeRadiator">Remove local record</button>
@@ -138,6 +155,44 @@ async function networkAction(action){
 field('wifiSave').addEventListener('click',()=>networkAction('configure'));
 field('wifiForget').addEventListener('click',()=>networkAction('forget'));
 refreshNetwork();
+let timeTimer;
+async function refreshTime(){
+  clearTimeout(timeTimer);
+  try {
+    const response=await fetch('/api/time',{cache:'no-store'});
+    if(!response.ok) throw new Error('Device time status unavailable.');
+    const s=await response.json();
+    field('timeStatus').textContent=(s.usable?'Device: '+s.local+' · UTC: '+s.utc:'Time unavailable: connect home Wi-Fi for SNTP or set manual UTC time.')+
+      ' · Timezone: '+s.timezone+' · Source: '+s.source+
+      ' · Synchronized this boot: '+(s.synchronized_this_boot?'yes; latest sync '+(s.sync_age_ms/1000).toFixed(0)+' s ago':'no')+
+      (s.network_connected?' · Network connected.':' · Offline; any usable clock continues.')+
+      (s.config_error?' · Timezone error: '+s.config_error+'.':'')+
+      (s.persistence_uncertain?' Persistence uncertain: check after restart or retry save.':'')+
+      (s.sntp_error?' SNTP error: '+s.sntp_error+'.':'');
+  }catch(error){field('timeStatus').textContent=error.message;}
+  finally{timeTimer=setTimeout(refreshTime,2000);}
+}
+async function timeAction(action){
+  const body={action};
+  if(action==='timezone') body.timezone=field('timezone').value.trim();
+  else {
+    const value=field('manualUtc').value;
+    const seconds=Date.parse(value+'Z')/1000;
+    if(!value || !Number.isInteger(seconds) || seconds<1577836800 || seconds>4102444799){
+      field('timeAction').textContent='Enter a valid UTC date and time in 2020–2099.';return;
+    }
+    body.unix_seconds=seconds;
+  }
+  try{
+    const response=await fetch('/api/time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok) throw new Error(await response.text());
+    field('timeAction').textContent=action==='manual'?'Manual UTC time set for this boot. No radiator command requested.':'Timezone saved. New commands use it; no radiator command requested.';
+    await refreshTime();
+  }catch(error){field('timeAction').textContent=error.message;}
+}
+field('saveTimezone').addEventListener('click',()=>timeAction('timezone'));
+field('setManualTime').addEventListener('click',()=>timeAction('manual'));
+refreshTime();
 let simulationConfigured=false, selectedId=0, pairingId=0, selectionEpoch=0, refreshTimer;
 function resetSelection(id){
   selectedId=id; selectionEpoch++;
@@ -277,10 +332,8 @@ field('importState').addEventListener('click',()=>controllerStateAction('import'
 field('clearState').addEventListener('click',()=>controllerStateAction('clear'));
 field('sendTarget').addEventListener('click',async()=>{
   const button=field('sendTarget'); button.disabled=true;
-  const now=new Date();
   const body={id:selectedId,mode:Number(field('mode').value),
-    centi_c:Math.round(Number(field('temperature').value)*100),
-    clock_seconds:now.getHours()*3600+now.getMinutes()*60+now.getSeconds()};
+    centi_c:Math.round(Number(field('temperature').value)*100)};
   const state=field('state').value.trim();
   if(state) body.state=state;
   try {

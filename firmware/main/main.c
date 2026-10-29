@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "network_setup.h"
+#include "device_time.h"
 #include "nvs_flash.h"
 #include "radio_transport.h"
 
@@ -25,12 +26,13 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_ERROR_CHECK(device_time_start());
     ESP_ERROR_CHECK(network_setup_start());
     radio_transport_start();
     httpd_handle_t server;
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
     http.stack_size = 8192;
-    http.max_uri_handlers = 10; // Root + seven existing routes + network GET/POST.
+    http.max_uri_handlers = 12; // Root + existing routes + time GET/POST.
     ESP_ERROR_CHECK(httpd_start(&server, &http));
     httpd_uri_t root = {.uri = "/", .method = HTTP_GET, .handler = home};
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &root));

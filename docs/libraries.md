@@ -6,7 +6,7 @@ ESP-Matter is an optional later dependency.
 
 | Dependency | Use |
 | --- | --- |
-| [ESP-IDF](https://github.com/espressif/esp-idf) | FreeRTOS, SPI/GPIO, Wi-Fi, HTTP server, NVS and timers |
+| [ESP-IDF](https://github.com/espressif/esp-idf) | FreeRTOS, SPI/GPIO, Wi-Fi, HTTP server, NVS, SNTP/system time and timers |
 | Optional later: [ESP-Matter](https://github.com/espressif/esp-matter) | Matter commissioning, bridge lifecycle and thermostat endpoints |
 | [RadioLib](https://github.com/jgromes/RadioLib) | CC1101 driver through its native ESP-IDF integration |
 
@@ -25,6 +25,9 @@ The RX and TX profiles still need physical board acceptance.
 - **device_store:** bounded versioned NVS registry, legacy migration, names, pairings and saved controller state.
 - **network_setup:** ESP-IDF Wi-Fi task/event adapter, portable bounded setup/reconnect
   policy and separate Wi-Fi NVS key. Uses no provisioning framework. See [networking](networking.md).
+- **device_time:** shared UTC/provenance and validated POSIX timezone logic, separate
+  configuration-only NVS key, ESP-IDF SNTP adapter and explicit manual UTC setup.
+  No timezone database or third-party time dependency. See [time](time.md).
 - **matter_bridge (optional later):** thermostat attributes and commands mapped to radiator operations.
 
 Keep one codec and one set of protocol values. Reuse these components throughout
