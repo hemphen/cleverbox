@@ -28,6 +28,7 @@ def main():
     lib.host_time_sync.argtypes = [ctypes.c_int64]
     lib.host_network_event.argtypes = [ctypes.c_char_p]
     lib.simulation_advance.argtypes = [ctypes.c_int]
+    lib.host_mqtt_storage_fault.argtypes = [ctypes.c_int]
     lib.host_mqtt_connection.argtypes = [ctypes.c_int]
     lib.host_mqtt_pop.restype = ctypes.c_char_p
     lib.mqtt_bridge_input.argtypes = [ctypes.c_char_p,ctypes.c_size_t,ctypes.c_char_p,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_bool]
@@ -101,7 +102,9 @@ def main():
             try:
                 data = json.loads(body)
                 action = data.get('action')
-                if args.test_clock and action == 'mqtt_connection' and type(data.get('connected')) is bool:
+                if args.test_clock and action == 'mqtt_storage_fault' and type(data.get('mode')) is int:
+                    if not lib.host_mqtt_storage_fault(data['mode']): raise ValueError()
+                elif args.test_clock and action == 'mqtt_connection'  and type(data.get('connected')) is bool:
                     if not lib.host_mqtt_connection(int(data['connected'])): raise ValueError()
                 elif args.test_clock and action == 'mqtt_input' and isinstance(data.get('topic'), str) and isinstance(data.get('payload'), str):
                     topic=data['topic'].encode(); payload=data['payload'].encode()

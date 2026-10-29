@@ -65,6 +65,10 @@ test:
 	  firmware/components/device_time/device_time.c firmware/components/device_time/time_store.c \
 	  firmware/components/device_time/test/test_time_store.c -o $(BUILD_DIR)/test_time_store
 	./$(BUILD_DIR)/test_time_store
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ihost/include -Ifirmware/components/mqtt_bridge/include \
+	  firmware/components/mqtt_bridge/mqtt_store.c firmware/components/mqtt_bridge/test/test_store.c -o $(BUILD_DIR)/test_mqtt_store
+	./$(BUILD_DIR)/test_mqtt_store
 	node firmware/main/test_ui.js
 
 # Host simulation needs cJSON development headers/library (e.g. libcjson-dev).
@@ -112,3 +116,8 @@ test-http: host
 .PHONY: test-capacity
 test-capacity:
 	$(MAKE) BUILD_DIR=build/capacity3 CPPFLAGS=-DCLEVERBOX_RADIATOR_CAPACITY=3 test test-http
+
+# Optional real TCP broker smoke; not part of deterministic fake-client tests.
+.PHONY: test-mqtt-broker
+test-mqtt-broker: host
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_mqtt_broker.py

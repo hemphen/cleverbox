@@ -104,6 +104,29 @@ def run(directory):
         app.sim('mqtt_input',topic=f'{BASE}/radiators/1/set',payload=json.dumps(dict(session=new_session,request_id=1,mode=0,centi_c=2100)))
         app.sim('mqtt_connection',connected=False); app.advance(100); new_session=connect(app)
         assert app.http()['simulation_tx']==tx
+        # Queue pressure is bounded; no input admitted while disconnected.
+        dropped=app.http('/api/mqtt')['dropped_input']
+        for _ in range(6):
+            app.sim('mqtt_input',topic=f'{BASE}/radiators/1/set',payload='{}')
+        app.advance(100)
+        assert app.http('/api/mqtt')['dropped_input']==dropped+2
+        # Partial assemblies with a gap cannot turn into a complete command.
+        incomplete=json.dumps(dict(session=new_session,request_id=1,mode=0,centi_c=2100))
+        app.sim('mqtt_input',topic=f'{BASE}/radiators/1/set',payload=incomplete[:20],total=len(incomplete))
+        app.sim('mqtt_input',topic='',payload=incomplete[21:],offset=21,total=len(incomplete))
+        app.advance(100); assert app.http()['simulation_tx']==tx
+        # A tracked result survives a later HTTP admission before the MQTT tick.
+        app.sim('scenario',name='normal')
+        assert send(app,new_session,1)['accepted']
+        for _ in range(1000):
+            if app.http()['command']['phase']=='matched': break
+            app.advance(1)
+        assert app.http()['command']['phase']=='matched'
+        app.http('/api/command',dict(id=1,mode=3,centi_c=1550),202)
+        app.advance(100)
+        rows=publications(app)
+        assert any(isinstance(r['payload'],dict) and r['payload'].get('phase')=='matched' and r['payload']['request_id']==1 for r in rows)
+        app.advance(1000)
         # Publication staleness grows from reception; restored templates never substitute.
         app.advance(300000); rows=publications(app)
         last=[r['payload'] for r in rows if r['topic'].endswith('/state')][-1]
@@ -114,9 +137,9 @@ def run(directory):
         app.sim('fixture'); app.advance(1)
         app.http('/api/controller-state',dict(action='save',id=2),202); app.advance(1)
         app.sim('scenario',name='silence_a')
-        assert send(app,new_session,1)['accepted']
-        assert send(app,new_session,2,id=2)['accepted']
-        assert send(app,new_session,3)['reason']=='busy_or_unavailable_or_missing_template'
+        assert send(app,new_session,2)['accepted']
+        assert send(app,new_session,3,id=2)['accepted']
+        assert send(app,new_session,4)['reason']=='busy_or_unavailable_or_missing_template'
         app.advance(1000)
         radiators=app.http()['radiators']
         assert radiators[0]['command']['pending'] and radiators[1]['command']['phase']=='matched'
@@ -138,6 +161,20 @@ def run(directory):
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip'); app.advance(100)
         restarted=connect(app); assert restarted not in (session,new_session)
         assert send(app,new_session,1)['reason']=='session_mismatch' and app.http()['simulation_tx']==[]
+        # A failed durable save keeps this boot's RAM configuration, reports
+        # uncertainty and does not claim that old settings will survive reboot.
+        before=app.http('/api/mqtt')
+        app.sim('mqtt_storage_fault',mode=1)
+        app.http('/api/mqtt',dict(config,host='replacement.test'),202); app.advance(100)
+        failed=app.http('/api/mqtt')
+        assert failed['persistence_uncertain'] and failed['config_error'] and failed['host']==before['host']
+        assert failed['connected'] and failed['session']==before['session']
+        app.http('/api/mqtt',config,202); app.advance(100)
+        assert not app.http('/api/mqtt')['persistence_uncertain']
+        # Failed forget is also honest; retry force-writes a verified tombstone.
+        app.sim('mqtt_storage_fault',mode=2)
+        app.http('/api/mqtt',dict(action='forget'),202); app.advance(100)
+        assert app.http('/api/mqtt')['persistence_uncertain'] and app.http('/api/mqtt')['configured']
         app.http('/api/mqtt',dict(action='forget'),202); app.advance(100)
         s=app.http('/api/mqtt'); assert not s['configured'] and not s['enabled'] and s['username']==''
         assert app.http('/api/network')['configured'] and len(app.http()['radiators'])==2

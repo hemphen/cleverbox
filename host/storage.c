@@ -14,6 +14,8 @@ static int staged_valid;
 // Test-only flash boundary faults; production network store owns rollback.
 // 1: mutation becomes durable then reports failure; 2: rollback also fails.
 static int wifi_fault, wifi_fault_used;
+static int mqtt_fault;
+int host_mqtt_storage_fault(int mode) { if (mode<0 || mode>2) return 0; mqtt_fault=mode; return 1; }
 int host_wifi_storage_fault(int mode) {
     if (mode < 0 || mode > 2) return 0;
     wifi_fault = mode; wifi_fault_used = 0; return 1;
@@ -48,6 +50,11 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *in, size_t n
     if (snprintf(selected_path, sizeof(selected_path), "%s%s", path(), !strcmp(key, "mqtt") ? ".mqtt" : !strcmp(key, "timezone") ? ".timezone" : !strcmp(key, "wifi") ? ".wifi" : !strcmp(key, "pairing") ? "" : !strcmp(key, "registry") ? ".registry" : ".state") >= (int)sizeof(selected_path)) return ESP_FAIL;
     if (!strcmp(key, "wifi") && wifi_fault == 2 && wifi_fault_used) return ESP_FAIL;
     memcpy(staged, in, n); staged_size = n; staged_valid = 1;
+    if (!strcmp(key, "mqtt") && mqtt_fault) {
+        int fault = mqtt_fault; mqtt_fault = 0;
+        if (fault == 1) { esp_err_t err = nvs_commit(h); return err == ESP_OK ? ESP_FAIL : err; }
+        return ESP_FAIL;
+    }
     if (!strcmp(key, "wifi") && wifi_fault && !wifi_fault_used) {
         wifi_fault_used = 1;
         esp_err_t err = nvs_commit(h); return err == ESP_OK ? ESP_FAIL : err;

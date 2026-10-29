@@ -16,6 +16,7 @@ static void event(void *arg, esp_event_base_t base, int32_t id, void *data) {
     (void)arg; (void)base; esp_mqtt_event_handle_t e = data;
     if (id == MQTT_EVENT_CONNECTED) mqtt_bridge_connection(true);
     else if (id == MQTT_EVENT_DISCONNECTED) mqtt_bridge_connection(false);
+    else if (id == MQTT_EVENT_ERROR) mqtt_bridge_client_error(ESP_FAIL);
     else if (id == MQTT_EVENT_DATA && e->topic_len >= 0 && e->data_len >= 0 &&
              e->current_data_offset >= 0 && e->total_data_len >= 0)
         mqtt_bridge_input(e->topic, (size_t)e->topic_len, e->data, (size_t)e->data_len,

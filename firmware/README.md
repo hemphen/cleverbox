@@ -5,7 +5,15 @@ For the application on a development computer without board hardware, see
 
 The HTTP control prototype uses ESP-IDF **v5.5.1**, its HTTP server and the portable C protocol
 component. The fixed Elecram board wiring is documented in [hardware](../docs/hardware.md).
-The page remains available if radio initialization fails.
+The page remains available if radio initialization fails. MQTT transport uses the
+[local broker/topic contract](../docs/mqtt.md); HA discovery follows separately.
+The default partition table is ESP-IDF's **single factory app, 1500 KiB** layout
+(the MQTT build outgrew the original 1 MiB slot). It retains NVS at 0x9000 with
+size 0x6000, PHY at 0xf000 and factory at 0x10000, within the 2 MiB default flash
+boundary. No OTA slots or NVS migration/erase are introduced. Existing local
+sdkconfig files must select `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y` too;
+flashing the updated partition table does not require erasing NVS. Confirm the
+received board's actual flash/partition layout before physical installation.
 
 ```sh
 # With ESP-IDF v5.5.1 installed and export.sh loaded:

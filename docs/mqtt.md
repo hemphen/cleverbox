@@ -182,6 +182,21 @@ fragmentation, lost links, restart without replay, unavailable boot observations
 requested/observed separation and staleness. See the PR validation results for
 the separate local-broker smoke test and ESP32-C6 build.
 
+`make test-mqtt-broker` additionally needs Mosquitto 2.x on PATH and
+`python3 -m pip install paho-mqtt==2.1.0`. It starts a temporary loopback-only
+broker with anonymous access, real Paho MQTT 3.1.1 sockets and the production C
+MQTT service/HTTP/time/RF simulator. This test covers actual topics/JSON,
+admission/readback, duplicates, retained resubscription, graceful offline,
+abrupt-close last will, broker process restart and RF completion while offline.
+The Paho adapter has no routing policy; its reconnect after the forced socket
+loss is explicit in this test. Firmware's ESP-MQTT paced reconnect is separate.
+The optional Python dependency is pinned in the test instructions and is never
+imported into the physical firmware or ordinary simulator.
+
+The MQTT firmware uses IDF's standard 1500 KiB single factory-app partition table
+because the default 1 MiB app slot was too small. Existing NVS/PHY/app offsets
+are preserved; see [firmware build notes](../firmware/README.md).
+
 Physical acceptance remains required for broker authentication/DNS over actual
 Wi-Fi, AP/STA recovery while MQTT reconnects, keepalive/last will on power or
 router loss, task/heap high-water marks, NVS power-cycle retention, actual RF

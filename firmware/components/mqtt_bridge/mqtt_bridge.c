@@ -64,9 +64,13 @@ esp_err_t mqtt_bridge_action(const char *action) {
     if (err == ESP_OK) action_pending = status.pending = true;
     mqtt_platform_unlock(); return err;
 }
+void mqtt_bridge_client_error(esp_err_t error) {
+    mqtt_platform_lock(); status.client_error = error; mqtt_platform_unlock();
+}
 void mqtt_bridge_connection(bool connected) {
     mqtt_platform_lock();
     link_connected = connected; ++link_epoch;
+    if (connected) status.client_error = ESP_OK;
     status.connected = false; status.session[0] = 0;
     input_head = input_count = 0; assembly.total = 0;
     mqtt_platform_unlock();

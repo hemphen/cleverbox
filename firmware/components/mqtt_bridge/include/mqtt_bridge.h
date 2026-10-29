@@ -47,6 +47,7 @@ esp_err_t mqtt_store_save(const mqtt_settings *settings);
 void mqtt_bridge_init(mqtt_client_ops ops, const char bridge_id[13]);
 void mqtt_bridge_tick(void);
 void mqtt_bridge_connection(bool connected);
+void mqtt_bridge_client_error(esp_err_t error);
 void mqtt_bridge_input(const char *topic, size_t topic_len, const char *data,
                        size_t length, size_t offset, size_t total, bool retained);
 void mqtt_platform_lock(void);
