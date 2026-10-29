@@ -110,6 +110,7 @@ test-http: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_time.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_mqtt.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_mqtt_tokens.py
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_mqtt_discovery.py
 
 -include $(HOST_OBJECTS:.o=.d) $(BUILD_DIR)/host/simulation.d
 
@@ -127,3 +128,9 @@ test-mqtt-broker: host
 .PHONY: test-home-assistant
 test-home-assistant: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_home_assistant.py
+
+# Force the actual serializer past its output bound: partial JSON must never publish.
+.PHONY: test-discovery-limit
+test-discovery-limit:
+	$(MAKE) BUILD_DIR=build/discovery-limit CPPFLAGS=-DMQTT_DISCOVERY_PAYLOAD_BYTES=128 host
+	CLEVERBOX_DISCOVERY_LIMIT_TEST=1 CLEVERBOX_SIM_LIBRARY=$(abspath build/discovery-limit/host/libcleverbox.so) python3 host/test_mqtt_discovery.py

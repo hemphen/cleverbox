@@ -1,7 +1,7 @@
 # Libraries
 
 Use C/C++ with ESP-IDF and RadioLib. Use ESP-IDF's HTTP server and RadioLib
-transport. MQTT transport and manual HA interaction are implemented; discovery follows;
+transport. MQTT transport, HA discovery and explicit draft/Apply interaction are implemented;
 ESP-Matter is an optional later dependency.
 
 | Dependency | Use |
@@ -30,7 +30,7 @@ The RX and TX profiles still need physical board acceptance.
   No timezone database or third-party time dependency. See [time](time.md).
 - **mqtt_bridge:** bounded broker configuration/store, production routing/publication
   and the ESP-IDF MQTT adapter. Built-in ESP-MQTT from exact IDF v5.5.1; see
-  [topic/session/security contract](mqtt.md). HA discovery is separate.
+  [topic/session/security contract](mqtt.md). Opt-in HA discovery shares this owner, with a separate bounded topic journal.
 - **matter_bridge (optional later):** thermostat attributes and commands mapped to radiator operations.
 
 Keep one codec and one set of protocol values. Reuse these components throughout

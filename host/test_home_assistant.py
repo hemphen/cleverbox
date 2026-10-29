@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 import paho.mqtt.client as mqtt
-from test_http import App, ROOT, STATE, REPORT
+from test_http import App, ROOT, STATE, REPORT, changed_frame
 from test_registry import REPORT_B
 from test_mqtt import BASE
 
@@ -112,7 +112,7 @@ http:
     app = App(storage, real_mqtt=True); ha = None
     observer = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id='ha-test-observer', clean_session=True)
     messages = []
-    observer.on_connect = lambda c,u,f,r,p: c.subscribe(BASE+'/#')
+    observer.on_connect = lambda c,u,f,r,p: c.subscribe([(BASE+'/#',0),('homeassistant/#',0)])
     def received(c,u,m):
         value = m.payload.decode()
         messages.append((m.topic, json.loads(value) if value.startswith('{') else value, m.retain))
@@ -197,6 +197,7 @@ http:
         app.sim('scenario',name='silence_a'); snapshots()
         apply(1,23,'Comfort'); apply(1,24,'Eco')
         pump(lambda:admitted(1,'invalid_command_token'))
+        assert state_is('sensor.cleverbox_020000000001_1_observed_target','22.0')
         assert app.http('/api/radio?id=1')['command']['requested_target_c']==23
         snapshots(); apply(1)
         pump(lambda:admitted(1,'busy_or_unavailable_or_missing_template'))
@@ -211,7 +212,14 @@ http:
         assert state_is('sensor.cleverbox_020000000001_2_temperature','unavailable')
         app.sim('inject',frame=REPORT); app.sim('inject',frame=REPORT_B); app.advance(10); snapshots()
         pump(lambda:state_is('binary_sensor.cleverbox_020000000001_1_observation_fresh','on'))
-        print('HA rapid actions, busy rejection, two radiators, RF timeout, stale reports and recovery: passed', flush=True)
+        # A fresh report can explicitly lack the measured-temperature field.
+        missing=bytearray.fromhex(REPORT); missing[16:18]=bytes.fromhex('084C'); missing[16]^=1
+        app.sim('inject',frame=changed_frame(missing.hex(),16)); app.advance(10); snapshots()
+        pump(lambda:state_is('sensor.cleverbox_020000000001_1_temperature','unavailable'))
+        assert state_is('binary_sensor.cleverbox_020000000001_1_observation_fresh','on')
+        assert state_is('sensor.cleverbox_020000000001_1_observed_target','21.0')
+        app.sim('inject',frame=REPORT); app.advance(10); snapshots()
+        print('HA rapid actions, busy rejection, two radiators, RF timeout, stale/missing measurements and recovery: passed', flush=True)
         # Missing snapshots expire in real HA wall time despite online availability.
         # --test-clock freezes publication while HA's native expire_after runs.
         until = time.monotonic()+18
@@ -267,6 +275,23 @@ http:
         assert sets and not any(retain for _,retain in sets)
         assert all(set(p)=={'session','command_token','mode','centi_c'} for p,_ in sets)
         print('HA broker/bridge restarts, new sessions, RF continuity and no reconnect replay: passed',flush=True)
+        # Online disable/enable cleanup, HA birth replay and unrelated broker data.
+        unrelated='homeassistant/sensor/cleverbox_test_unrelated/config'
+        other=dict(name='Unrelated test',unique_id='unrelated_test',state_topic='unrelated/state')
+        observer.publish(unrelated,json.dumps(other),retain=True,qos=1)
+        tx=app.http()['simulation_tx']
+        before=len([t for t,p,r in messages if t.startswith('homeassistant/device/')])
+        observer.publish('homeassistant/status','online')
+        pump(lambda:len([t for t,p,r in messages if t.startswith('homeassistant/device/')])>before)
+        assert app.http()['simulation_tx']==tx
+        app.http('/api/mqtt',dict(action='discovery_disable'),202); app.advance(100)
+        pump(lambda:not discovered(),timeout=20)
+        pump(lambda:app.http('/api/mqtt')['discovery_pending']==0)
+        assert app.http()['simulation_tx']==tx
+        app.http('/api/mqtt',dict(action='discovery_enable'),202); app.advance(100)
+        pump(lambda:len(discovered())==14,timeout=20)
+        assert {e['unique_id'] for e in discovered()}==set(entries)
+        assert app.http()['simulation_tx']==tx
         # Keep retained configs across reconnect while removing a radiator offline.
         broker.terminate(); broker.wait(timeout=5)
         app.advance(6000)
@@ -279,6 +304,15 @@ http:
         pump(lambda:not any(e['unique_id'].startswith('cleverbox_020000000001_1_') for e in discovered()),timeout=20)
         pump(lambda:len(discovered()) == 7)
         assert app.http()['simulation_tx'] == tx
+        # Registry addition after discovery was enabled uses a new stable ID.
+        app.sim('device',index=0)
+        added=app.http('/api/pairing',dict(action='start',source='F1010203',destination='F1100001'),202)['id']
+        assert added==3
+        app.advance(2000)
+        pump(lambda:len(discovered())==14,timeout=20)
+        assert len({e['device_id'] for e in discovered()})==2
+        assert any(e['unique_id']=='cleverbox_020000000001_3_temperature_centi_c' for e in discovered())
+        assert state_is('sensor.cleverbox_020000000001_3_temperature','unavailable')
         broker.terminate(); broker.wait(timeout=5); app.advance(6000)
         app.http('/api/mqtt',dict(action='discovery_disable'),202); app.advance(10)
         assert not app.http('/api/mqtt')['discovery_enabled']
@@ -288,6 +322,9 @@ http:
         pump(lambda:app.http('/api/mqtt')['connected'],timeout=20)
         pump(lambda:not discovered(),timeout=20)
         assert not app.http('/api/mqtt')['discovery_enabled'] and app.http()['simulation_tx']==[]
+        # A fresh subscription still receives unrelated retained data after cleanup.
+        messages.clear(); observer.subscribe(unrelated)
+        pump(lambda:any(t==unrelated and p==other and retained for t,p,retained in messages))
         print('HA stable discovery IDs/grouping, rename, offline removal/disable and durable cleanup: passed',flush=True)
     finally:
         if ha: ha.stop()

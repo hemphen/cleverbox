@@ -6,7 +6,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libcjson-dev pkg-config mosquitto python3-venv
-      - run: make test test-http test-capacity
+      - run: make test test-http test-capacity test-discovery-limit
       - name: Real local MQTT broker smoke
         run: |
           python3 -m venv build/mqtt-venv

@@ -13,7 +13,9 @@
 #define SLOTS (2 * CLEVERBOX_RADIATOR_CAPACITY)
 #define RECORD_BYTES (8 + 4 * SLOTS)
 static uint32_t ids[SLOTS];
-static bool enabled, valid, replay;
+static bool enabled, valid, publish_failed;
+static bool advertised[SLOTS];
+static char names[SLOTS][RADIATOR_NAME_BYTES+1], pending_name[RADIATOR_NAME_BYTES+1];
 static char bridge[13];
 static unsigned cursor;
 static uint32_t generation;
@@ -53,7 +55,7 @@ static esp_err_t save(void) {
 }
 void mqtt_discovery_init(const char *identity) {
     strcpy(bridge, identity); memset(ids, 0, sizeof(ids)); enabled = false;
-    generation = 0; valid = true; error = 0; cursor = 0; replay = true; pending_mid = ack_mid = 0; due = 0;
+    generation = 0; publish_failed = false; valid = true; error = 0; cursor = 0; memset(advertised, 0, sizeof(advertised)); pending_mid = ack_mid = 0; due = 0;
     nvs_handle_t h; size_t size = sizeof(record);
     esp_err_t err = nvs_open("cleverbox", NVS_READONLY, &h);
     if (err == ESP_OK) { err = nvs_get_blob(h, "ha_discovery", record, &size); nvs_close(h); }
@@ -82,7 +84,7 @@ esp_err_t mqtt_discovery_set(bool value) {
     error = err; mqtt_discovery_replay(); return err;
 }
 void mqtt_discovery_status(mqtt_bridge_status *out) {
-    out->discovery_enabled = enabled; out->discovery_error = error;
+    out->discovery_enabled = enabled; out->discovery_error = error ? error : publish_failed ? MQTT_ERR_DISCOVERY_PUBLISH : 0;
     unsigned count = pending_mid ? 1 : 0;
     radiator_record d;
     for (size_t i = 0; i < SLOTS; ++i)
@@ -94,10 +96,10 @@ void mqtt_discovery_status(mqtt_bridge_status *out) {
     }
     out->discovery_pending = count;
 }
-void mqtt_discovery_replay(void) { replay = true; cursor = 0; due = 0; }
+void mqtt_discovery_replay(void) { memset(advertised, 0, sizeof(advertised)); cursor = 0; due = 0; }
 void mqtt_discovery_disconnected(void) {
     mqtt_platform_lock(); pending_mid = ack_mid = 0; mqtt_platform_unlock();
-    if (error == MQTT_ERR_SUBSCRIBE_TIMEOUT) error = 0;
+    if (error == MQTT_ERR_DISCOVERY_TIMEOUT) error = 0;
     mqtt_discovery_replay();
 }
 void mqtt_bridge_puback(int mid) {
@@ -155,7 +157,7 @@ static bool build(const radiator_record *d) {
             cJSON_AddStringToObject(c, "entity_category", "diagnostic");
             if (i == 4) { strcpy(templ, "{{ value_json.age_ms / 1000 if value_json.age_ms is defined else none }}"); cJSON_AddStringToObject(c, "unit_of_measurement", "s"); cJSON_AddStringToObject(c, "device_class", "duration"); }
             else {
-                snprintf(templ, sizeof(templ), "{{ value_json.%s.%s | default('none') }}", keys[i], i == 5 ? "reason" : "phase");
+                snprintf(templ, sizeof(templ), "{{ value_json.get('%s', {}).get('%s', 'none') }}", keys[i], i == 5 ? "reason" : "phase");
                 cJSON_AddStringToObject(c, "json_attributes_topic", topic);
                 char attrs[160]; snprintf(attrs, sizeof(attrs), "{{ dict(result=value_json.%s | default({})) | to_json }}", keys[i]);
                 cJSON_AddStringToObject(c, "json_attributes_template", attrs);
@@ -176,13 +178,17 @@ void mqtt_discovery_tick(mqtt_client_ops *client) {
                     if (error) ids[i] = pending_id;
                     break;
                 }
+            } else {
+                for (size_t i = 0; i < SLOTS; ++i) if (ids[i] == pending_id) {
+                    advertised[i] = true; strcpy(names[i], pending_name); break;
+                }
             }
             mqtt_platform_lock(); pending_mid = ack_mid = 0; mqtt_platform_unlock();
             due = now()+100; return;
         }
         if (now() >= deadline) {
             // Owner closes the client to discard a possibly stuck QoS1 outbox.
-            error = MQTT_ERR_SUBSCRIBE_TIMEOUT;
+            error = MQTT_ERR_DISCOVERY_TIMEOUT;
         }
         return;
     }
@@ -195,7 +201,7 @@ void mqtt_discovery_tick(mqtt_client_ops *client) {
             if (!found && empty < SLOTS) {
                 ids[empty] = d.id; error = save();
                 if (error) { ids[empty] = 0; return; }
-                replay = true;
+                advertised[empty] = false;
             }
             // Full journal leaves the new radiator undiscovered until cleanup.
         }
@@ -203,19 +209,21 @@ void mqtt_discovery_tick(mqtt_client_ops *client) {
     for (unsigned slot = cursor; slot < SLOTS; ++slot) {
         if (!ids[slot]) continue;
         radiator_record d; bool remove = !enabled || radio_device_status(ids[slot], &d) != ESP_OK;
-        if (!remove && !replay) continue;
-        if (!remove && !build(&d)) { error = ESP_ERR_INVALID_ARG; return; }
+        if (!remove && advertised[slot] && !strcmp(names[slot], d.name)) continue;
+        if (!remove && !build(&d)) { error = MQTT_ERR_DISCOVERY_PAYLOAD; return; }
         char topic[128]; snprintf(topic, sizeof(topic), "homeassistant/device/cleverbox_%s_%u/config", bridge, (unsigned)ids[slot]);
         pending_id = ids[slot]; pending_delete = remove;
+        if (!remove) strcpy(pending_name, d.name);
         mqtt_platform_lock(); pending_mid = -1; ack_mid = 0; mqtt_platform_unlock();
         int sent = client->publish_confirmed(topic, remove ? "" : payload);
         mqtt_platform_lock(); pending_mid = sent > 0 ? sent : 0; mqtt_platform_unlock();
-        if (sent <= 0) { due = now()+MQTT_RETRY_MS; return; }
+        publish_failed = sent <= 0;
+        if (publish_failed) { due = now()+MQTT_RETRY_MS; return; }
         deadline = now()+MQTT_SUBACK_TIMEOUT_MS;
         cursor = slot+1;
-        // One bounded sweep. Registry/name changes and HA birth schedule replay;
-        // periodic replay also repairs broker persistence loss without RF.
+        // One bounded sweep; unchanged configurations never cause heartbeat
+        // traffic. Registry/name changes, connection and HA birth drive replay.
         return;
     }
-    replay = true; cursor = 0; due = now()+5000;
+    cursor = 0; due = now()+5000;
 }
