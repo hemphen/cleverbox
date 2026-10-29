@@ -210,9 +210,11 @@ http:
         snapshots(); pump(lambda:state_is('binary_sensor.cleverbox_1_observation_fresh','on'))
         # HA restart preserves MQTT entry but never restores/replays an action.
         tx = app.http()['simulation_tx']; original_session = session()
+        last_id = max(p['request_id'] for t,p,r in messages if isinstance(p,dict) and p.get('stage')=='admission' and p.get('accepted'))
         ha.stop(); ha = HomeAssistant(config,port); snapshots()
         assert session()==original_session and app.http()['simulation_tx']==tx
         apply(2,17,'Frost'); pump(lambda:phase(2,'matched') and app.http()['radiators'][1]['observed']['mode']==2)
+        pump(lambda: ha.states()['sensor.cleverbox_2_last_admission']['attributes']['result']['request_id'] > last_id)
         print('HA missing-snapshot expiry, recovery and process restart without replay: passed', flush=True)
         # Admit RF then remove the broker. Delivery proceeds during network loss.
         snapshots(); app.sim('scenario',name='delayed'); apply(2,18,'Comfort')
@@ -227,6 +229,8 @@ http:
         result = ha.states()['sensor.cleverbox_2_last_delivery']['attributes']['result']
         assert result['session']==original_session
         apply(1,20,'Off'); pump(lambda:phase(1,'matched') and app.http('/api/radio?id=1')['observed']['mode']==1)
+        pump(lambda: ha.states()['sensor.cleverbox_1_last_admission']['attributes']['result']['session'] == changed_session)
+        assert ha.states()['sensor.cleverbox_1_last_admission']['attributes']['result']['request_id'] == 1
         # Restart actual bridge process with a pending command. Boot cannot resume it.
         snapshots(); app.sim('scenario',name='silence'); apply(2,19,'Eco')
         pump(lambda:app.http()['radiators'][1]['command']['pending'])
@@ -242,6 +246,8 @@ http:
         assert app.http()['simulation_tx']==[]
         app.http('/api/time',dict(action='manual',unix_seconds=1767268800)); snapshots()
         apply(2,19,'Eco'); pump(lambda:phase(2,'matched'))
+        pump(lambda: ha.states()['sensor.cleverbox_2_last_admission']['attributes']['result']['session'] == session())
+        assert ha.states()['sensor.cleverbox_2_last_admission']['attributes']['result']['request_id'] == 1
         sets = [(p,r) for t,p,r in messages if t.endswith('/set')]
         assert sets and not any(retain for _,retain in sets)
         assert all(set(p)=={'session','command_token','mode','centi_c'} for p,_ in sets)

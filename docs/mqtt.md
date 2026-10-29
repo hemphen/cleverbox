@@ -74,7 +74,7 @@ never routing inputs. Payloads are JSON except plain availability strings.
 | `B/radiators/<id>/state` | bridge → clients | observation snapshot below; nonretained |
 | `B/errors` | bridge → clients | admission rejection when no valid topic identity exists; nonretained |
 
-A command requires exactly these four fields:
+The original numeric command form requires exactly these four fields:
 
 ```json
 {"session":"<current 32-character session>","request_id":1,"mode":0,"centi_c":2050}
@@ -109,7 +109,8 @@ Rejections use `accepted:false` and a fixed reason: `invalid_topic`,
 `retained_command`, `session_mismatch`, `invalid_request_id`,
 `duplicate_or_out_of_order`, `invalid_fields`, `unknown_identity`,
 `time_unavailable`, `invalid_settings_or_template`, or
-`busy_or_unavailable_or_missing_template`. An unparseable ID has no request ID in
+`busy_or_unavailable_or_missing_template`. The token form adds the reasons
+documented below. An unparseable ID has no request ID in
 the response. The response session is the current connection, including when
 rejecting an old session. The ID is already explicit in the topic.
 
