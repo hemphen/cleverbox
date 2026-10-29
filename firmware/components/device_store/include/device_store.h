@@ -28,12 +28,14 @@ typedef struct {
     paired_device pair;
     bool has_saved_template;
     uint8_t saved_template[CONTROLLER_STATE_BYTES];
-    // Everything below is transient. No per-device delivery-machine/frame copies.
+    // Everything below is transient. The live machine is worker-owned.
     bool has_control_template, has_paired_report;
     uint8_t control_template[CONTROLLER_STATE_BYTES];
     int64_t control_template_time_us, paired_report_time_us;
     rf_report paired_report;
     rf_control_status control;
+    bool command_reserved; // Admission through worker handoff and terminal publication.
+    bool command_pending;
     int control_error, state_load_error, state_store_error;
     radio_store_result state_save_result, state_clear_result;
 } radiator_record;

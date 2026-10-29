@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <vector>
+#include <deque>
 #include "esp_err.h"
 #include "esp_timer.h"
 #include "board.h"
@@ -18,16 +19,16 @@ inline int xTaskCreate(void (*)(void *), const char *, int, void *, int, void *)
 inline void vTaskDelete(void *) {}
 inline void vTaskDelay(int) {}
 using QueueHandle_t = int;
-inline std::vector<uint8_t> queued;
-inline size_t item_size;
-inline QueueHandle_t xQueueCreate(int, size_t n) { item_size = n; return 1; }
+inline std::deque<std::vector<uint8_t>> queued;
+inline size_t item_size, queue_capacity;
+inline QueueHandle_t xQueueCreate(int capacity, size_t n) { item_size = n; queue_capacity = capacity; queued.clear(); return 1; }
 inline int xQueueSend(QueueHandle_t, const void *p, int) {
-    if (!queued.empty()) return 0;
-    auto b = static_cast<const uint8_t *>(p); queued.assign(b, b + item_size); return pdPASS;
+    if (queued.size() == queue_capacity) return 0;
+    auto b = static_cast<const uint8_t *>(p); queued.emplace_back(b, b + item_size); return pdPASS;
 }
 inline int xQueueReceive(QueueHandle_t, void *p, int) {
     if (queued.empty()) return 0;
-    memcpy(p, queued.data(), item_size); queued.clear(); return pdPASS;
+    memcpy(p, queued.front().data(), item_size); queued.pop_front(); return pdPASS;
 }
 constexpr uint32_t RADIOLIB_NC = UINT32_MAX;
 constexpr int RADIOLIB_ERR_NONE = 0, RADIOLIB_ENCODING_NRZ = 0;

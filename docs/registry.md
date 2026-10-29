@@ -1,22 +1,26 @@
-# Radiator registry and serialized delivery
+# Radiator registry and independent delivery
 
-The registry is implemented; independent per-radiator delivery is the **next**
-milestone. One pairing or command exchange owns the radio globally. Another
-exchange receives HTTP 409 immediately, including while the admitted action is
-still queued or being handed to the worker. There is no command backlog.
+The registry and independent per-radiator delivery are implemented. Each radiator
+may have one outstanding command, from admission through worker handoff, report
+waits and bounded retry. Another command for that radiator returns HTTP 409.
+A command for an idle radiator can proceed while others wait for reports. Pairing
+remains exclusive: it cannot start while any command is outstanding, and commands
+are rejected throughout pairing.
 
 Every configured radiator owns its identity, name, pairing, saved state, learned
 state, observations and latest command result. Completing B does not erase A's
 result. Reports and controller frames are routed by both source and destination;
-selection is never a routing input. One active command machine owns the admitted
-frame snapshot and fresh-report/readback exchange. After timeout/TX failure,
+selection is never a routing input. Each active command machine owns a compact admitted
+state snapshot and fresh-report/readback exchange. The worker chooses one ready
+frame per tick in round-robin order and restores receive mode after every TX.
+Report waits never reserve the CC1101. After timeout/TX failure,
 matching late reports can reconcile the per-device result without another send.
-No independent waiting exchanges or scheduler are implemented.
+There is no per-radiator backlog or replacement policy.
 
 ## HTTP identities
 
 `GET /api/radiators` (also `GET /api/radio`) lists `radiators`, `capacity`,
-`registry_error`, `registry_problem`, `exchange_id`, `mutation_pending` and
+`registry_error`, `registry_problem`, `exchange_id` (pairing identity), `active_commands`, `mutation_pending` and
 `mutation_error`, alongside global RF diagnostics. Each radiator contains `id`,
 `name`, `pairing`, `command` and, only after reception, `observed`.
 `inclusion` describes the latest inclusion attempt, with its prospective `id`,
@@ -52,9 +56,9 @@ configured radiator. Previews remain standalone non-transmitting frame utilities
 
 202 means admitted, not committed or applied. Poll `mutation_pending` /
 `mutation_error` for rename/remove, per-device save/clear status for state storage,
-`inclusion` for pairing and per-device `command` for delivery. Each has bounded
-pending work: one shared worker queue slot and one local-storage reservation.
-An active record cannot be removed, including before the worker dequeues it.
+`inclusion` for pairing and per-device `command` for delivery. Pending work is bounded by a worker queue of capacity plus one and one
+local-storage reservation. An active record cannot be removed, including before
+the worker dequeues it. The queue holds at most one command for each radiator.
 Local storage changes to other records may run between radio ticks. A failed
 configuration save leaves the previous RAM configuration available.
 
@@ -116,18 +120,20 @@ A stored registry that exceeds this build's capacity fails visibly with
 blocks mutations/inclusion and never truncates or overwrites the stored record.
 Restore a sufficiently large build to access/remove records before reducing capacity.
 
-Each record has only two 59-byte state arrays plus compact report/command status.
-The active machine and its full-size template/report buffers exist once globally,
-not once per radiator. Host ABI measurements: record 256 bytes, registry 2064
-bytes at eight; two static storage work buffers total 1694 bytes. Increasing
-capacity adds one record plus 210 wire-buffer bytes per slot. Storage buffers
-live in BSS. The worker and HTTP stack allocations do not grow with capacity: neither copies
-a registry onto its task stack. The radio task retains its 6144-byte stack and
-HTTP its existing 8192 bytes. Host compiler stack-usage checks are useful estimates;
-optimized host estimates were 1200 bytes for `radio_worker::step`, 160 bytes
-for registry persistence and 1904 bytes for the HTTP status handler (individual
-frames, not total call-chain high-water marks). Physical task high-water marks
-and flash behavior still need board acceptance.
+Each record retains two 59-byte state arrays, compact report/command status and
+an admission reservation. The worker owns one compact control machine per configured
+capacity slot: 59 state bytes and up to 64 report bytes, rather than retaining two
+258-byte frame buffers per command. Full envelopes are temporary codec/TX/RX values.
+The request queue has `capacity + 1` slots of 124 bytes on the tested host ABI;
+this bounds admission during worker handoff without allowing a second command for
+the same device. At capacity eight, the host ABI measured record 256 bytes,
+registry 2064 bytes, worker 1960 bytes and queue payload at most 1116 bytes
+(plus RTOS queue metadata). At capacity three, worker size was 944 bytes.
+Each additional slot adds 256 registry bytes, about 203 worker bytes and 124
+queue payload bytes, plus 210 bytes in the two static storage wire buffers.
+The storage buffers remain BSS; the worker lives on the 6144-byte radio task
+stack on firmware. HTTP keeps its 8192-byte stack. Physical task high-water
+marks, actual queue allocation and flash durability need board acceptance.
 
 `make test test-http test-capacity` exercises the default and three-slot builds,
 including generated full/oversized records and the same two-device HTTP walkthrough.

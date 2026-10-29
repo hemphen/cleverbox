@@ -26,7 +26,7 @@ extern "C" radio_status radio_transport_status(void)
 
 static radiator_registry registry;
 static bool mutation_pending;
-static uint32_t exchange_id; // Admission reservation remains held across dequeue/TX.
+static uint32_t exchange_id; // Pairing reservation only; commands own per-record reservations.
 static bool pair_reserved;
 static bool exchange_pending;
 static radiator_record *find_device(uint32_t id) {
@@ -53,7 +53,8 @@ enum radio_action { PAIR_START, PAIR_CANCEL, PAIR_SAVE, CONTROL_START, STATE_SAV
 struct radio_request {
     radio_action action; uint32_t id;
     uint8_t controller[4], candidate[4];
-    rf_control_request control;
+    uint8_t state[CONTROLLER_STATE_BYTES];
+    rf_mode mode; int centi_c; unsigned clock_seconds;
     char name[RADIATOR_NAME_BYTES + 1];
 };
 static QueueHandle_t radio_requests;
@@ -71,10 +72,14 @@ extern "C" esp_err_t radio_pair_start(const uint8_t controller[4], const uint8_t
     esp_err_t result = ESP_ERR_INVALID_STATE;
     if (status.ready && radio_requests && !status.registry_error && !exchange_id && !mutation_pending &&
         registry.count < CLEVERBOX_RADIATOR_CAPACITY && registry.next_id != UINT32_MAX) {
-        r.id = registry.next_id; exchange_id = r.id; pair_reserved = true; exchange_pending = true;
-        result = queue_request(r);
-        if (result != ESP_OK) { exchange_id = 0; pair_reserved = false; exchange_pending = false; }
-        else { status.pairing_duplicate = false; status.pairing_id = r.id; status.exchange_id = r.id; *id = r.id; }
+        bool commands_outstanding = false;
+        for (size_t i = 0; i < registry.count; ++i) commands_outstanding |= registry.records[i].command_reserved;
+        if (!commands_outstanding) {
+            r.id = registry.next_id; exchange_id = r.id; pair_reserved = true; exchange_pending = true;
+            result = queue_request(r);
+            if (result != ESP_OK) { exchange_id = 0; pair_reserved = false; exchange_pending = false; }
+            else { status.pairing_duplicate = false; status.pairing_id = r.id; status.exchange_id = r.id; *id = r.id; }
+        }
     }
     portEXIT_CRITICAL(&status_lock); return result;
 }
@@ -94,25 +99,31 @@ extern "C" esp_err_t radio_pair_cancel(uint32_t id) { return pair_action(id, PAI
 extern "C" esp_err_t radio_pair_save(uint32_t id) { return pair_action(id, PAIR_SAVE); }
 extern "C" esp_err_t radio_control_start(uint32_t id, const rf_control_request *request) {
     if (!request) return ESP_ERR_INVALID_ARG;
-    radio_request r = {}; r.action = CONTROL_START; r.control = *request;
+    radio_request r = {}; r.action = CONTROL_START; rf_control_request chosen = *request;
     portENTER_CRITICAL(&status_lock);
     radiator_record *d = find_device(id);
     esp_err_t result = ESP_ERR_INVALID_STATE;
-    if (d && status.ready && radio_requests && !status.registry_error && !exchange_id && !mutation_pending) {
-        if (!r.control.state.size) {
+    if (d && status.ready && radio_requests && !status.registry_error && !pair_reserved && !d->command_reserved && !mutation_pending) {
+        if (!chosen.state.size) {
             const uint8_t *bytes = d->has_control_template ? d->control_template :
                 d->has_saved_template ? d->saved_template : nullptr;
-            if (bytes) { r.control.state.size = CONTROLLER_STATE_BYTES; memcpy(r.control.state.bytes, bytes, CONTROLLER_STATE_BYTES); }
+            if (bytes) { chosen.state.size = CONTROLLER_STATE_BYTES; memcpy(chosen.state.bytes, bytes, CONTROLLER_STATE_BYTES); }
         }
-        if (r.control.state.size) {
+        if (chosen.state.size) {
             rf_control check = {};
-            if (!rf_control_start(&check, &r.control, d->pair.controller, d->pair.radiator, esp_timer_get_time() / 1000))
+            if (!rf_control_start(&check, &chosen, d->pair.controller, d->pair.radiator, esp_timer_get_time() / 1000))
                 result = ESP_ERR_INVALID_ARG;
             else {
-                r.id = d->id; exchange_id = d->id; pair_reserved = false; exchange_pending = true;
+                r.id = d->id; memcpy(r.state, chosen.state.bytes, CONTROLLER_STATE_BYTES);
+                r.mode = chosen.mode; r.centi_c = chosen.centi_c; r.clock_seconds = chosen.clock_seconds;
+                rf_control_status previous = d->control; int previous_error = d->control_error;
+                d->command_reserved = d->command_pending = true;
+                d->control = check.status; d->control_error = 0;
                 result = queue_request(r);
-                if (result != ESP_OK) { exchange_id = 0; exchange_pending = false; }
-                status.exchange_id = exchange_id;
+                if (result != ESP_OK) {
+                    d->command_reserved = d->command_pending = false;
+                    d->control = previous; d->control_error = previous_error;
+                }
             }
         }
     }
@@ -130,17 +141,21 @@ static esp_err_t enqueue_mutation(uint32_t id, radio_action action, const rf_fra
     esp_err_t result = ESP_ERR_INVALID_STATE;
     if (d && status.ready && radio_requests && !mutation_pending &&
         (!status.registry_error || (d->state_load_error && (action == STATE_SAVE || action == STATE_CLEAR))) &&
-        !(action == REMOVE && exchange_id == d->id)) {
+        !(action == REMOVE && d->command_reserved)) {
         result = ESP_OK; r.id = d->id;
         if (action == STATE_SAVE) {
-            if (imported) r.control.state = *imported;
+            if (imported) {
+                if (imported->size == CONTROLLER_STATE_BYTES) memcpy(r.state, imported->bytes, CONTROLLER_STATE_BYTES);
+                else result = ESP_ERR_INVALID_ARG;
+            }
             else if (d->has_control_template) {
-                r.control.state.size = CONTROLLER_STATE_BYTES;
-                memcpy(r.control.state.bytes, d->control_template, CONTROLLER_STATE_BYTES);
+                memcpy(r.state, d->control_template, CONTROLLER_STATE_BYTES);
             } else result = ESP_ERR_INVALID_STATE;
             rf_frame checked;
-            if (result == ESP_OK && (!rf_set_target(&checked, &r.control.state, RF_OFF, 0) ||
-                memcmp(r.control.state.bytes + 6, d->pair.radiator, 4))) result = ESP_ERR_INVALID_ARG;
+            rf_frame template_frame = {}; template_frame.size = CONTROLLER_STATE_BYTES;
+            memcpy(template_frame.bytes, r.state, CONTROLLER_STATE_BYTES);
+            if (result == ESP_OK && (!rf_set_target(&checked, &template_frame, RF_OFF, 0) ||
+                memcmp(r.state + 6, d->pair.radiator, 4))) result = ESP_ERR_INVALID_ARG;
         }
         if (result == ESP_OK) {
             mutation_pending = true;
@@ -214,16 +229,23 @@ struct radio_worker {
     rf_pairing pair = status.pairing;
     bool saved = status.pairing_saved;
     int pair_error = status.pairing_error;
-    rf_control control = {}; // Only one delivery machine/template/report snapshot globally.
-    uint32_t control_id = 0;
-    int control_error = 0;
+    rf_control controls[CLEVERBOX_RADIATOR_CAPACITY] = {};
+    int control_errors[CLEVERBOX_RADIATOR_CAPACITY] = {};
+    size_t next_device = 0; // Round-robin choice among frames ready for TX.
     void publish() {
         portENTER_CRITICAL(&status_lock);
         status.pairing = pair; status.pairing_saved = saved; status.pairing_error = pair_error;
-        radiator_record *d = find_device(control_id);
-        if (control_id && d) { d->control = control.status; d->control_error = control_error; }
-        if (exchange_id && !exchange_pending && (pair_reserved ? (saved || (!rf_pair_active(&pair) && pair.phase != RF_PAIR_COMPLETE)) :
-                            (control_id == exchange_id && !rf_control_active(&control.status)))) {
+        for (size_t i = 0; i < registry.count; ++i) {
+            radiator_record &d = registry.records[i];
+            if (d.command_reserved && !d.command_pending) {
+                d.control = controls[i].status; d.control_error = control_errors[i];
+                // Do not release a newly queued reservation before its worker handoff.
+                if (!rf_control_active(&d.control))
+                    d.command_reserved = false;
+            }
+        }
+        if (pair_reserved && !exchange_pending &&
+            (saved || (!rf_pair_active(&pair) && pair.phase != RF_PAIR_COMPLETE))) {
             exchange_id = 0; pair_reserved = false;
         }
         status.exchange_id = exchange_id; status.device_count = registry.count;
@@ -241,7 +263,7 @@ struct radio_worker {
                     else if (request.action != REMOVE) {
                         changed.has_saved_template = request.action == STATE_SAVE;
                         memset(changed.saved_template, 0, sizeof(changed.saved_template));
-                        if (changed.has_saved_template) memcpy(changed.saved_template, request.control.state.bytes, CONTROLLER_STATE_BYTES);
+                        if (changed.has_saved_template) memcpy(changed.saved_template, request.state, CONTROLLER_STATE_BYTES);
                     }
                     result = device_registry_save_record(&registry, request.action == REMOVE ? nullptr : &changed,
                                                         request.action == REMOVE ? d->id : 0);
@@ -251,6 +273,9 @@ struct radio_worker {
                             size_t index = d - registry.records;
                             for (size_t i = index + 1; i < registry.count; ++i) registry.records[i - 1] = registry.records[i];
                             registry.records[--registry.count] = {};
+                            for (size_t i = index; i < registry.count; ++i) { controls[i] = controls[i + 1]; control_errors[i] = control_errors[i + 1]; }
+                            controls[registry.count] = {}; control_errors[registry.count] = 0;
+                            next_device = 0;
                         } else {
                             *d = changed; d->state_load_error = 0;
                             if (request.action == STATE_CLEAR) {
@@ -272,13 +297,19 @@ struct radio_worker {
                 portEXIT_CRITICAL(&status_lock);
             } else if (request.action == CONTROL_START) {
                 radiator_record *d = find_device(request.id);
-                if (d && rf_control_start(&control, &request.control, d->pair.controller, d->pair.radiator,
-                                          esp_timer_get_time() / 1000)) {
-                    control_id = d->id; control_error = 0;
+                if (d) {
+                    size_t index = d - registry.records;
+                    rf_control_request command = {}; command.state.size = CONTROLLER_STATE_BYTES;
+                    memcpy(command.state.bytes, request.state, CONTROLLER_STATE_BYTES);
+                    command.mode = request.mode; command.centi_c = request.centi_c; command.clock_seconds = request.clock_seconds;
+                    bool started = rf_control_start(&controls[index], &command, d->pair.controller, d->pair.radiator,
+                                                    esp_timer_get_time() / 1000);
+                    portENTER_CRITICAL(&status_lock);
+                    d->command_pending = false;
+                    if (started) control_errors[index] = 0;
+                    else { d->command_reserved = false; d->control = {}; }
+                    portEXIT_CRITICAL(&status_lock);
                 }
-                portENTER_CRITICAL(&status_lock); exchange_pending = false; portEXIT_CRITICAL(&status_lock);
-                // Reservation is deliberately still held; publish transfers it only
-                // after active/terminal state is visible, including during TX.
             } else if (request.action == PAIR_CANCEL && request.id == exchange_id && pair_reserved) {
                 rf_pair_cancel(&pair);
                 if (pair.phase == RF_PAIR_COMPLETE && !saved) pair = {};
@@ -292,10 +323,17 @@ struct radio_worker {
         }
         int64_t now_ms = esp_timer_get_time() / 1000;
         rf_pair_tick(&pair, now_ms);
-        rf_control_tick(&control, now_ms);
+        for (size_t i = 0; i < registry.count; ++i) rf_control_tick(&controls[i], now_ms);
         rf_frame outgoing = {};
         bool pairing_tx = rf_pair_next(&pair, now_ms, &outgoing);
-        bool control_tx = !pairing_tx && rf_control_next(&control, now_ms, &outgoing);
+        bool control_tx = false;
+        size_t chosen = 0;
+        if (!pairing_tx) for (size_t offset = 0; offset < registry.count; ++offset) {
+            size_t i = (next_device + offset) % registry.count;
+            if (rf_control_next(&controls[i], now_ms, &outgoing)) {
+                chosen = i; control_tx = true; next_device = (i + 1) % registry.count; break;
+            }
+        }
         if (pairing_tx || control_tx) {
             int rx_result;
             int tx_result = transmit_frame(outgoing, rx_result);
@@ -303,8 +341,8 @@ struct radio_worker {
                 pair_error = tx_result;
                 rf_pair_sent(&pair, esp_timer_get_time() / 1000, tx_result == 0);
             } else {
-                control_error = tx_result;
-                rf_control_sent(&control, esp_timer_get_time() / 1000, tx_result == 0);
+                control_errors[chosen] = tx_result;
+                rf_control_sent(&controls[chosen], esp_timer_get_time() / 1000, tx_result == 0);
             }
             frame = {}; started = 0;
             portENTER_CRITICAL(&status_lock);
@@ -378,9 +416,9 @@ struct radio_worker {
                         if (decoded && !memcmp(report.source, d.pair.radiator, 4) &&
                             !memcmp(report.destination, d.pair.controller, 4)) {
                             d.has_paired_report = true; d.paired_report = report; d.paired_report_time_us = now;
-                            if (d.id == control_id) {
-                                rf_control_receive(&control, now / 1000, &frame);
-                                if (control.status.phase == RF_CONTROL_MATCHED) control_error = 0;
+                            if (d.command_reserved && !d.command_pending) {
+                                rf_control_receive(&controls[i], now / 1000, &frame);
+                                if (controls[i].status.phase == RF_CONTROL_MATCHED) control_errors[i] = 0;
                             } else if ((d.control.phase == RF_CONTROL_TIMEOUT || d.control.phase == RF_CONTROL_ERROR) &&
                                        rf_control_reconcile(&d.control, now / 1000, &frame)) d.control_error = 0;
                         }
@@ -415,8 +453,9 @@ struct radio_worker {
             if (result != RADIOLIB_ERR_NONE) {
                 ESP_LOGE("radio", "Receive failed: %d", result);
                 if (rf_pair_active(&pair)) pair.phase = RF_PAIR_ERROR;
-                if (rf_control_active(&control.status)) control.status.phase = RF_CONTROL_ERROR;
-                pair_error = control_error = result; publish(); return;
+                for (size_t i = 0; i < registry.count; ++i)
+                    if (rf_control_active(&controls[i].status)) { controls[i].status.phase = RF_CONTROL_ERROR; control_errors[i] = result; }
+                pair_error = result; publish(); return;
             }
             frame = {};
             started = 0;
@@ -448,7 +487,7 @@ extern "C" void radio_transport_start(void)
         memcpy(status.pairing.radiator, registry.records[0].pair.radiator, 4);
     }
     if (load_result != ESP_OK) status.pairing_error = load_result;
-    radio_requests = xQueueCreate(1, sizeof(radio_request));
+    radio_requests = xQueueCreate(CLEVERBOX_RADIATOR_CAPACITY + 1, sizeof(radio_request));
     // Working receive assumptions from the RF spec, not a calibrated TX profile.
     int result = radio.begin(868.3, 1000.0 / 27.0, 17.0, 101.6, 0, 32);
     status.chip_version = result == RADIOLIB_ERR_NONE ? radio.getChipVersion() : -1;

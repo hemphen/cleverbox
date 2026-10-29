@@ -33,8 +33,9 @@ adds pairings, renames and removes local records. Supply numeric `id` on every
 state mutation and live command. Omission is accepted only for an unambiguous
 single-radiator installation. Browser selection is local; it never redirects
 another client's request. `GET /api/radio?id=1` returns selected status, while
-`GET /api/radiators` lists every record. Delivery is globally serialized: only
-one pairing or command exchange; other exchanges return 409, with no backlog.
+`GET /api/radiators` lists every record. Pairing is exclusive. Commands to different radiators proceed independently,
+while CC1101 transmissions occur one frame at a time. A second command for the
+same radiator returns 409, with no per-device backlog.
 Removal does not unpair or reset the physical radiator.
 
 

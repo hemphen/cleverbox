@@ -27,8 +27,13 @@ typedef struct {
 } rf_control_status;
 typedef struct {
     rf_control_status status;
-    rf_control_request request;
-    rf_frame report;
+    // Only the controller-state and a radiator report are retained between ticks.
+    // Full 258-byte RF envelopes are assembled temporarily for codec calls.
+    uint8_t state[59], report_bytes[64];
+    size_t report_size;
+    rf_mode mode;
+    int centi_c;
+    unsigned clock_seconds;
     uint8_t controller[4], radiator[4];
     int64_t started_ms, deadline_ms;
 } rf_control;

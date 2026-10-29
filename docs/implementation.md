@@ -39,9 +39,10 @@ Use the [libraries and component boundaries](libraries.md).
    stable identities/names, explicit HTTP routing, inclusion/removal, per-radiator
    observations/results and legacy migration. One pairing or command exchange
    globally; other exchanges return busy. See [registry](registry.md).
-4. **Independent per-radiator delivery.** Next: allow independent progress while
-   another radiator waits, building on current per-record ownership. No backlog
-   or concurrent exchange scheduling is implemented yet.
+4. **Independent per-radiator delivery.** Implemented: one outstanding command per
+   radiator, independent report deadlines/results and round-robin selection of ready
+   TX frames on the single CC1101. Pairing remains exclusive; there is no second
+   command queued for a busy radiator. See [registry](registry.md).
 5. **Home network and device time.** Add home Wi-Fi setup and device-managed clock
    with explicit timezone behavior. Current commands use the browser clock.
 6. **MQTT and Home Assistant discovery.** Expose measurements, targets, supported

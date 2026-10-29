@@ -35,6 +35,6 @@ reports radiator state separately from requested settings. RF Auto Comfort/Eco
 codes are schedule phases, not a direct mapping to Matter Auto mode.
 
 HTTP, the host-tested codec/pairing/command logic, RadioLib RX/TX adapter and
-multi-radiator NVS registry with globally serialized delivery are present.
+multi-radiator NVS registry with independent per-radiator delivery and serialized CC1101 transmissions are present.
 ESP-Matter is not imported. The host-only platform/HTTP/NVS adapters are described
 in [simulation](simulation.md); they are not part of the physical firmware.
