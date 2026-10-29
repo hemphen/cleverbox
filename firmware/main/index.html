@@ -13,6 +13,21 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685
 <h1>Cleverbox</h1>
 <p>Local setup · Radio receiver</p>
 <p id="trafficNotice">Pairing and the live command button transmit RF frames. Preview buttons prepare frames only.</p>
+<section>
+<h2>Home Wi-Fi</h2>
+<p id="networkStatus" role="status" aria-live="polite">Checking network…</p>
+<p id="networkAccess"></p>
+<label>SSID <input id="wifiSsid" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+<label>Password <input id="wifiPassword" type="password" maxlength="63" autocomplete="new-password"></label>
+<small>2.4 GHz WPA2 personal network. SSID: 1–32 bytes; password: 8–63 printable ASCII characters.
+Credentials are saved only after an IP address is acquired. A failed replacement keeps the previous setup.</small>
+<button id="wifiSave">Connect and save</button>
+<button id="wifiForget">Forget home Wi-Fi only</button>
+<p id="networkAction" role="status"></p>
+<small>Setup/recovery: join Cleverbox with the random password printed to serial at boot, then open http://192.168.4.1.
+The AP stays available while connecting, closes 60 seconds after connection, and reopens on network loss.
+Forgetting Wi-Fi preserves all radiator configuration and admitted commands. Local HTTP has no login; use a trusted network.</small>
+</section>
 <section id="simulationPanel" hidden>
 <h2>SIMULATION · no physical radio</h2>
 <p>Two invented radiators: F1040506 and F1040507. The fixture below stands in for an original controller;
@@ -81,6 +96,48 @@ The radiator supplies its actual address in the reply. Capacity is shown below; 
 <section><h2>Result</h2><pre id="result" role="status" aria-live="polite">No command prepared.</pre></section>
 <script>
 const field=id=>document.getElementById(id);
+let networkTimer;
+async function refreshNetwork(){
+  clearTimeout(networkTimer);
+  try {
+    const response=await fetch('/api/network',{cache:'no-store'});
+    if(!response.ok) throw new Error('Network status unavailable.');
+    const s=await response.json();
+    field('networkStatus').textContent='Wi-Fi: '+s.state+'. Saved setup: '+(s.configured?'yes':'no')+
+      '. Attempts: '+s.attempts+'. Setup result: '+s.setup_result+'.'+(s.error!=='none'?' Error: '+s.error+'.':'');
+    field('networkAccess').textContent=(s.ip?'Application: http://'+s.ip+'. ':'')+
+      (s.recovery_ap?'Protected Cleverbox AP available at http://192.168.4.1. It closes 60 seconds after connection.':'Setup AP closed.');
+    field('wifiSave').disabled=s.state==='connecting'||s.setup_result==='pending';
+  } catch(error){
+    field('networkStatus').textContent='Network status unavailable. If the setup AP closed, join the home network and open the station IP shown above or on serial. Otherwise use the recovery AP.';
+    field('wifiSave').disabled=false;
+  } finally {networkTimer=setTimeout(refreshNetwork,2000);}
+}
+async function networkAction(action){
+  const body={action};
+  if(action==='configure'){
+    body.ssid=field('wifiSsid').value; body.password=field('wifiPassword').value;
+    if(!body.ssid.length || new TextEncoder().encode(body.ssid).length>32 || /[\x00-\x1f\x7f]/.test(body.ssid) ||
+       !/^[\x20-\x7e]{8,63}$/.test(body.password)){
+      field('networkAction').textContent='Enter an SSID of 1–32 bytes and a password of 8–63 printable ASCII characters.';
+      field('wifiPassword').value=''; return;
+    }
+  }
+  field('wifiSave').disabled=true; field('wifiForget').disabled=true;
+  // Clear before sending; never repopulate from status or show credentials in errors.
+  field('wifiPassword').value='';
+  try {
+    const response=await fetch('/api/network',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok) throw new Error('Request failed');
+    field('networkAction').textContent=action==='forget'
+      ? 'Network-only forget queued. Check status; radiator setup is preserved.'
+      : 'Connection queued. Check setup result and station IP before leaving the recovery AP.';
+  } catch(error){field('networkAction').textContent='Network request failed or is busy. Check status before retrying.';}
+  finally {body.password=''; field('wifiForget').disabled=false; await refreshNetwork();}
+}
+field('wifiSave').addEventListener('click',()=>networkAction('configure'));
+field('wifiForget').addEventListener('click',()=>networkAction('forget'));
+refreshNetwork();
 let simulationConfigured=false, selectedId=0, pairingId=0, selectionEpoch=0, refreshTimer;
 function resetSelection(id){
   selectedId=id; selectionEpoch++;

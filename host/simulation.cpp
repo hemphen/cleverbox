@@ -99,7 +99,7 @@ extern "C" void simulation_advance(int ms) {
             const rf_frame &f = deliveries.front().frame;
             fifo.assign(f.bytes, f.bytes + f.size); fifo_used = 0; deliveries.pop_front();
         }
-        worker->step();
+        worker->step(); host_network_tick();
     }
 }
 extern "C" int simulation_scenario(const char *name) {

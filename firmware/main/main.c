@@ -5,8 +5,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "esp_random.h"
-#include "esp_wifi.h"
+#include "network_setup.h"
 #include "nvs_flash.h"
 #include "radio_transport.h"
 
@@ -26,24 +25,12 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_ap();
-    wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&init));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-    wifi_config_t config = {.ap = {.ssid = "Cleverbox", .channel = 1,
-                                   .max_connection = 2, .authmode = WIFI_AUTH_WPA2_PSK}};
-    // Bench access only. New password each boot, shown on the serial console.
-    snprintf((char *)config.ap.password, sizeof(config.ap.password), "%08lx%08lx",
-             (unsigned long)esp_random(), (unsigned long)esp_random());
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI("cleverbox", "Wi-Fi Cleverbox password: %s; open http://192.168.4.1",
-             (char *)config.ap.password);
+    ESP_ERROR_CHECK(network_setup_start());
     radio_transport_start();
     httpd_handle_t server;
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
     http.stack_size = 8192;
+    http.max_uri_handlers = 10; // Root + seven existing routes + network GET/POST.
     ESP_ERROR_CHECK(httpd_start(&server, &http));
     httpd_uri_t root = {.uri = "/", .method = HTTP_GET, .handler = home};
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &root));

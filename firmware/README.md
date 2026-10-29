@@ -19,12 +19,21 @@ The console uses the ESP32-C6 native USB Serial/JTAG port.
 
 Join the **Cleverbox** Wi-Fi network using the temporary password printed on
 the serial console. Open **http://192.168.4.1**. The password changes each boot.
-This bench build starts an access point; home-network provisioning comes later.
+Use Home Wi-Fi on the page to configure persistent station access. See the network policy below.
 
 The start page prepares pairing offer/bind, poll and target/mode frames.
 **Pairing and live target/mode commands transmit. Buttons labelled Preview do not.**
 Every preview result is labelled preview. Frame bytes begin at the length byte;
 preamble/sync and CC1101 framing belong to the upcoming transport.
+
+## Home Wi-Fi startup and recovery
+
+The protected **Cleverbox** AP starts at boot. Read its random per-boot password
+on USB serial (115200 baud), open **http://192.168.4.1/** and configure home Wi-Fi.
+The application also serves the station IP shown on the page and serial. The AP
+closes 60 seconds after DHCP success and reopens on network loss. Wrong credentials
+leave recovery access available. **Forget home Wi-Fi only** preserves all radiator
+configuration. Full [network/recovery policy and hardware checklist](../docs/networking.md).
 
 ## HTTP
 

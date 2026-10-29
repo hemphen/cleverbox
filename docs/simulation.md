@@ -177,3 +177,12 @@ It does not prove RF reception, transmission compatibility, capture-free setup,
 physical flash persistence, thermostat ownership or heating behavior. It does not
 resolve construction of `97`/`5B`, simulate RF modulation, a thermostat algorithm,
 periodic radiator operation or independent delivery scheduling.
+
+## Network policy tests
+
+Home Wi-Fi UI/HTTP uses the same production network policy and NVS record with a
+fake Wi-Fi boundary. It does not use the computer's Wi-Fi or automatically accept
+credentials. With `--test-clock`, `network_event` at `/api/simulation` injects
+`started`, `disconnected` or `got_ip`; the last supplies reserved documentation
+address `192.0.2.10`. `make test-http` covers this flow, RF continuity and reset
+isolation. See [network validation and board checks](networking.md).

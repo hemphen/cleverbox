@@ -43,12 +43,17 @@ Use the [libraries and component boundaries](libraries.md).
    radiator, independent report deadlines/results and round-robin selection of ready
    TX frames on the single CC1101. Pairing remains exclusive; there is no second
    command queued for a busy radiator. See [registry](registry.md).
-5. **Home network and device time.** Add home Wi-Fi setup and device-managed clock
-   with explicit timezone behavior. Current commands use the browser clock.
-6. **MQTT and Home Assistant discovery.** Expose measurements, targets, supported
+5. **Persistent home Wi-Fi and recovery.** Implemented: local HTTP provisioning,
+   save after DHCP, previous-setup retention, protected serial-password recovery AP,
+   bounded attempts/paced reconnect and network-only forget. Production policy and
+   HTTP paths are software-tested; physical Wi-Fi/RF acceptance remains pending.
+   See [networking](networking.md).
+6. **Device-managed time.** Add a clock with explicit timezone behavior. Current
+   commands still use the browser clock; no schedules or networking-triggered commands.
+7. **MQTT and Home Assistant discovery.** Expose measurements, targets, supported
    modes and honest availability through the existing command handling. Test
    network loss/reconnect without arbitrary settings changes.
-7. **Installation and endurance.** Validate physical pairing/control, power cycles,
+8. **Installation and endurance.** Validate physical pairing/control, power cycles,
    multiple devices and continued operation without HA/Touch E3. Publish installation
    and upgrade handling that preserves setup. Matter may be added later if useful.
 

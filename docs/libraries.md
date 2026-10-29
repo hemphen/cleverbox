@@ -23,6 +23,8 @@ The RX and TX profiles still need physical board acceptance.
 - **radio_transport:** Elecram pin configuration, RadioLib integration, interrupts,
   queues and timed exchanges.
 - **device_store:** bounded versioned NVS registry, legacy migration, names, pairings and saved controller state.
+- **network_setup:** ESP-IDF Wi-Fi task/event adapter, portable bounded setup/reconnect
+  policy and separate Wi-Fi NVS key. Uses no provisioning framework. See [networking](networking.md).
 - **matter_bridge (optional later):** thermostat attributes and commands mapped to radiator operations.
 
 Keep one codec and one set of protocol values. Reuse these components throughout

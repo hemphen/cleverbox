@@ -4,6 +4,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+void host_network_tick(void);
+int host_network_event(const char *);
 void simulation_status(cJSON *);
 void simulation_init(void);
 void simulation_advance(int milliseconds);
