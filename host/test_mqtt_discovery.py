@@ -18,7 +18,12 @@ def run(directory):
         nonlocal app
         app.stop(); app=App(storage)
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip'); app.advance(100)
-        app.sim('mqtt_confirmed_mode',mode=fail); connect(app)
+        app.sim('mqtt_confirmed_mode',mode=fail)
+        if fail==1:
+            app.sim('mqtt_connection',connected=True); app.advance(100)
+            mid=app.http('/api/simulation/mqtt-client')['subscription_id']
+            app.sim('mqtt_suback',id=mid,qos=0); app.advance(100)
+        else: connect(app)
     def configs(ms=7000):
         app.advance(ms)
         return [r for r in publications(app) if r['topic'].startswith('homeassistant/')]
@@ -52,8 +57,8 @@ def run(directory):
         # Immediate publication failure: keep durable ownership, pace retries.
         app.sim('mqtt_confirmed_mode',mode=1); app.sim('mqtt_input',topic='homeassistant/status',payload='online'); configs()
         assert not configs(1000)
-        assert app.http('/api/mqtt')['discovery_error']==0x7413
-        app.sim('mqtt_confirmed_mode',mode=0); assert configs()
+        assert app.http('/api/mqtt')['discovery_error']==0x7413 and not app.http('/api/mqtt')['connected']
+        app.sim('mqtt_confirmed_mode',mode=0); app.advance(5000); connect(app); assert configs()
         # Missing PUBACK discards the stuck outbox with a paced client restart.
         app.sim('mqtt_confirmed_mode',mode=2); app.sim('mqtt_input',topic='homeassistant/status',payload='online'); configs(12000)
         assert not app.http('/api/mqtt')['connected']

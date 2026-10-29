@@ -415,7 +415,10 @@ void mqtt_bridge_tick(void) {
     if (!current || !session[0]) return;
     mqtt_discovery_tick(&client); update_discovery_status();
     mqtt_bridge_status discovery = {0}; mqtt_discovery_status(&discovery);
-    if (discovery.discovery_error == MQTT_ERR_DISCOVERY_TIMEOUT) {
+    if (discovery.discovery_error == MQTT_ERR_DISCOVERY_TIMEOUT ||
+        discovery.discovery_error == MQTT_ERR_DISCOVERY_PUBLISH) {
+        // A failed QoS1 send may already be in ESP-MQTT's outbox. Destroy it
+        // before retrying so an old config cannot overtake a cleanup marker.
         stop(); retry_ms = now()+MQTT_RETRY_MS; return;
     }
     results(became_ready);

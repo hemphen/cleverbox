@@ -322,7 +322,7 @@ http:
         assert any(e['unique_id']=='cleverbox_020000000001_3_temperature_centi_c' for e in discovered())
         assert state_is('sensor.cleverbox_020000000001_3_temperature','unavailable')
         broker.terminate(); broker.wait(timeout=5); advance(6000)
-        app.http('/api/mqtt',dict(action='discovery_disable'),202); advance(10)
+        app.http('/api/mqtt',dict(action='discovery_disable'),202); advance(200)
         assert not app.http('/api/mqtt')['discovery_enabled']
         app.stop(); app = App(storage,real_mqtt=True)
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip')

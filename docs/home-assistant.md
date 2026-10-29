@@ -98,9 +98,10 @@ device's supplied name; an explicit HA user name continues to take precedence.
   rejected, cleanup waits; re-enable MQTT with the same credentials. A broker
   change/forget is refused while any discovery records remain: disable discovery,
   reconnect to the **old** broker and wait for `discovery_pending:0` first.
-- One confirmed discovery publication is in flight. Immediate send failures retry
-  after five seconds; missing PUBACK after five seconds closes the client/outbox
-  and recreates it after a five-second pause. Commands already admitted continue
+- One confirmed discovery publication is in flight. Immediate send failures and a missing PUBACK after five seconds close the
+  client/outbox and recreate it after a five-second pause. A failed send may
+  already be queued inside ESP-MQTT; discarding that outbox prevents an old active
+  config from overtaking a later cleanup marker. Commands already admitted continue
   independently. MQTT 3.1.1 PUBACK proves broker receipt, not that HA processed it
   or that a broker ACL accepted a write; verify broker ACLs and HA logs.
 - The persistent journal holds twice the configured radiator capacity, not an

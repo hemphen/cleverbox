@@ -100,6 +100,7 @@ void mqtt_discovery_replay(void) { memset(advertised, 0, sizeof(advertised)); cu
 void mqtt_discovery_disconnected(void) {
     mqtt_platform_lock(); pending_mid = ack_mid = 0; mqtt_platform_unlock();
     if (error == MQTT_ERR_DISCOVERY_TIMEOUT) error = 0;
+    publish_failed = false;
     mqtt_discovery_replay();
 }
 void mqtt_bridge_puback(int mid) {
