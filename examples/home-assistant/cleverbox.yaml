@@ -8,6 +8,13 @@ mqtt:
       value_template: "{{ value_json.session }}"
       expire_after: 15
       force_update: true
+    - name: Cleverbox 1 result
+      unique_id: cleverbox_020000000001_1_result
+      state_topic: cleverbox/v1/020000000001/radiators/1/result
+      value_template: "{{ value_json.stage ~ ':' ~ (value_json.phase | default(value_json.reason | default(''))) }}"
+      json_attributes_topic: cleverbox/v1/020000000001/radiators/1/result
+      json_attributes_template: "{{ dict(result=value_json) | to_json }}"
+      force_update: true
     - name: Cleverbox 1 snapshot
       unique_id: cleverbox_020000000001_1_snapshot
       state_topic: cleverbox/v1/020000000001/radiators/1/state
@@ -16,6 +23,13 @@ mqtt:
       # "available" is a reserved HA entity attribute; give the report flag a name.
       json_attributes_template: "{{ dict(value_json, report_available=value_json.available) | to_json }}"
       expire_after: 15
+      force_update: true
+    - name: Cleverbox 2 result
+      unique_id: cleverbox_020000000001_2_result
+      state_topic: cleverbox/v1/020000000001/radiators/2/result
+      value_template: "{{ value_json.stage ~ ':' ~ (value_json.phase | default(value_json.reason | default(''))) }}"
+      json_attributes_topic: cleverbox/v1/020000000001/radiators/2/result
+      json_attributes_template: "{{ dict(result=value_json) | to_json }}"
       force_update: true
     - name: Cleverbox 2 snapshot
       unique_id: cleverbox_020000000001_2_snapshot
@@ -183,31 +197,33 @@ template:
         state: >-
           {{ {0: 'Comfort', 1: 'Off', 2: 'Frost', 3: 'Eco'}.get(state_attr('sensor.cleverbox_1_snapshot', 'mode'), 'Unknown') }}
   - triggers:
-      - trigger: mqtt
-        topic: cleverbox/v1/020000000001/radiators/1/result
+      # State triggers attach even before the MQTT integration finishes startup.
+      - trigger: state
+        entity_id: sensor.cleverbox_1_result
     conditions:
       - condition: template
-        value_template: "{{ trigger.payload_json.stage == 'admission' }}"
+        value_template: "{{ (state_attr('sensor.cleverbox_1_result', 'result') | default({}, true)).get('stage') == 'admission' }}"
     sensor:
       - name: Cleverbox 1 last admission
         unique_id: cleverbox_020000000001_1_admission
-        state: "{{ trigger.payload_json.reason }}"
+        state: "{{ state_attr('sensor.cleverbox_1_result', 'result').reason }}"
         attributes:
           received_at: "{{ now().isoformat() }}"
-          result: "{{ trigger.payload_json }}"
+          result: "{{ state_attr('sensor.cleverbox_1_result', 'result') }}"
   - triggers:
-      - trigger: mqtt
-        topic: cleverbox/v1/020000000001/radiators/1/result
+      # State triggers attach even before the MQTT integration finishes startup.
+      - trigger: state
+        entity_id: sensor.cleverbox_1_result
     conditions:
       - condition: template
-        value_template: "{{ trigger.payload_json.stage == 'delivery' }}"
+        value_template: "{{ (state_attr('sensor.cleverbox_1_result', 'result') | default({}, true)).get('stage') == 'delivery' }}"
     sensor:
       - name: Cleverbox 1 last delivery
         unique_id: cleverbox_020000000001_1_delivery
-        state: "{{ trigger.payload_json.phase }}"
+        state: "{{ state_attr('sensor.cleverbox_1_result', 'result').phase }}"
         attributes:
           received_at: "{{ now().isoformat() }}"
-          result: "{{ trigger.payload_json }}"
+          result: "{{ state_attr('sensor.cleverbox_1_result', 'result') }}"
   - sensor:
       - name: Cleverbox 2 temperature
         unique_id: cleverbox_020000000001_2_temperature_centi_c
@@ -233,28 +249,30 @@ template:
         state: >-
           {{ {0: 'Comfort', 1: 'Off', 2: 'Frost', 3: 'Eco'}.get(state_attr('sensor.cleverbox_2_snapshot', 'mode'), 'Unknown') }}
   - triggers:
-      - trigger: mqtt
-        topic: cleverbox/v1/020000000001/radiators/2/result
+      # State triggers attach even before the MQTT integration finishes startup.
+      - trigger: state
+        entity_id: sensor.cleverbox_2_result
     conditions:
       - condition: template
-        value_template: "{{ trigger.payload_json.stage == 'admission' }}"
+        value_template: "{{ (state_attr('sensor.cleverbox_2_result', 'result') | default({}, true)).get('stage') == 'admission' }}"
     sensor:
       - name: Cleverbox 2 last admission
         unique_id: cleverbox_020000000001_2_admission
-        state: "{{ trigger.payload_json.reason }}"
+        state: "{{ state_attr('sensor.cleverbox_2_result', 'result').reason }}"
         attributes:
           received_at: "{{ now().isoformat() }}"
-          result: "{{ trigger.payload_json }}"
+          result: "{{ state_attr('sensor.cleverbox_2_result', 'result') }}"
   - triggers:
-      - trigger: mqtt
-        topic: cleverbox/v1/020000000001/radiators/2/result
+      # State triggers attach even before the MQTT integration finishes startup.
+      - trigger: state
+        entity_id: sensor.cleverbox_2_result
     conditions:
       - condition: template
-        value_template: "{{ trigger.payload_json.stage == 'delivery' }}"
+        value_template: "{{ (state_attr('sensor.cleverbox_2_result', 'result') | default({}, true)).get('stage') == 'delivery' }}"
     sensor:
       - name: Cleverbox 2 last delivery
         unique_id: cleverbox_020000000001_2_delivery
-        state: "{{ trigger.payload_json.phase }}"
+        state: "{{ state_attr('sensor.cleverbox_2_result', 'result').phase }}"
         attributes:
           received_at: "{{ now().isoformat() }}"
-          result: "{{ trigger.payload_json }}"
+          result: "{{ state_attr('sensor.cleverbox_2_result', 'result') }}"

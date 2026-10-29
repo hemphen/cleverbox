@@ -24,10 +24,6 @@ async def main():
             result = await hass.config_entries.flow.async_configure(result['flow_id'], {
                 'broker': '127.0.0.1', 'port': int(sys.argv[2]), 'username': '', 'password': '', 'other_settings': {'set_client_cert': False, 'set_ca_cert': 'off'}})
             assert result['type'] == 'create_entry', result
-            await hass.async_block_till_done()
-            # The package was loaded before the first MQTT entry existed. Reload
-            # its real triggers, as a user adding MQTT after YAML would do.
-            await hass.services.async_call('template', 'reload', {}, blocking=True)
         await hass.async_block_till_done()
         print(json.dumps({'ready': __version__}), flush=True)
         while line := await asyncio.to_thread(sys.stdin.readline):
