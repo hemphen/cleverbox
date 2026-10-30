@@ -3,6 +3,28 @@
 #include "esp_netif.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <string.h>
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
+
+static bool ipv4(const struct sockaddr_storage *address, socklen_t size, uint32_t *out) {
+    if (address->ss_family == AF_INET && size >= sizeof(struct sockaddr_in)) {
+        *out = ((const struct sockaddr_in *)address)->sin_addr.s_addr;
+        return true;
+    }
+#if !defined(ESP_PLATFORM) || defined(CONFIG_LWIP_IPV6)
+    // IDF HTTPD uses an IPv6 listener when enabled. IPv4 clients then have
+    // mapped addresses; normalise only those, never native IPv6 or wildcards.
+    if (address->ss_family == AF_INET6 && size >= sizeof(struct sockaddr_in6)) {
+        const struct in6_addr *v6 = &((const struct sockaddr_in6 *)address)->sin6_addr;
+        if (IN6_IS_ADDR_V4MAPPED(v6)) {
+            memcpy(out, &v6->s6_addr[12], sizeof(*out)); return true;
+        }
+    }
+#endif
+    return false;
+}
 
 static bool interface_ip(const char *key, esp_netif_ip_info_t *ip) {
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey(key);
@@ -16,11 +38,11 @@ http_interface http_request_interface(httpd_req_t *request) {
     socklen_t local_size = sizeof(local), peer_size = sizeof(peer);
     int fd = httpd_req_to_sockfd(request);
     if (fd < 0 || getsockname(fd, (struct sockaddr *)&local, &local_size) ||
-        getpeername(fd, (struct sockaddr *)&peer, &peer_size) ||
-        local.ss_family != AF_INET || peer.ss_family != AF_INET)
+        getpeername(fd, (struct sockaddr *)&peer, &peer_size))
         return HTTP_INTERFACE_UNKNOWN;
-    uint32_t destination = ((struct sockaddr_in *)&local)->sin_addr.s_addr;
-    uint32_t source = ((struct sockaddr_in *)&peer)->sin_addr.s_addr;
+    uint32_t destination, source;
+    if (!ipv4(&local, local_size, &destination) || !ipv4(&peer, peer_size, &source))
+        return HTTP_INTERFACE_UNKNOWN;
     esp_netif_ip_info_t ap = {0}, sta = {0};
     if (!interface_ip("WIFI_AP_DEF", &ap) || !interface_ip("WIFI_STA_DEF", &sta))
         return HTTP_INTERFACE_UNKNOWN;

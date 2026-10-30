@@ -5,7 +5,7 @@
 #include "esp_err.h"
 typedef struct {
     size_t content_len, consumed;
-    void *user_ctx, *handle;
+    void *user_ctx;
     int socket_fd;
     const char *body, *content_type, *uri;
     char *response;
@@ -29,5 +29,3 @@ size_t httpd_req_get_url_query_len(httpd_req_t *r);
 esp_err_t httpd_req_get_url_query_str(httpd_req_t *r, char *out, size_t n);
 
 int httpd_req_to_sockfd(httpd_req_t *);
-
-esp_err_t httpd_sess_trigger_close(httpd_handle_t, int);

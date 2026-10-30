@@ -13,6 +13,8 @@ static httpd_uri_t routes[13];
 static size_t route_count;
 static httpd_req_t request;
 static int socket_fd = -1;
+static cJSON *request_headers;
+void host_http_headers(const char *json) { cJSON_Delete(request_headers); request_headers = cJSON_Parse(json); }
 void host_http_socket(int fd) { socket_fd = fd; }
 int httpd_req_to_sockfd(httpd_req_t *r) { return r->socket_fd; }
 esp_err_t httpd_register_uri_handler(httpd_handle_t server, const httpd_uri_t *route) {
@@ -21,8 +23,10 @@ esp_err_t httpd_register_uri_handler(httpd_handle_t server, const httpd_uri_t *r
     routes[route_count++] = *route; return ESP_OK;
 }
 esp_err_t httpd_req_get_hdr_value_str(httpd_req_t *r, const char *name, char *out, size_t n) {
-    if (strcmp(name,"Content-Type") || strlen(r->content_type) >= n) return ESP_FAIL;
-    strcpy(out,r->content_type); return ESP_OK;
+    const char *value = !strcmp(name,"Content-Type") ? r->content_type :
+        cJSON_GetStringValue(cJSON_GetObjectItem(request_headers, name));
+    if (!value || strlen(value) >= n) return ESP_FAIL;
+    strcpy(out,value); return ESP_OK;
 }
 int httpd_req_recv(httpd_req_t *r, char *out, size_t n) {
     if (n > r->content_len - r->consumed) n = r->content_len - r->consumed;
@@ -46,7 +50,8 @@ int host_request(int method, const char *path, const char *body, const char *typ
                          .status="200 OK",.response_type="text/plain",.socket_fd=socket_fd};
     for (size_t i=0;i<route_count;++i) if (method==routes[i].method && strlen(routes[i].uri)==strcspn(path,"?") && !strncmp(path,routes[i].uri,strcspn(path,"?"))) {
         request.user_ctx = routes[i].user_ctx;
-        if (routes[i].handler(&request)!=ESP_OK) {
+        // A completed response plus ESP_FAIL intentionally closes an IDF session.
+        if (routes[i].handler(&request)!=ESP_OK && !request.response) {
             request.status="500 Internal Server Error"; httpd_resp_sendstr(&request,"Handler failed");
         }
         return atoi(request.status);
@@ -68,5 +73,3 @@ const char *host_simulation_snapshot(void) {
     free(json); json = cJSON_PrintUnformatted(status); cJSON_Delete(status);
     return json ? json : "{}";
 }
-
-esp_err_t httpd_sess_trigger_close(httpd_handle_t server, int fd) { (void)server; (void)fd; return ESP_OK; }

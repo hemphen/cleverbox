@@ -24,11 +24,12 @@ and manual UTC/timezone from the home LAN after Wi-Fi setup. Broker replacement
 is excluded from AP recovery because it could redirect command access.
 
 Classification uses the accepted socket's local IPv4 address (`getsockname`)
-and current up ESP netif addresses. `Host`, `Origin`, forwarding headers and
+and current up ESP netif addresses. IPv4-mapped IPv6 sockets from IDF's
+dual-stack listener are normalised to IPv4; native IPv6 stays unknown. `Host`, `Origin`, forwarding headers and
 client-supplied identities never grant access. Both interfaces can be active
 at once. The socket peer (`getpeername`) also guards against an AP client
 address targeting the station IP. An overlapping AP/LAN subnet denies those
-mutations conservatively. Missing/failed/ambiguous addresses and IPv6 are
+mutations conservatively. Missing/failed/ambiguous addresses and native IPv6 are
 unknown; all unknown-interface POSTs fail closed. Read-only diagnostics remain
 available. Local-address classification and the peer guard still require
 [hardware checks](hardware.md#3-network-and-recovery) of ESP/lwIP routing; this

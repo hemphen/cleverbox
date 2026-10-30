@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Physical HTTP branch + production socket classifier, with loopback netifs/RF.
+"""Physical HTTP branch + production socket classifier, with mapped IPv4 sockets/netifs/RF.
 No CLEVERBOX_HOST in http_api.c. Wi-Fi/interface state itself is a host fixture.
 """
 import http.client

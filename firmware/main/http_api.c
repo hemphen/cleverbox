@@ -627,8 +627,8 @@ static esp_err_t dispatch(httpd_req_t *r) {
     esp_err_t result = httpd_resp_sendstr(r,
         "This operation requires the station interface on your trusted home LAN. "
         "Recovery access permits Wi-Fi setup and diagnostics only.");
-    httpd_sess_trigger_close(r->handle, httpd_req_to_sockfd(r));
-    return result;
+    // IDF closes the session immediately when a URI handler returns ESP_FAIL.
+    return result == ESP_OK ? ESP_FAIL : result;
 }
 void http_api_register(httpd_handle_t server) {
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {

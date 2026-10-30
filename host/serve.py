@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import time
 import select
+import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,7 @@ def main():
     lib = ctypes.CDLL(os.environ.get('CLEVERBOX_SIM_LIBRARY', str(ROOT / 'build/host/libcleverbox.so')))
     lib.host_request.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
     lib.host_simulation_snapshot.restype = ctypes.c_char_p
+    lib.host_http_headers.argtypes = [ctypes.c_char_p]
     lib.host_response.restype = lib.host_response_type.restype = ctypes.c_char_p
     lib.simulation_scenario.argtypes = lib.simulation_inject.argtypes = [ctypes.c_char_p]
     lib.host_wifi_storage_fault.argtypes = [ctypes.c_int]
@@ -110,6 +112,7 @@ def main():
 
         def production(self, method, body):
             lib.host_http_socket(self.connection.fileno())
+            lib.host_http_headers(json.dumps(dict(self.headers)).encode())
             code = lib.host_request(method, self.path.encode(), body, self.headers.get('Content-Type', '').encode())
             self.reply(code, lib.host_response(), lib.host_response_type().decode())
 
@@ -174,10 +177,16 @@ def main():
             pass
 
     # Single owner of C worker/status/queue; HTTP and clock steps never race.
-    server = HTTPServer(('127.0.0.1', args.port), Handler)
+    class MappedIPv4Server(HTTPServer):
+        address_family = socket.AF_INET6
+
+    # Model IDF's IPv4-mapped sockets without binding any non-loopback address.
+    listener_class = MappedIPv4Server if args.test_interfaces else HTTPServer
+    prefix = '::ffff:' if args.test_interfaces else ''
+    server = listener_class((prefix + '127.0.0.1', args.port), Handler)
     servers = [server]
     if args.test_interfaces:
-        servers += [HTTPServer((address, server.server_port), Handler) for address in ('127.0.0.2', '127.0.0.3')]
+        servers += [listener_class((prefix + address, server.server_port), Handler) for address in ('127.0.0.2', '127.0.0.3')]
     for listener in servers:
         listener.timeout = 0.02
     print(f'SIMULATION ONLY: http://127.0.0.1:{server.server_port}', flush=True)

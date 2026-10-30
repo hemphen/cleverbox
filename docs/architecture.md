@@ -344,7 +344,8 @@ fixture and its template values exist only in the simulator and tests.
 
 Because the simulation is single-threaded, it does not exercise task
 scheduling, lock contention, stack depth or RF timing. Loopback tests exercise
-real `getsockname`/`getpeername`, production dispatch and handlers, but substitute
+real `getsockname`/`getpeername` (including IPv4-mapped IPv6 sockets),
+production dispatch and handlers, but substitute
 netif addresses and Wi-Fi events. They cannot prove ESP/lwIP ingress routing,
 AP/STA isolation, DHCP event timing, phone access or GPIO behaviour.
 `make test-http` also compiles `http_api.c` without `CLEVERBOX_HOST`, tests clock
