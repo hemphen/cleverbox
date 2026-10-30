@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Fake Wi-Fi platform/events only. Production policy and NVS format are reused.
 #include "network_setup.h"
+#include "network_button.h"
 #include "device_time.h"
 #include "esp_timer.h"
 #include "nvs.h"
 #include <string.h>
 static network_policy policy;
+static network_button button;
+static bool button_low;
 static esp_err_t ap(bool enabled) { (void)enabled; return ESP_OK; }
 static esp_err_t start(const network_credentials *c) { (void)c; return ESP_OK; }
 static esp_err_t associate(void) { return ESP_OK; }
@@ -24,7 +27,11 @@ esp_err_t network_configure(const network_credentials *c) {
     network_policy_configure(&policy, c, esp_timer_get_time() / 1000); return ESP_OK;
 }
 esp_err_t network_forget(void) { network_policy_forget(&policy, esp_timer_get_time() / 1000); return ESP_OK; }
+esp_err_t network_finish_recovery(void) { network_policy_finish_recovery(&policy, esp_timer_get_time() / 1000); return ESP_OK; }
+void host_network_button(int low) { button_low = low != 0; }
 void host_network_tick(void) {
+    if (network_button_sample(&button, button_low, esp_timer_get_time() / 1000))
+        network_policy_recover(&policy, esp_timer_get_time() / 1000);
     network_policy_tick(&policy, esp_timer_get_time() / 1000);
     device_time_network(policy.status.state == NET_CONNECTED, ESP_OK);
 }

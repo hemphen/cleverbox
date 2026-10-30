@@ -51,6 +51,21 @@ test:
 	  firmware/components/network_setup/test/test_network.c -o $(BUILD_DIR)/test_network
 	./$(BUILD_DIR)/test_network
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ifirmware/components/network_setup/include \
+	  firmware/components/network_setup/network_button.c \
+	  firmware/components/network_setup/test/test_button.c -o $(BUILD_DIR)/test_button
+	./$(BUILD_DIR)/test_button
+	@for header in esp_event.h esp_netif.h esp_wifi.h esp_timer.h esp_log.h nvs.h \
+	  driver/gpio.h freertos/FreeRTOS.h freertos/task.h freertos/queue.h freertos/semphr.h; do \
+	  mkdir -p $(BUILD_DIR)/network_stubs/$$(dirname $$header); \
+	  printf '#include "adapter_stubs.h"\n' > $(BUILD_DIR)/network_stubs/$$header; done
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -I$(BUILD_DIR)/network_stubs -Ifirmware/components/network_setup/test/stubs \
+	  -Ihost/include -Ifirmware/components/network_setup/include \
+	  firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_button.c \
+	  firmware/components/network_setup/test/test_adapter.c -o $(BUILD_DIR)/test_network_adapter
+	./$(BUILD_DIR)/test_network_adapter
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
 	  -Ihost/include -Ifirmware/components/network_setup/include \
 	  firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_store.c \
 	  firmware/components/network_setup/test/test_network_store.c -o $(BUILD_DIR)/test_network_store
@@ -83,7 +98,7 @@ HOST_CSOURCES = firmware/components/mqtt_bridge/mqtt_discovery.c firmware/compon
   firmware/components/radiator_protocol/radiator_pairing.c \
   firmware/components/radiator_protocol/radiator_control.c \
   firmware/components/device_store/device_store.c firmware/main/http_api.c host/http.c host/storage.c \
-  firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_store.c host/network.c
+  firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_button.c firmware/components/network_setup/network_store.c host/network.c
 HOST_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/host/%.o,$(HOST_CSOURCES))
 
 $(BUILD_DIR)/host/%.o: %.c $(wildcard host/include/*.h) firmware/main/http_api.h
@@ -107,6 +122,7 @@ test-http: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_http.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_registry.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_network.py
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_recovery.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_time.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_mqtt.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_mqtt_tokens.py

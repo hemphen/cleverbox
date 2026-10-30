@@ -20,7 +20,7 @@ async function main() {
   data.radiators=[{id:1,name:'Living room',pairing:data.pairing,command:data.command}];
   data.capacity=8; data.exchange_id=0;
   let network = {state:'disconnected',configured:false,recovery_ap:true,attempts:0,setup_result:'none',error:'none',ip:''};
-  let networkReadsFail=false;
+  let networkReadsFail=false, confirmResult=true;
   let clock={usable:false,source:'unsynchronized',timezone:'UTC0',synchronized_this_boot:false,sync_age_ms:null};
   let mqtt={configured:true,enabled:true,connected:false,bridge_id:'020000000001'};
   let lastRequest, responseOK = true, deferredStatus;
@@ -32,6 +32,7 @@ async function main() {
     },
     Date,
     TextEncoder,
+    confirm(){return confirmResult;},
     setTimeout() {}, clearTimeout() {},
     async fetch(url, options) {
       if(url==='/api/mqtt' && !options.body) return {ok:true,json:async()=>mqtt};
@@ -169,8 +170,21 @@ async function main() {
   networkReadsFail=false; responseOK=false; fields.wifiPassword.value=secret;
   await fields.wifiSave.handlers.click(); assert.equal(fields.wifiPassword.value,'');
   assert.match(fields.networkAction.textContent,/failed or is busy/);
-  responseOK=true; await fields.wifiForget.handlers.click();
-  assert.deepEqual(lastRequest,{url:'/api/network',body:{action:'forget'}});
+  responseOK=true; confirmResult=false;
+  const beforeCancel=lastRequest; await fields.wifiForget.handlers.click();
+  assert.equal(lastRequest,beforeCancel);
+  confirmResult=true; await fields.wifiForget.handlers.click();
+  assert.deepEqual(lastRequest,{url:'/api/network',body:{action:'forget',confirm:true}});
+  network={...network,manual_recovery:true}; await vm.runInContext('refreshNetwork()',context);
+  assert.match(fields.networkStatus.textContent,/Manual recovery: active/);
+  assert.match(fields.networkAccess.textContent,/Manual recovery keeps AP open/);
+  await fields.wifiFinishRecovery.handlers.click();
+  assert.deepEqual(lastRequest,{url:'/api/network',body:{action:'finish_recovery'}});
+  assert.match(fields.networkAction.textContent,/Finish recovery queued/);
+  network={...network,recovery_ap:false,recovery_error:'ap_open_failed'};
+  await vm.runInContext('refreshNetwork()',context);
+  assert.match(fields.networkStatus.textContent,/Recovery error: ap_open_failed/);
+  assert.match(html,/WPA2 password <strong>cleverbox/);
   await fields.mqttDiscoveryEnable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'discovery_enable'}});
   await fields.mqttDiscoveryDisable.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/mqtt',body:{action:'discovery_disable'}});
   mqtt={...mqtt,discovery_enabled:false,discovery_pending:2,discovery_error:0x7413};

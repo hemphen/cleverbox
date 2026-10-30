@@ -189,8 +189,11 @@ fake Wi-Fi boundary. Wi-Fi NVS error injection also exercises production rollbac
 uncertain persistence reporting and actual process restarts after failed writes/erases. It does not use the computer's Wi-Fi or automatically accept
 credentials. With `--test-clock`, `network_event` at `/api/simulation` injects
 `started`, `disconnected` or `got_ip`; the last supplies reserved documentation
-address `192.0.2.10`. `make test-http` covers this flow, RF continuity and reset
-isolation. See [network validation and board checks](networking.md).
+address `192.0.2.10`. `make test-http` covers this flow, RF continuity and restart
+isolation. `button_level` with boolean `low` and explicit clock advancement feeds
+the production debounce/hold/release policy. Startup-held arming, manual recovery,
+Finish recovery, confirmed Wi-Fi-only forget and unrelated configuration retention
+are tested; GPIO, AP association and RF remain fake boundaries. See [network validation and board checks](networking.md).
 
 ## Device clock
 

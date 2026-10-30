@@ -23,10 +23,14 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685
 Credentials are saved only after an IP address is acquired. Connection failures keep the previous setup; storage failures report whether restoration was verified or persistence is uncertain.</small>
 <button id="wifiSave">Connect and save</button>
 <button id="wifiForget">Forget home Wi-Fi only</button>
+<button id="wifiFinishRecovery">Finish recovery</button>
 <p id="networkAction" role="status"></p>
-<small>Setup/recovery: join Cleverbox with the random password printed to serial at boot, then open http://192.168.4.1.
-The AP stays available while connecting, closes 60 seconds after connection unless persistence is uncertain, and reopens on network loss.
-Forgetting Wi-Fi preserves all radiator configuration and admitted commands. Local HTTP has no login; use a trusted network.</small>
+<small>Setup/recovery: join <strong>Cleverbox</strong>, WPA2 password <strong>cleverbox</strong>, then open http://192.168.4.1/ manually.
+After normal startup, hold BOOT/IO9 for at least five seconds, then release: recovery stays open until Finish recovery or a successful Wi-Fi save.
+EN restarts without erasing setup; its startup AP window uses the same password. Do not hold BOOT during reset: this can enter download mode.
+BOOT access through the supplied enclosure is unverified; opening it or a verified access hole may be necessary.
+The AP also stays available while connecting or persistence is uncertain and reopens on network loss.
+Forgetting Wi-Fi preserves radiators, templates, MQTT, timezone, discovery cleanup and admitted commands. Local HTTP has no login; use a trusted network.</small>
 </section>
 <section>
 <h2>Device time</h2>
@@ -141,17 +145,23 @@ async function refreshNetwork(){
     if(!response.ok) throw new Error('Network status unavailable.');
     const s=await response.json();
     field('networkStatus').textContent='Wi-Fi: '+s.state+'. Saved setup: '+(s.persistence_uncertain?'unknown after restart (RAM fallback: '+(s.configured?'yes':'no')+')':s.configured?'yes':'no')+
-      '. Attempts: '+s.attempts+'. Setup result: '+s.setup_result+'.'+(s.error!=='none'?' Error: '+s.error+'.':'');
+      '. Attempts: '+s.attempts+'. Setup result: '+s.setup_result+'.'+(s.error!=='none'?' Error: '+s.error+'.':'')+
+      ' Manual recovery: '+(s.manual_recovery?'active':'off')+'.'+(s.recovery_error && s.recovery_error!=='none'?' Recovery error: '+s.recovery_error+'.':'')+
+      (s.event_queue_overflows?' Network event queue overflows: '+s.event_queue_overflows+'.':'');
     field('networkAccess').textContent=(s.ip?'Application: http://'+s.ip+'. ':'')+
-      (s.recovery_ap?'Protected Cleverbox AP available at http://192.168.4.1. '+(s.persistence_uncertain?'Persistence uncertain: AP stays open; retry save or forget.':'It closes 60 seconds after connection.'):'Setup AP closed.');
+      (s.recovery_ap?'Protected Cleverbox AP available at http://192.168.4.1/. '+(s.persistence_uncertain?'Persistence uncertain: AP stays open; retry save or forget.':s.manual_recovery?'Manual recovery keeps AP open. Finish recovery resumes automatic policy.':s.state==='connected'?'It closes after the 60-second connection/recovery grace period.':'AP stays open without usable home Wi-Fi.'):'Setup AP closed.');
     field('wifiSave').disabled=s.state==='connecting'||s.setup_result==='pending';
   } catch(error){
-    field('networkStatus').textContent='Network status unavailable. If the setup AP closed, join the home network and open the station IP shown above or on serial. Otherwise use the recovery AP.';
+    field('networkStatus').textContent='Network status unavailable. If the setup AP closed, join the home network and open the station IP shown above or check router leases. Otherwise hold BOOT for five seconds after startup and release, or press EN and use the startup AP.';
     field('wifiSave').disabled=false;
   } finally {networkTimer=setTimeout(refreshNetwork,2000);}
 }
 async function networkAction(action){
   const body={action};
+  if(action==='forget'){
+    if(!confirm('Forget home Wi-Fi only? This disconnects home Wi-Fi and erases only its saved credentials. Radiators, templates, MQTT, timezone and discovery cleanup are preserved.')) return;
+    body.confirm=true;
+  }
   if(action==='configure'){
     body.ssid=field('wifiSsid').value; body.password=field('wifiPassword').value;
     if(!body.ssid.length || new TextEncoder().encode(body.ssid).length>32 || /[\x00-\x1f\x7f]/.test(body.ssid) ||
@@ -160,7 +170,7 @@ async function networkAction(action){
       field('wifiPassword').value=''; return;
     }
   }
-  field('wifiSave').disabled=true; field('wifiForget').disabled=true;
+  field('wifiSave').disabled=true; field('wifiForget').disabled=true; field('wifiFinishRecovery').disabled=true;
   // Clear before sending; never repopulate from status or show credentials in errors.
   field('wifiPassword').value='';
   try {
@@ -168,12 +178,14 @@ async function networkAction(action){
     if(!response.ok) throw new Error('Request failed');
     field('networkAction').textContent=action==='forget'
       ? 'Network-only forget queued. Check status; radiator setup is preserved.'
+      : action==='finish_recovery'?'Finish recovery queued. AP stays open without usable home Wi-Fi or while persistence is uncertain; otherwise a 60-second grace period starts.'
       : 'Connection queued. Check setup result and station IP before leaving the recovery AP.';
   } catch(error){field('networkAction').textContent='Network request failed or is busy. Check status before retrying.';}
-  finally {body.password=''; field('wifiForget').disabled=false; await refreshNetwork();}
+  finally {body.password=''; field('wifiForget').disabled=false; field('wifiFinishRecovery').disabled=false; await refreshNetwork();}
 }
 field('wifiSave').addEventListener('click',()=>networkAction('configure'));
 field('wifiForget').addEventListener('click',()=>networkAction('forget'));
+field('wifiFinishRecovery').addEventListener('click',()=>networkAction('finish_recovery'));
 refreshNetwork();
 let timeTimer;
 async function refreshTime(){

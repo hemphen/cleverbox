@@ -39,13 +39,24 @@ defaults. See the [field assessment](docs/controller-state.md).
 
 ## Physical startup and network recovery
 
-Read the USB serial console at 115200 baud for the random per-boot **Cleverbox**
-AP password. Join it and open **http://192.168.4.1/**. Enter home Wi-Fi in the
-existing page; credentials are saved after DHCP success. Open the station IP
-shown on the page/serial from the home network. The protected setup AP closes
-60 seconds after connection and reopens on network loss. An uncertain storage
-result keeps the AP open and is shown explicitly. **Forget home Wi-Fi only**
-preserves radiator setup. See [network setup, recovery and validation](docs/networking.md).
+Join **Cleverbox** using the fixed WPA2 password **cleverbox**, then open
+**http://192.168.4.1/** manually. No serial monitor is needed. Configure home
+Wi-Fi in the page; credentials are saved after DHCP success. The startup AP
+closes 60 seconds after connection and reopens on network loss or stays open
+while persistence is uncertain.
+
+After normal startup, hold **BOOT/IO9 for at least five seconds, then release**
+to open and latch recovery without restarting or erasing anything. Existing STA
+operation continues. **Finish recovery** resumes automatic AP policy; a successful
+explicit Wi-Fi save also releases the latch. **EN** or a power cycle restarts and
+retains configuration, with the same startup AP credentials. Do not hold BOOT
+at reset: GPIO9 is a strapping pin and may enter download mode. BOOT access through
+the supplied enclosure is unverified; opening it or a verified access hole may be
+necessary. EN plus the startup AP window is an alternative without serial.
+
+**Forget home Wi-Fi only** requires confirmation and erases only Wi-Fi setup;
+radiator identities, pairings, templates, MQTT, timezone and discovery cleanup
+remain. See [network setup, recovery and hardware checklist](docs/networking.md).
 
 ## Product direction
 
@@ -54,7 +65,8 @@ Local HTTP setup/control comes first, with a persistent registry and independent
 [HA discovery](docs/home-assistant.md) automatically adds observation/diagnostic
 devices when enabled; a smaller optional built-in package supplies explicit
 draft/Apply controls. Next: installation/physical UI usability checks →
-endurance/upgrade and hardware acceptance → optional Matter. Interfaces will share the same command handling.
+OTA as a separate milestone → endurance/upgrade and hardware acceptance.
+MQTT and local HTTP share the same command handling.
 Home Assistant supplies history, schedules, automations and notifications.
 No provider account or cloud service is intended to be required in normal operation.
 
@@ -65,10 +77,10 @@ research project. We use the existing specifications as working truths and
 implement them. Hardware acceptance tests check our implementation; they are not
 a prerequisite programme to re-establish every protocol claim.
 
-Thread is a possible later alternative on the same hardware, not part of the
-first build. Ethernet/PoE, Z-Wave, other boards, cloud fallback, an onboard history
+Matter, Thread and Zigbee are outside the current MQTT-only product scope.
+Ethernet/PoE, Z-Wave, other boards, cloud fallback, an onboard history
 database and a schedule engine are outside this implementation. Local HTTP is
-the first control interface; MQTT and optional Matter will use the same command handling.
+the setup/control interface alongside MQTT.
 
 ## Working here
 

@@ -5,8 +5,9 @@
 The ESP32-C6 runs the appliance; the CC1101 supplies bidirectional radiator RF.
 Local HTTP is the setup/control interface. Home Assistant records readings
 and runs schedules/automations through MQTT, with opt-in discovery for observations
-and explicit draft/Apply controls. Matter is an
-optional later interface. Cleverbox holds current device state and saved setup,
+and explicit draft/Apply controls. MQTT and local HTTP are the current product
+interfaces; Matter, Thread and Zigbee are outside this scope. Cleverbox holds
+current device state and saved setup,
 not historical readings.
 
 Use C/C++, ESP-IDF and RadioLib. Keep the host simulation small and opt-in; it
@@ -45,7 +46,8 @@ Use the [libraries and component boundaries](libraries.md).
    TX frames on the single CC1101. Pairing remains exclusive; there is no second
    command queued for a busy radiator. See [registry](registry.md).
 5. **Persistent home Wi-Fi and recovery.** Implemented: local HTTP provisioning,
-   save after DHCP, previous-setup retention, protected serial-password recovery AP,
+   save after DHCP, previous-setup retention, fixed-credential WPA2 setup/recovery
+   AP, runtime BOOT long-press recovery,
    bounded attempts/paced reconnect and network-only forget. Storage errors trigger
    best-effort rollback/readback; unresolved persistence is reported and keeps AP access. Production policy and
    HTTP paths are software-tested; physical Wi-Fi/RF acceptance remains pending.
@@ -76,8 +78,9 @@ Use the [libraries and component boundaries](libraries.md).
    configuration retention across upgrades/power cycles, physical pairing/control,
    multiple devices and operation without HA/Touch E3. Record RF/heating behavior,
    task/heap high-water marks and actual Wi-Fi/broker recovery.
-11. **Optional Matter.** Consider only after the MQTT/HA path and hardware
-   acceptance are useful and reliable. Reuse existing admission/delivery.
+11. **OTA (separate milestone).** Plan safe updates and configuration retention
+   against the received board's verified flash/partition layout. Not implemented
+   by the physical-button recovery milestone.
 
 Each milestone should end in a small demonstrable result. No placeholder features
 or broad framework are needed to start.
@@ -99,8 +102,8 @@ Passing software tests does not imply that these physical checks have passed.
 
 ## Later, only when needed
 
-Matter over Wi-Fi or Thread remains optional later. Do not add either stack to
-the current HTTP/setup milestones.
+Do not add Matter, Thread or Zigbee stacks or reserve resources for them.
+The current priority is reliable MQTT/HA, local setup/recovery and then OTA.
 The local HTTP interface remains available for setup and testing.
 
 Weekly schedules belong in HA. Cleverbox has no scheduler or weekly-program

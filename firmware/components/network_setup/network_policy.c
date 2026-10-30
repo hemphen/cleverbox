@@ -52,6 +52,7 @@ void network_policy_init(network_policy *p, network_platform platform,
                          const network_credentials *saved, bool load_failed, int64_t now) {
     memset(p, 0, sizeof(*p)); p->platform = platform;
     p->status.error = load_failed ? "storage_invalid" : "none";
+    p->status.recovery_error = "none";
     p->status.state = load_failed ? NET_FAILED : NET_DISCONNECTED;
     ap(p, true);
     if (network_credentials_valid(saved)) {
@@ -72,13 +73,37 @@ static void storage_failure(network_policy *p, esp_err_t err) {
     if (p->status.persistence_uncertain) { p->close_ap_ms = 0; ap(p, true); }
 }
 void network_policy_forget(network_policy *p, int64_t now) {
-    (void)now;
     esp_err_t err = p->platform.forget();
-    if (err != ESP_OK) { storage_failure(p, err); return; }
+    // Forget always leaves recovery access, including a failed erase while
+    // connected. Preserve the existing storage/rollback policy and RAM fallback.
+    if (err != ESP_OK) { network_policy_recover(p, now); storage_failure(p, err); return; }
     p->platform.stop(); p->attempting = p->ready = p->candidate_active = false;
     memset(&p->saved, 0, sizeof(p->saved)); memset(&p->candidate, 0, sizeof(p->candidate));
-    p->status = (network_status){.state = NET_DISCONNECTED, .error = "none", .recovery_ap = p->status.recovery_ap};
-    p->close_ap_ms = 0; ap(p, true);
+    p->status = (network_status){.state = NET_DISCONNECTED, .error = "none",
+        .recovery_ap = p->status.recovery_ap,
+        .event_queue_overflows = p->status.event_queue_overflows,
+        .recovery_error = "none"};
+    network_policy_recover(p, now);
+}
+void network_policy_recover(network_policy *p, int64_t now) {
+    p->status.manual_recovery = true;
+    p->close_ap_ms = 0;
+    // AP opening errors have their own status; do not overwrite an unrelated
+    // storage/connection error or leave a stale platform_failed after retry.
+    const char *previous_error = p->status.error;
+    ap(p, true);
+    p->status.error = previous_error;
+    p->status.recovery_error = p->status.recovery_ap ? "none" : "ap_open_failed";
+    p->recovery_retry_ms = now + 1000;
+}
+void network_policy_finish_recovery(network_policy *p, int64_t now) {
+    p->status.manual_recovery = false;
+    p->status.recovery_error = "none";
+    // Resume the automatic policy with a fresh grace period only if STA is
+    // usable and saved storage is trusted. Otherwise retain the only route.
+    p->close_ap_ms = p->status.state == NET_CONNECTED && p->status.configured &&
+        p->status.ip[0] && !p->status.persistence_uncertain ? now + NETWORK_AP_GRACE_MS : 0;
+    if (!p->close_ap_ms) ap(p, true);
 }
 void network_policy_tick(network_policy *p, int64_t now) {
     if (p->attempting && now >= p->deadline_ms) failed_attempt(p, now);
@@ -87,7 +112,10 @@ void network_policy_tick(network_policy *p, int64_t now) {
         if (p->status.attempts >= NETWORK_MAX_ATTEMPTS) p->status.attempts = 0;
         start(p, now);
     }
-    if (p->status.state == NET_CONNECTED && p->close_ap_ms && now >= p->close_ap_ms) {
+    if (p->status.manual_recovery && !p->status.recovery_ap && now >= p->recovery_retry_ms)
+        network_policy_recover(p, now); // Bounded one-second retries, visible failure.
+    if (!p->status.manual_recovery && !p->status.persistence_uncertain &&
+        p->status.state == NET_CONNECTED && p->close_ap_ms && now >= p->close_ap_ms) {
         ap(p, false);
         if (!p->status.recovery_ap) p->close_ap_ms = 0;
     }
@@ -121,13 +149,15 @@ void network_policy_got_ip(network_policy *p, const char *ip, int64_t now) {
         }
         p->saved = p->candidate; p->status.configured = true;
         p->status.persistence_uncertain = false;
+        p->status.manual_recovery = false;
+        p->status.recovery_error = "none";
         memset(&p->candidate, 0, sizeof(p->candidate)); p->candidate_active = false;
         p->status.setup = NET_SETUP_SAVED;
     }
     p->status.state = NET_CONNECTED;
     if (p->status.setup != NET_SETUP_FAILED && !p->status.persistence_uncertain) p->status.error = "none";
     strcpy(p->status.ip, ip); p->attempting = false;
-    p->close_ap_ms = p->status.persistence_uncertain ? 0 : now + NETWORK_AP_GRACE_MS;
+    p->close_ap_ms = p->status.persistence_uncertain || p->status.manual_recovery ? 0 : now + NETWORK_AP_GRACE_MS;
 }
 const char *network_state_name(network_state s) {
     static const char *names[] = {"disconnected", "connecting", "connected", "failed"}; return names[s];

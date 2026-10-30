@@ -15,8 +15,10 @@ typedef enum { NET_SETUP_NONE, NET_SETUP_PENDING, NET_SETUP_SAVED, NET_SETUP_FAI
 typedef struct {
     network_state state;
     network_setup_result setup;
-    bool configured, recovery_ap, persistence_uncertain;
+    bool configured, recovery_ap, persistence_uncertain, manual_recovery;
+    const char *recovery_error;
     unsigned attempts;
+    unsigned event_queue_overflows;
     char ip[16];
     const char *error;
 } network_status;
@@ -35,7 +37,7 @@ typedef struct {
     network_credentials saved, candidate;
     network_platform platform;
     bool candidate_active, ready, attempting;
-    int64_t deadline_ms, next_ms, close_ap_ms;
+    int64_t deadline_ms, next_ms, close_ap_ms, recovery_retry_ms;
 } network_policy;
 #define NETWORK_ATTEMPT_MS 15000
 #define NETWORK_RETRY_MS 5000
@@ -46,6 +48,8 @@ bool network_credentials_valid(const network_credentials *);
 void network_policy_init(network_policy *, network_platform, const network_credentials *, bool load_failed, int64_t now);
 void network_policy_configure(network_policy *, const network_credentials *, int64_t now);
 void network_policy_forget(network_policy *, int64_t now);
+void network_policy_recover(network_policy *, int64_t now);
+void network_policy_finish_recovery(network_policy *, int64_t now);
 void network_policy_tick(network_policy *, int64_t now);
 void network_policy_started(network_policy *, int64_t now);
 void network_policy_disconnected(network_policy *, int64_t now);

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 #include "network_setup.h"
+#include "network_button.h"
+#include "driver/gpio.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
-#include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -12,10 +13,11 @@
 #include "freertos/semphr.h"
 #include "nvs.h"
 #include <stdatomic.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
-typedef enum { STARTED, DISCONNECTED, GOT_IP, CONFIGURE, FORGET } event_kind;
+typedef enum { STARTED, DISCONNECTED, GOT_IP, CONFIGURE, FORGET, FINISH_RECOVERY } event_kind;
 typedef struct { event_kind kind; network_credentials credentials; char ip[16]; } message;
 static QueueHandle_t events;
 static SemaphoreHandle_t mutex;
@@ -23,6 +25,7 @@ static network_status published;
 static bool pending;
 static atomic_bool overflow;
 static network_policy policy;
+static network_button button;
 static bool ap_enabled = true;
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 static esp_err_t set_ap(bool enabled) {
@@ -32,7 +35,7 @@ static esp_err_t set_ap(bool enabled) {
         (mode == WIFI_MODE_AP ? WIFI_MODE_AP : WIFI_MODE_APSTA) : WIFI_MODE_STA);
     if (err == ESP_OK) {
         ap_enabled = enabled;
-        if (enabled) ESP_LOGI("network", "Recovery AP Cleverbox available at http://192.168.4.1 (password printed at boot)");
+        if (enabled) ESP_LOGI("network", "Recovery AP Cleverbox available at http://192.168.4.1/");
     }
     return err;
 }
@@ -72,6 +75,38 @@ static void publish(bool release) {
     if (release) pending = false;
     xSemaphoreGive(mutex);
 }
+static void step(void) {
+    message m = {0}; bool release = false;
+    if (xQueueReceive(events, &m, pdMS_TO_TICKS(20)) == pdTRUE) {
+        int64_t now = now_ms();
+        switch (m.kind) {
+            case STARTED: network_policy_started(&policy, now); break;
+            case DISCONNECTED: network_policy_disconnected(&policy, now); break;
+            case GOT_IP:
+                network_policy_got_ip(&policy, m.ip, now);
+                if (policy.status.state == NET_CONNECTED)
+                    ESP_LOGI("network", "Application at http://%s", policy.status.ip);
+                break;
+            case CONFIGURE: network_policy_configure(&policy, &m.credentials, now); break;
+            case FORGET: network_policy_forget(&policy, now); break;
+            case FINISH_RECOVERY: network_policy_finish_recovery(&policy, now); break;
+        }
+        release = m.kind == CONFIGURE || m.kind == FORGET || m.kind == FINISH_RECOVERY;
+        memset(&m, 0, sizeof(m));
+    }
+    // GPIO9/BOOT is active-low with pull-up in the manufacturer firmware.
+    // Sample even under queue pressure; recovery is applied by this owner,
+    // so a deliberate button release never competes for an event slot.
+    if (network_button_sample(&button, gpio_get_level(NETWORK_BUTTON_GPIO) == 0, now_ms()))
+        network_policy_recover(&policy, now_ms());
+    if (atomic_exchange(&overflow, false)) {
+        if (policy.status.event_queue_overflows < UINT_MAX) ++policy.status.event_queue_overflows;
+        // Lost events cannot strand setup; force the usual bounded recovery.
+        if (policy.attempting) network_policy_tick(&policy, policy.deadline_ms);
+        else network_policy_disconnected(&policy, now_ms());
+    }
+    network_policy_tick(&policy, now_ms()); publish(release);
+}
 static void run(void *arg) {
     (void)arg; network_credentials saved = {0};
     esp_err_t err = network_store_load(&saved);
@@ -80,36 +115,12 @@ static void run(void *arg) {
     network_policy_init(&policy, platform, err == ESP_OK ? &saved : NULL,
                         err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND, now_ms());
     memset(&saved, 0, sizeof(saved)); publish(true);
-    for (;;) {
-        message m = {0}; bool release = false;
-        if (xQueueReceive(events, &m, pdMS_TO_TICKS(250)) == pdTRUE) {
-            int64_t now = now_ms();
-            switch (m.kind) {
-                case STARTED: network_policy_started(&policy, now); break;
-                case DISCONNECTED: network_policy_disconnected(&policy, now); break;
-                case GOT_IP:
-                    network_policy_got_ip(&policy, m.ip, now);
-                    if (policy.status.state == NET_CONNECTED)
-                        ESP_LOGI("network", "Application at http://%s", policy.status.ip);
-                    break;
-                case CONFIGURE: network_policy_configure(&policy, &m.credentials, now); break;
-                case FORGET: network_policy_forget(&policy, now); break;
-            }
-            release = m.kind == CONFIGURE || m.kind == FORGET;
-            memset(&m, 0, sizeof(m));
-        }
-        if (atomic_exchange(&overflow, false)) {
-            // Lost events cannot strand setup; force the usual bounded recovery.
-            if (policy.attempting) network_policy_tick(&policy, policy.deadline_ms);
-            else network_policy_disconnected(&policy, now_ms());
-        }
-        network_policy_tick(&policy, now_ms()); publish(release);
-    }
+    for (;;) step();
 }
 static esp_err_t submit(message *m) {
     if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(10)) != pdTRUE) return ESP_ERR_INVALID_STATE;
     esp_err_t err = ESP_ERR_INVALID_STATE;
-    if (!pending && (m->kind == FORGET ||
+    if (!pending && (m->kind == FORGET || m->kind == FINISH_RECOVERY ||
         (published.state != NET_CONNECTING && published.setup != NET_SETUP_PENDING))) {
         if (xQueueSend(events, m, 0) == pdTRUE) { pending = true; err = ESP_OK; }
     }
@@ -121,6 +132,7 @@ esp_err_t network_configure(const network_credentials *c) {
     esp_err_t err = submit(&m); memset(&m, 0, sizeof(m)); return err;
 }
 esp_err_t network_forget(void) { message m = {.kind = FORGET}; return submit(&m); }
+esp_err_t network_finish_recovery(void) { message m = {.kind = FINISH_RECOVERY}; return submit(&m); }
 esp_err_t network_get_status(network_status *out) {
     if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(10)) != pdTRUE) return ESP_ERR_INVALID_STATE;
     *out = published; xSemaphoreGive(mutex); return ESP_OK;
@@ -128,7 +140,8 @@ esp_err_t network_get_status(network_status *out) {
 esp_err_t network_setup_start(void) {
     events = xQueueCreate(16, sizeof(message)); mutex = xSemaphoreCreateMutex();
     if (!events || !mutex) return ESP_ERR_NO_MEM;
-    published = (network_status){.state = NET_DISCONNECTED, .recovery_ap = true, .error = "none"};
+    published = (network_status){.state = NET_DISCONNECTED, .recovery_ap = true,
+        .error = "none", .recovery_error = "none"};
     pending = true; // Do not admit requests until saved configuration has loaded.
     esp_netif_create_default_wifi_ap(); esp_netif_create_default_wifi_sta();
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
@@ -138,15 +151,17 @@ esp_err_t network_setup_start(void) {
     esp_log_level_set("wifi", ESP_LOG_NONE);
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, event, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, event, NULL));
-    wifi_config_t config = {.ap = {.ssid = "Cleverbox", .channel = 1,
+    // Runtime recovery only: EN is not a GPIO and GPIO9 must not be held at reset.
+    gpio_config_t button_config = {.pin_bit_mask = 1ULL << NETWORK_BUTTON_GPIO,
+        .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE, .intr_type = GPIO_INTR_DISABLE};
+    ESP_ERROR_CHECK(gpio_config(&button_config));
+    wifi_config_t config = {.ap = {.ssid = NETWORK_AP_SSID, .password = NETWORK_AP_PASSWORD, .channel = 1,
                                    .max_connection = 2, .authmode = WIFI_AUTH_WPA2_PSK}};
-    snprintf((char *)config.ap.password, sizeof(config.ap.password), "%08lx%08lx",
-             (unsigned long)esp_random(), (unsigned long)esp_random());
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &config));
     ESP_ERROR_CHECK(esp_wifi_start());
-    // Recovery credential only. Never log the station SSID/password.
-    ESP_LOGI("network", "Recovery Wi-Fi Cleverbox password: %s; http://192.168.4.1", config.ap.password);
+    ESP_LOGI("network", "Setup Wi-Fi Cleverbox; http://192.168.4.1/");
     memset(&config, 0, sizeof(config));
     if (xTaskCreate(run, "network_setup", 4096, NULL, 3, NULL) != pdPASS) return ESP_ERR_NO_MEM;
     return ESP_OK;
