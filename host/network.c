@@ -38,7 +38,7 @@ void host_network_tick(void) {
 int host_network_event(const char *name) {
     int64_t now = esp_timer_get_time() / 1000;
     if (!strcmp(name, "started")) network_policy_started(&policy, now);
-    else if (!strcmp(name, "disconnected")) network_policy_disconnected(&policy, now);
+    else if (!strcmp(name, "disconnected") || !strcmp(name, "lost_ip")) network_policy_disconnected(&policy, now);
     else if (!strcmp(name, "got_ip")) network_policy_got_ip(&policy, "192.0.2.10", now);
     else return 0;
     return 1;

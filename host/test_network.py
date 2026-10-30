@@ -9,7 +9,7 @@ from test_http import App
 
 def status(app):
     s = app.http('/api/network')
-    assert set(s) == {'state', 'setup_result', 'configured', 'recovery_ap', 'attempts', 'ip', 'error', 'persistence_uncertain', 'manual_recovery', 'recovery_error', 'event_queue_overflows'}
+    assert set(s) == {'state', 'setup_result', 'configured', 'recovery_ap', 'attempts', 'ip', 'error', 'persistence_uncertain', 'manual_recovery', 'recovery_error', 'event_queue_overflows', 'http_interface', 'http_control_allowed', 'ap_closing'}
     return s
 
 
@@ -25,7 +25,7 @@ def configure(app, ssid, password, code=202):
     assert ssid not in str(status(app)) and password not in str(status(app))
 
 
-def failures(app):
+def failures(app, ap=True):
     for i in range(3):
         app.sim('network_event', name='started')
         app.sim('network_event', name='disconnected')
@@ -36,7 +36,7 @@ def failures(app):
             app.advance(1)
             assert status(app)['state'] == 'connecting'
     s = status(app)
-    assert s['state'] == 'failed' and s['recovery_ap'] and s['attempts'] == 3
+    assert s['state'] == 'failed' and s['recovery_ap'] == ap and s['attempts'] == 3
     return s
 
 
@@ -86,7 +86,7 @@ def run(directory):
         assert not app.http()['simulation_tx']
         s = connect(app); assert s['state'] == 'connected' and wifi.read_bytes() == saved
         configure(app, other_ssid, other_password)
-        s = failures(app)
+        s = failures(app, ap=False)
         assert s['configured'] and s['setup_result'] == 'failed' and wifi.read_bytes() == saved
         # Previous working setup is automatically retried at the recovery pace.
         app.advance(59999); assert status(app)['state'] == 'failed'
@@ -101,7 +101,7 @@ def run(directory):
         app.sim('scenario', name='delayed')
         app.command(target=2050); app.advance(1)
         app.sim('network_event', name='disconnected')
-        assert status(app)['state'] == 'disconnected' and status(app)['recovery_ap']
+        assert status(app)['state'] == 'disconnected' and not status(app)['recovery_ap']
         assert status(app)['ip'] == ''
         app.advance(4999); assert status(app)['state'] == 'disconnected'
         app.advance(1); assert status(app)['state'] == 'connecting'
@@ -133,11 +133,18 @@ def run(directory):
     finally:
         app.stop()
     # Malformed/future records are never echoed or silently overwritten at boot.
-    wifi.write_bytes(bytes([255]) + secrets.token_bytes(100))
+    corrupt = bytes([255]) + secrets.token_bytes(100)
+    wifi.write_bytes(corrupt)
     app = App(storage)
     try:
         assert status(app)['state'] == 'failed' and status(app)['error'] == 'storage_invalid'
-        assert status(app)['recovery_ap'] and not status(app)['configured']
+        assert not status(app)['recovery_ap'] and not status(app)['configured']
+        app.advance(120000)
+        assert wifi.read_bytes() == corrupt and not status(app)['recovery_ap']
+        assert not app.http()['simulation_tx']
+        from test_recovery import hold
+        app.advance(41); hold(app)
+        assert status(app)['recovery_ap']
         assert app.http()['pairing']['saved']
         app.http('/api/network', {'action': 'forget', 'confirm': True}, 202)
         assert not wifi.exists() and registry.read_bytes() == before
@@ -183,6 +190,8 @@ def run(directory):
     try:
         assert status(app)['configured'] and wifi.read_bytes() == saved
         connect(app)
+        from test_recovery import hold
+        app.advance(41); hold(app)
         app.sim('wifi_storage_fault', mode=2)
         configure(app, other_ssid, other_password); s = connect(app)
         assert s['persistence_uncertain'] and s['error'] == 'persistence_uncertain'

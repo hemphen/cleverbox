@@ -39,7 +39,7 @@ def run(directory):
         hold(app, 4999); assert not status(app)['manual_recovery']
         hold(app); assert status(app)['manual_recovery'] and status(app)['recovery_ap']
         finish(app); app.advance(70000)
-        assert status(app)['recovery_ap'] and not status(app)['configured']
+        assert not status(app)['recovery_ap'] and not status(app)['configured']
         # Explicit confirmation is required at the HTTP boundary, with exact schema.
         for body in ({'action': 'forget'}, {'action': 'forget', 'confirm': False},
                      {'action': 'forget', 'confirm': 1}, {'action': 'forget', 'confirm': 'true'},
@@ -88,7 +88,7 @@ def run(directory):
         assert len(app.http()['simulation_tx']) == poll_count
         app.sim('network_event', name='disconnected')
         assert status(app)['manual_recovery'] and status(app)['recovery_ap']
-        finish(app)  # Disconnected retains AP, then reconnect alone is automatic.
+        finish(app)  # Explicit completion also closes when disconnected.
         app.advance(5000); connect(app)
         hold(app); assert status(app)['manual_recovery']
         # RF continuity uses an independently fixed report from existing tests.
@@ -105,7 +105,7 @@ def run(directory):
         app.http('/api/network', {'action': 'forget', 'confirm': True}, 202)
         assert status(app)['manual_recovery'] and status(app)['persistence_uncertain']
         finish(app); app.advance(60000); connect(app); app.advance(60000)
-        assert status(app)['persistence_uncertain'] and status(app)['recovery_ap']
+        assert status(app)['persistence_uncertain'] and not status(app)['recovery_ap']
         # Successful explicit save resolves uncertainty and releases recovery.
         app.sim('wifi_storage_fault', mode=0)
         configure(app, ssid, password); connect(app)

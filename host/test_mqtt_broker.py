@@ -35,6 +35,12 @@ def run(directory):
     lib.simulation_advance.argtypes=[C.c_int]; lib.host_network_event.argtypes=[C.c_char_p]
     lib.simulation_scenario.argtypes=[C.c_char_p]
     lib.host_init(); adapter=BrokerClient(lib)
+    # Direct handler calls still need a real trusted local socket context.
+    # Keep both TCP ends open; netif addresses are the host loopback fixtures.
+    listener=socket.create_server(('127.0.0.1',0))
+    http_peer=socket.create_connection(listener.getsockname())
+    http_socket,_=listener.accept(); listener.close()
+    lib.host_http_socket(http_socket.fileno())
     def http(path='/api/radio',body=None,code=200):
         raw=json.dumps(body).encode() if body is not None else b''
         result=lib.host_request(body is not None,path.encode(),raw,b'application/json'); text=lib.host_response()
@@ -124,6 +130,7 @@ def run(directory):
         if adapter.client: adapter.stop((BASE+'/availability').encode())
         observer.disconnect()
         process.terminate(); process.wait(timeout=3); log.close()
+        http_socket.close(); http_peer.close()
 
 
 if __name__=='__main__':

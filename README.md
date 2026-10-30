@@ -45,11 +45,14 @@ clock. See [architecture](docs/architecture.md#templates).
   controlled. Passive learning only accepts frames sent from the record's
   controller address, which after pairing only Cleverbox itself uses.
 - The HTTP interface has no login. The setup access point uses the fixed,
-  published password `cleverbox` and opens on every boot and every Wi-Fi drop.
+  published password `cleverbox`. After setup it opens only through deliberate
+  recovery (BOOT or Wi-Fi forget), and permits Wi-Fi setup and diagnostics only.
+  Full HTTP control requires the station interface on a trusted LAN.
 - MQTT uses plain TCP. NVS is not encrypted.
 - UI and MQTT commands are refused after each boot until the clock is set by
-  SNTP or by hand. `POST /api/command` accepts an explicit `clock_seconds`
-  override, intended for tests ([Time](docs/architecture.md#time)).
+  SNTP or by hand on the station interface. Physical `POST /api/command`
+  rejects `clock_seconds`; only the host simulator accepts that test override
+  ([Time](docs/architecture.md#time)).
 - If the radio cannot be initialised, or restoring reception fails at runtime,
   the radio task stops until the next reboot. A transmit failure ends only the
   affected command; receive errors are counted and reception restarts
@@ -93,7 +96,11 @@ idf.py -p PORT flash monitor
 ```
 
 Join Wi-Fi network **Cleverbox** (password **cleverbox**), open
-http://192.168.4.1/ and enter your home Wi-Fi. Then follow the
+http://192.168.4.1/ and enter your home Wi-Fi on first setup. After saving,
+move to the home LAN and use the station IP for radiator, time and MQTT setup.
+Configured boots and router outages keep the AP off. To recover without serial,
+hold BOOT for five seconds after startup, then release. Keep BOOT released
+during reset. Then follow the
 [bring-up checklist](docs/hardware.md#bring-up-checklist).
 
 ## Documentation
@@ -120,7 +127,7 @@ The reference decoder is in
 | Command | Runs |
 | --- | --- |
 | `make test` | Unit tests: codec, pairing, commands, radio worker, registry, network, time, MQTT store, page script (needs Node.js) |
-| `make test-http` | Host suites over HTTP against the production code: registry, network, recovery, time, MQTT, tokens, discovery |
+| `make test-http` | Host suites over HTTP against the production code: registry, network, recovery, time, MQTT, tokens, discovery; physical HTTP branch and interface policy |
 | `make test-capacity` | `test` and `test-http` with a 3-radiator build |
 | `make test-discovery-limit` | Discovery with an undersized payload buffer |
 | `make test-mqtt-broker` | Real Mosquitto 2.x broker; needs `paho-mqtt==2.1.0` |

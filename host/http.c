@@ -6,11 +6,15 @@
 #include "network_setup.h"
 #include "device_time.h"
 #include "mqtt_bridge.h"
+#include "cJSON.h"
 #include <stdio.h>
 #include <string.h>
 static httpd_uri_t routes[13];
 static size_t route_count;
 static httpd_req_t request;
+static int socket_fd = -1;
+void host_http_socket(int fd) { socket_fd = fd; }
+int httpd_req_to_sockfd(httpd_req_t *r) { return r->socket_fd; }
 esp_err_t httpd_register_uri_handler(httpd_handle_t server, const httpd_uri_t *route) {
     (void)server;
     if (route_count == 13) return ESP_FAIL;
@@ -39,8 +43,9 @@ void host_init(void) { simulation_init(); device_time_start(); network_setup_sta
 int host_request(int method, const char *path, const char *body, const char *type) {
     free(request.response);
     request=(httpd_req_t){.uri=path,.content_len=strlen(body),.body=body,.content_type=type,
-                         .status="200 OK",.response_type="text/plain"};
+                         .status="200 OK",.response_type="text/plain",.socket_fd=socket_fd};
     for (size_t i=0;i<route_count;++i) if (method==routes[i].method && strlen(routes[i].uri)==strcspn(path,"?") && !strncmp(path,routes[i].uri,strcspn(path,"?"))) {
+        request.user_ctx = routes[i].user_ctx;
         if (routes[i].handler(&request)!=ESP_OK) {
             request.status="500 Internal Server Error"; httpd_resp_sendstr(&request,"Handler failed");
         }
@@ -56,3 +61,12 @@ esp_err_t httpd_req_get_url_query_str(httpd_req_t *r, char *out, size_t n) {
     const char *q = strchr(r->uri, '?'); if (!q || strlen(q + 1) >= n) return ESP_FAIL;
     strcpy(out, q + 1); return ESP_OK;
 }
+
+const char *host_simulation_snapshot(void) {
+    static char *json;
+    cJSON *status = cJSON_CreateObject(); simulation_status(status);
+    free(json); json = cJSON_PrintUnformatted(status); cJSON_Delete(status);
+    return json ? json : "{}";
+}
+
+esp_err_t httpd_sess_trigger_close(httpd_handle_t server, int fd) { (void)server; (void)fd; return ESP_OK; }

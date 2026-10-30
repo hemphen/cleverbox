@@ -2,7 +2,37 @@
 
 The device serves the page at `/` and a JSON API under `/api/`. The same server
 answers on the setup access point (http://192.168.4.1/) and the station IP.
-There is no authentication; see [security](architecture.md#security).
+There is no authentication; station control assumes a trusted LAN. See
+[security](architecture.md#security).
+
+## Interface policy
+
+One admission table wraps every API handler before parsing or queuing work.
+The page and all listed GET diagnostics are available on AP and STA; passwords
+remain redacted. POST admission is:
+
+| Endpoint | AP | STA (trusted LAN) | Unknown |
+| --- | --- | --- | --- |
+| `/api/network` (configure, forget, finish_recovery) | Allowed | Allowed | Denied |
+| `/api/pairing`, `/api/command`, `/api/controller-state`, `/api/radiators` | Denied | Allowed | Denied |
+| `/api/time`, `/api/mqtt`, `/api/preview` | Denied | Allowed | Denied |
+
+Denial returns `403` with an explanation and requests socket closure, before
+any handler, queued work, persistence change or RF request. The UI disables
+unavailable actions and explains how to use the station IP. Configure MQTT
+and manual UTC/timezone from the home LAN after Wi-Fi setup. Broker replacement
+is excluded from AP recovery because it could redirect command access.
+
+Classification uses the accepted socket's local IPv4 address (`getsockname`)
+and current up ESP netif addresses. `Host`, `Origin`, forwarding headers and
+client-supplied identities never grant access. Both interfaces can be active
+at once. The socket peer (`getpeername`) also guards against an AP client
+address targeting the station IP. An overlapping AP/LAN subnet denies those
+mutations conservatively. Missing/failed/ambiguous addresses and IPv6 are
+unknown; all unknown-interface POSTs fail closed. Read-only diagnostics remain
+available. Local-address classification and the peer guard still require
+[hardware checks](hardware.md#3-network-and-recovery) of ESP/lwIP routing; this
+is neither HTTP authentication nor a network firewall.
 
 ## Conventions
 
@@ -10,6 +40,7 @@ There is no authentication; see [security](architecture.md#security).
   `charset` parameter). Each endpoint has a body size limit, listed below.
 - `202 Accepted` means the request was queued. Poll the matching `GET` for the
   outcome.
+- `403` means the receiving interface does not permit the operation.
 - `400` means invalid input. `409` means the device cannot act now (busy, not
   ready, missing prerequisite). Both return a plain-text explanation.
 - Responses carry `Cache-Control: no-store`.
@@ -125,7 +156,7 @@ and `command.clear_status`.
 | `id` | yes (see conventions) | Radiator |
 | `mode`, `centi_c` | yes | Requested settings |
 | `state` | no | Template for this command only (hex). Invalid values fail; they never fall back to another template. |
-| `clock_seconds` | no | Overrides the device clock (0–86399). For tests. |
+| `clock_seconds` | forbidden on physical firmware | Presence returns `400`, including null or malformed values. Only host builds accept 0–86399 for tests. |
 
 Returns `{"status":"queued"}` with `202`. `409` cases: clock not set, radiator
 busy, pairing or registry change running, radio not ready, no template.
@@ -158,6 +189,8 @@ both CRCs and keeps everything else, including the clock.
 | `error` | `none`, `connection_failed`, `storage_failed`, `persistence_uncertain`, `storage_invalid`, `platform_failed` |
 | `persistence_uncertain` | The saved Wi-Fi record after reboot is unknown |
 | `recovery_ap` | Access point currently on |
+| `ap_closing` | A 60 s closure grace period is active, or a failed close is being retried |
+| `http_interface`, `http_control_allowed` | This request classified as `ap`, `sta` or `unknown`; full control only on STA |
 | `manual_recovery`, `recovery_error` | Button latch active; `none` or `ap_open_failed` |
 | `event_queue_overflows` | Lost Wi-Fi events (saturating) |
 
@@ -168,7 +201,7 @@ SSID and password are never returned.
 | Request | Effect |
 | --- | --- |
 | `{"action":"configure","ssid":"...","password":"..."}` | Try new credentials; save after DHCP succeeds |
-| `{"action":"finish_recovery"}` | Release the button latch |
+| `{"action":"finish_recovery"}` | Close AP after 60 s, even without STA or certain storage; current AP users lose access |
 | `{"action":"forget","confirm":true}` | Erase saved Wi-Fi only |
 
 Requests must contain exactly these fields. Returns `{"accepted":true}` with
@@ -236,7 +269,7 @@ discovery records remain (disable discovery and wait for
 
 ## Simulation only
 
-Host builds add `POST /api/simulation`. The physical firmware has no such
+Host builds alone accept the command clock override and add `POST /api/simulation`. The physical firmware has no such
 endpoint.
 
 | Action | Fields | Effect |
@@ -247,7 +280,13 @@ endpoint.
 
 With `serve.py --test-clock` the clock is frozen and more actions exist:
 `advance` (`ms`), `inject` (`frame` hex), `time_sync` (`unix_seconds`),
-`network_event` (`name`: `started`, `disconnected`, `got_ip`), `button_level`
+`network_event` (`name`: `started`, `disconnected`, `lost_ip`, `got_ip`), `button_level`
 (`low`), `wifi_storage_fault` (`mode` 0–2), and MQTT test hooks
 (`mqtt_connection`, `mqtt_suback`, `mqtt_input` and others; see
 `host/serve.py`). `GET /api/simulation/mqtt` drains published MQTT messages.
+
+For policy tests, `--test-interfaces` adds loopback listeners on 127.0.0.2
+(AP) and 127.0.0.3 (unknown) beside 127.0.0.1 (STA), all sharing one application.
+These are netif fixtures, not physical interfaces. With `--test-clock`,
+`GET /api/simulation/radio` supplies host-only RF observations, including when
+testing the physical HTTP compilation branch. No such endpoint exists on ESP.

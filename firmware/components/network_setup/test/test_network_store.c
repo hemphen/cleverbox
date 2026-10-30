@@ -164,5 +164,17 @@ int main(void) {
     // Success still persists and reset remains idempotent after verified recovery.
     seed(&b); expect(&b); assert(network_store_forget() == ESP_OK); expect(NULL);
     assert(network_store_forget() == ESP_OK); expect(NULL);
+    // Boot reads distinguish absence from corrupt bytes and I/O errors without
+    // mutating the key. No automatic repair or erase is authorised by a read.
+    seed(&a); durable[0] = 255; reboot_nvs(); faults_clear();
+    unsigned char corrupt[LIMIT]; memcpy(corrupt, durable, durable_size);
+    network_credentials out;
+    assert(network_store_load(&out) == ESP_ERR_INVALID_STATE && !writes && !commits);
+    assert(!memcmp(durable, corrupt, durable_size));
+    faults_clear(); fail_open = 1;
+    assert(network_store_load(&out) == ESP_FAIL && !writes && !commits);
+    faults_clear(); fail_read = 1;
+    assert(network_store_load(&out) == ESP_FAIL && !writes && !commits);
+    assert(!memcmp(durable, corrupt, durable_size));
     puts("Wi-Fi store: post-mutation/deferred errors, rollback/reinitialization, uncertain recovery, save/forget and key isolation: passed");
 }

@@ -40,8 +40,8 @@ def changed_frame(hex_frame, offset):
 
 
 class App:
-    def __init__(self, storage, test_clock=True, real_mqtt=False):
-        self.process = subprocess.Popen([sys.executable, str(ROOT / 'host/serve.py'), '--port', '0', '--storage', str(storage)] + (['--test-clock'] if test_clock else []) + (['--real-mqtt'] if real_mqtt else []), stdout=subprocess.PIPE, text=True)
+    def __init__(self, storage, test_clock=True, real_mqtt=False, interfaces=False):
+        self.process = subprocess.Popen([sys.executable, str(ROOT / 'host/serve.py'), '--port', '0', '--storage', str(storage)] + (['--test-clock'] if test_clock else []) + (['--real-mqtt'] if real_mqtt else []) + (['--test-interfaces'] if interfaces else []), stdout=subprocess.PIPE, text=True)
         line = self.process.stdout.readline().strip()
         assert line.startswith('SIMULATION ONLY: http://127.0.0.1:'), line
         self.url = line.split(' ', 2)[2]

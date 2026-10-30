@@ -26,13 +26,22 @@ static bool pending;
 static atomic_bool overflow;
 static network_policy policy;
 static network_button button;
-static bool ap_enabled = true;
+static bool ap_enabled, driver_started;
+static esp_err_t set_mode(wifi_mode_t next) {
+    esp_err_t err = esp_wifi_set_mode(next);
+    if (err == ESP_OK && !driver_started && next != WIFI_MODE_NULL) {
+        err = esp_wifi_start();
+        if (err == ESP_OK) driver_started = true;
+    }
+    return err;
+}
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 static esp_err_t set_ap(bool enabled) {
     wifi_mode_t mode;
     esp_err_t err = esp_wifi_get_mode(&mode);
-    if (err == ESP_OK) err = esp_wifi_set_mode(enabled ?
-        (mode == WIFI_MODE_AP ? WIFI_MODE_AP : WIFI_MODE_APSTA) : WIFI_MODE_STA);
+    if (err == ESP_OK) err = set_mode(enabled ?
+        (mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA ? WIFI_MODE_APSTA : WIFI_MODE_AP) :
+        (mode == WIFI_MODE_APSTA || mode == WIFI_MODE_STA ? WIFI_MODE_STA : WIFI_MODE_NULL));
     if (err == ESP_OK) {
         ap_enabled = enabled;
         if (enabled) ESP_LOGI("network", "Recovery AP Cleverbox available at http://192.168.4.1/");
@@ -40,10 +49,10 @@ static esp_err_t set_ap(bool enabled) {
     return err;
 }
 static esp_err_t start_attempt(const network_credentials *c) {
-    // Keep AP running. Disable/re-enable only STA, creating a STA_START event
-    // barrier after old disconnect/IP events. Never stop/restart the Wi-Fi driver.
-    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_AP);
-    if (err == ESP_OK) err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    // Reset only STA for the fresh STA_START barrier. Never enable AP as a
+    // side effect of retries; an authorised AP remains running.
+    esp_err_t err = esp_wifi_set_mode(ap_enabled ? WIFI_MODE_AP : WIFI_MODE_NULL);
+    if (err == ESP_OK) err = set_mode(ap_enabled ? WIFI_MODE_APSTA : WIFI_MODE_STA);
     wifi_config_t config = {0};
     memcpy(config.sta.ssid, c->ssid, strlen(c->ssid));
     memcpy(config.sta.password, c->password, strlen(c->password));
@@ -54,7 +63,7 @@ static esp_err_t start_attempt(const network_credentials *c) {
 static esp_err_t associate(void) { return esp_wifi_connect(); }
 static void stop_station(void) {
     // Also invalidate queued events in the policy until the next STA_START.
-    if (esp_wifi_set_mode(WIFI_MODE_AP) == ESP_OK) ap_enabled = true;
+    (void)esp_wifi_set_mode(ap_enabled ? WIFI_MODE_AP : WIFI_MODE_NULL);
 }
 static void event(void *arg, esp_event_base_t base, int32_t id, void *data) {
     (void)arg; message m = {0};
@@ -107,14 +116,17 @@ static void step(void) {
     }
     network_policy_tick(&policy, now_ms()); publish(release);
 }
-static void run(void *arg) {
-    (void)arg; network_credentials saved = {0};
+static void load_policy(void) {
+    network_credentials saved = {0};
     esp_err_t err = network_store_load(&saved);
     network_platform platform = {set_ap, start_attempt, associate, stop_station,
                                  network_store_save, network_store_forget};
     network_policy_init(&policy, platform, err == ESP_OK ? &saved : NULL,
                         err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND, now_ms());
     memset(&saved, 0, sizeof(saved)); publish(true);
+}
+static void run(void *arg) {
+    (void)arg; load_policy();
     for (;;) step();
 }
 static esp_err_t submit(message *m) {
@@ -140,11 +152,12 @@ esp_err_t network_get_status(network_status *out) {
 esp_err_t network_setup_start(void) {
     events = xQueueCreate(16, sizeof(message)); mutex = xSemaphoreCreateMutex();
     if (!events || !mutex) return ESP_ERR_NO_MEM;
-    published = (network_status){.state = NET_DISCONNECTED, .recovery_ap = true,
+    published = (network_status){.state = NET_DISCONNECTED, .recovery_ap = false,
         .error = "none", .recovery_error = "none"};
     pending = true; // Do not admit requests until saved configuration has loaded.
     esp_netif_create_default_wifi_ap(); esp_netif_create_default_wifi_sta();
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
+    init.nvs_enable = false; // Application owns credentials; BOOT must work if NVS is unreadable.
     ESP_ERROR_CHECK(esp_wifi_init(&init));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     // Suppress Wi-Fi driver's connection diagnostics (which can include SSIDs).
@@ -158,10 +171,12 @@ esp_err_t network_setup_start(void) {
     ESP_ERROR_CHECK(gpio_config(&button_config));
     wifi_config_t config = {.ap = {.ssid = NETWORK_AP_SSID, .password = NETWORK_AP_PASSWORD, .channel = 1,
                                    .max_connection = 2, .authmode = WIFI_AUTH_WPA2_PSK}};
+    // Configure AP while its interface is enabled but the driver is stopped.
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI("network", "Setup Wi-Fi Cleverbox; http://192.168.4.1/");
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
+    // The owner loads storage before starting either interface. A read error
+    // must never advertise a fresh-device AP. BOOT remains available.
     memset(&config, 0, sizeof(config));
     if (xTaskCreate(run, "network_setup", 4096, NULL, 3, NULL) != pdPASS) return ESP_ERR_NO_MEM;
     return ESP_OK;

@@ -17,16 +17,13 @@ static void ap(network_policy *p, bool enabled) {
     if (p->status.recovery_ap == enabled) return;
     if (p->platform.ap(enabled) == ESP_OK) {
         p->status.recovery_ap = enabled;
-        // Any successful opening resolves the manual recovery failure, including
-        // ordinary disconnect/reconnect paths that do not retry the gesture.
+        // Opening can be retried by the owner after a platform failure.
         if (enabled) p->status.recovery_error = "none";
     }
     else p->status.error = "platform_failed";
 }
 static void failed_attempt(network_policy *p, int64_t now);
 static void start(network_policy *p, int64_t now) {
-    ap(p, true);
-    p->close_ap_ms = 0;
     p->ready = false; p->attempting = true;
     p->status.state = NET_CONNECTING; p->status.ip[0] = 0;
     ++p->status.attempts;
@@ -56,10 +53,13 @@ static void failed_attempt(network_policy *p, int64_t now) {
 void network_policy_init(network_policy *p, network_platform platform,
                          const network_credentials *saved, bool load_failed, int64_t now) {
     memset(p, 0, sizeof(*p)); p->platform = platform;
+    load_failed = load_failed || (saved && !network_credentials_valid(saved));
     p->status.error = load_failed ? "storage_invalid" : "none";
     p->status.recovery_error = "none";
     p->status.state = load_failed ? NET_FAILED : NET_DISCONNECTED;
-    ap(p, true);
+    p->ap_requested = !load_failed && !saved;
+    if (p->ap_requested) network_policy_recover(p, now);
+    p->status.manual_recovery = false; // Fresh setup is not a button gesture.
     if (network_credentials_valid(saved)) {
         p->saved = *saved; p->status.configured = true; start(p, now);
     }
@@ -67,6 +67,8 @@ void network_policy_init(network_policy *p, network_platform platform,
 void network_policy_configure(network_policy *p, const network_credentials *c, int64_t now) {
     // Service admission rejects replacement while a connection attempt is active.
     if (!network_credentials_valid(c) || p->candidate_active) return;
+    // A new explicit trial retains an already authorised access session.
+    if (p->ap_requested) { p->close_ap_ms = 0; p->status.ap_closing = false; }
     p->candidate = *c; p->candidate_active = true;
     p->status.setup = NET_SETUP_PENDING; p->status.attempts = 0;
     if (!p->status.persistence_uncertain) p->status.error = "none";
@@ -75,7 +77,7 @@ void network_policy_configure(network_policy *p, const network_credentials *c, i
 static void storage_failure(network_policy *p, esp_err_t err) {
     if (err == NETWORK_ERR_PERSISTENCE_UNCERTAIN) p->status.persistence_uncertain = true;
     p->status.error = p->status.persistence_uncertain ? "persistence_uncertain" : "storage_failed";
-    if (p->status.persistence_uncertain) { p->close_ap_ms = 0; ap(p, true); }
+    // Storage uncertainty never grants new wireless access. Existing access stays.
 }
 void network_policy_forget(network_policy *p, int64_t now) {
     esp_err_t err = p->platform.forget();
@@ -91,8 +93,9 @@ void network_policy_forget(network_policy *p, int64_t now) {
     network_policy_recover(p, now);
 }
 void network_policy_recover(network_policy *p, int64_t now) {
+    p->ap_requested = true;
     p->status.manual_recovery = true;
-    p->close_ap_ms = 0;
+    p->close_ap_ms = 0; p->status.ap_closing = false;
     // AP opening errors have their own status; do not overwrite an unrelated
     // storage/connection error or leave a stale platform_failed after retry.
     const char *previous_error = p->status.error;
@@ -104,11 +107,8 @@ void network_policy_recover(network_policy *p, int64_t now) {
 void network_policy_finish_recovery(network_policy *p, int64_t now) {
     p->status.manual_recovery = false;
     p->status.recovery_error = "none";
-    // Resume the automatic policy with a fresh grace period only if STA is
-    // usable and saved storage is trusted. Otherwise retain the only route.
-    p->close_ap_ms = p->status.state == NET_CONNECTED && p->status.configured &&
-        p->status.ip[0] && !p->status.persistence_uncertain ? now + NETWORK_AP_GRACE_MS : 0;
-    if (!p->close_ap_ms) ap(p, true);
+    // Explicit completion closes even the only access path, after UI warning.
+    p->close_ap_ms = now + NETWORK_AP_GRACE_MS; p->status.ap_closing = true;
 }
 void network_policy_tick(network_policy *p, int64_t now) {
     if (p->attempting && now >= p->deadline_ms) failed_attempt(p, now);
@@ -117,12 +117,16 @@ void network_policy_tick(network_policy *p, int64_t now) {
         if (p->status.attempts >= NETWORK_MAX_ATTEMPTS) p->status.attempts = 0;
         start(p, now);
     }
-    if (p->status.manual_recovery && !p->status.recovery_ap && now >= p->recovery_retry_ms)
+    if (p->ap_requested && !p->close_ap_ms && !p->status.recovery_ap && now >= p->recovery_retry_ms) {
+        bool manual = p->status.manual_recovery;
         network_policy_recover(p, now); // Bounded one-second retries, visible failure.
-    if (!p->status.manual_recovery && !p->status.persistence_uncertain &&
-        p->status.state == NET_CONNECTED && p->close_ap_ms && now >= p->close_ap_ms) {
+        p->status.manual_recovery = manual;
+    }
+    if (p->close_ap_ms && now >= p->close_ap_ms) {
+        p->ap_requested = false;
         ap(p, false);
-        if (!p->status.recovery_ap) p->close_ap_ms = 0;
+        if (!p->status.recovery_ap) { p->close_ap_ms = 0; p->status.ap_closing = false; }
+        else p->close_ap_ms = now + 1000; // Pace failed close retries too.
     }
 }
 void network_policy_started(network_policy *p, int64_t now) {
@@ -134,7 +138,7 @@ void network_policy_disconnected(network_policy *p, int64_t now) {
     if (p->status.state == NET_CONNECTED) {
         p->status.ip[0] = 0; p->status.state = NET_DISCONNECTED;
         p->ready = false; p->status.attempts = 0;
-        p->next_ms = now + NETWORK_RETRY_MS; ap(p, true);
+        p->next_ms = now + NETWORK_RETRY_MS;
     } else if (p->attempting && p->ready) failed_attempt(p, now);
 }
 void network_policy_got_ip(network_policy *p, const char *ip, int64_t now) {
@@ -158,11 +162,12 @@ void network_policy_got_ip(network_policy *p, const char *ip, int64_t now) {
         p->status.recovery_error = "none";
         memset(&p->candidate, 0, sizeof(p->candidate)); p->candidate_active = false;
         p->status.setup = NET_SETUP_SAVED;
+        if (p->ap_requested) { p->close_ap_ms = now + NETWORK_AP_GRACE_MS; p->status.ap_closing = true; }
     }
     p->status.state = NET_CONNECTED;
     if (p->status.setup != NET_SETUP_FAILED && !p->status.persistence_uncertain) p->status.error = "none";
     strcpy(p->status.ip, ip); p->attempting = false;
-    p->close_ap_ms = p->status.persistence_uncertain || p->status.manual_recovery ? 0 : now + NETWORK_AP_GRACE_MS;
+    // Ordinary reconnects neither grant access nor close an authorised session.
 }
 const char *network_state_name(network_state s) {
     static const char *names[] = {"disconnected", "connecting", "connected", "failed"}; return names[s];
