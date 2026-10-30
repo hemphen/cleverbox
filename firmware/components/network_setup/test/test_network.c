@@ -23,6 +23,88 @@ static network_credentials credentials(unsigned seed) {
 static void ip(network_policy *p, int64_t now) {
     network_policy_started(p, now); network_policy_got_ip(p, "192.0.2.10", now);
 }
+static void recovery_tests(network_credentials a, network_credentials b) {
+    network_policy p;
+    network_policy_init(&p, platform, &a, false, 0); ip(&p, 1);
+    network_policy_tick(&p, 60001); assert(!ap_on);
+    unsigned n = starts, st = stops, sv = saves, f = forgets;
+    network_policy_recover(&p, 60002);
+    assert(p.status.manual_recovery && ap_on && p.status.state == NET_CONNECTED);
+    assert(starts == n && stops == st && saves == sv && forgets == f);
+    assert(!memcmp(&p.saved, &a, sizeof(a)));
+    network_policy_got_ip(&p, "192.0.2.11", 60003);
+    network_policy_tick(&p, 200000);
+    assert(p.status.manual_recovery && ap_on);
+    network_policy_finish_recovery(&p, 200001);
+    assert(!p.status.manual_recovery && ap_on);
+    network_policy_tick(&p, 260000); assert(ap_on);
+    network_policy_tick(&p, 260001); assert(!ap_on);
+    network_policy_recover(&p, 260002); assert(ap_on);
+    network_policy_disconnected(&p, 260003);
+    network_policy_recover(&p, 260004); assert(p.status.state == NET_DISCONNECTED);
+    network_policy_tick(&p, 265003); assert(p.status.state == NET_CONNECTING);
+    network_policy_recover(&p, 265004); ip(&p, 265005);
+    network_policy_tick(&p, 400000); assert(p.status.manual_recovery && ap_on);
+    // Provisioning: recovery does not touch the candidate or write storage.
+    network_policy_configure(&p, &b, 400001);
+    network_policy_recover(&p, 400002);
+    assert(p.candidate_active && !memcmp(&p.candidate, &b, sizeof(b)));
+    ip(&p, 400003); assert(!p.status.manual_recovery && p.status.setup == NET_SETUP_SAVED);
+    network_policy_tick(&p, 460003); assert(!ap_on);
+    // Failed save cannot release the manual latch, even after old STA reconnects.
+    network_policy_recover(&p, 460004); save_error = ESP_FAIL;
+    network_policy_configure(&p, &a, 460005); ip(&p, 460006);
+    assert(p.status.manual_recovery && ap_on && p.status.setup == NET_SETUP_FAILED);
+    save_error = ESP_OK;
+    network_policy_tick(&p, 520006); ip(&p, 520007);
+    network_policy_tick(&p, 600000); assert(p.status.manual_recovery && ap_on);
+    // Failed forget opens recovery even if it began with the AP closed.
+    network_policy_finish_recovery(&p, 600001); network_policy_tick(&p, 660001); assert(!ap_on);
+    forget_error = ESP_FAIL; network_policy_forget(&p, 660002);
+    assert(ap_on && p.status.manual_recovery && p.status.configured);
+    assert(!strcmp(p.status.error, "storage_failed"));
+    forget_error = NETWORK_ERR_PERSISTENCE_UNCERTAIN; network_policy_forget(&p, 660003);
+    network_policy_finish_recovery(&p, 660004); network_policy_tick(&p, 800000);
+    assert(!p.status.manual_recovery && p.status.persistence_uncertain && ap_on);
+    forget_error = ESP_OK; network_policy_forget(&p, 800001);
+    network_policy_finish_recovery(&p, 800002); network_policy_tick(&p, 1000000);
+    assert(!p.status.configured && ap_on);
+    // Finish while connecting/disconnected cannot close the only route.
+    network_policy_init(&p, platform, &a, false, 0);
+    network_policy_recover(&p, 1); network_policy_finish_recovery(&p, 2);
+    assert(ap_on && p.status.state == NET_CONNECTING);
+    ip(&p, 3); network_policy_disconnected(&p, 4);
+    network_policy_finish_recovery(&p, 5); assert(ap_on);
+    // A failed AP opening is explicit and retries at most once per second.
+    network_policy_init(&p, platform, &a, false, 0); ip(&p, 1);
+    network_policy_tick(&p, 60001); assert(!ap_on);
+    ap_error = ESP_FAIL; network_policy_recover(&p, 60002);
+    assert(p.status.manual_recovery && !ap_on && !strcmp(p.status.recovery_error, "ap_open_failed"));
+    ap_error = ESP_OK; network_policy_tick(&p, 61001); assert(!ap_on);
+    network_policy_tick(&p, 61002); assert(ap_on && !strcmp(p.status.recovery_error, "none"));
+    // AP recovery through disconnect/reconnect must clear a stale manual error,
+    // without releasing the latch or changing the saved Wi-Fi configuration.
+    for (unsigned fail_disconnect = 0; fail_disconnect < 2; ++fail_disconnect) {
+        network_policy_init(&p, platform, &a, false, 0); ip(&p, 1);
+        network_policy_tick(&p, 60001); assert(!ap_on);
+        n = saves; f = forgets;
+        ap_error = ESP_FAIL; network_policy_recover(&p, 60002);
+        assert(!strcmp(p.status.recovery_error, "ap_open_failed"));
+        if (!fail_disconnect) ap_error = ESP_OK;
+        network_policy_disconnected(&p, 60003);
+        assert(p.status.recovery_ap == !fail_disconnect);
+        assert(!strcmp(p.status.recovery_error, fail_disconnect ? "ap_open_failed" : "none"));
+        // If disconnect's opening also failed, start() opens it on reconnect.
+        ap_error = ESP_OK; network_policy_tick(&p, 65003); ip(&p, 65004);
+        network_policy_tick(&p, 125004);
+        assert(p.status.state == NET_CONNECTED && p.status.recovery_ap && p.status.manual_recovery);
+        assert(!strcmp(p.status.recovery_error, "none"));
+        assert(saves == n && forgets == f && !memcmp(&p.saved, &a, sizeof(a)));
+    }
+    // Ordinary restart forgets only the volatile latch and keeps the saved setup.
+    network_policy_init(&p, platform, &a, false, 0);
+    assert(!p.status.manual_recovery && p.status.configured && ap_on);
+}
 int main(void) {
     network_credentials a = credentials(1), b = credentials(2), bad = a;
     assert(network_credentials_valid(&a));
@@ -128,5 +210,6 @@ int main(void) {
     forget_error = ESP_OK; network_policy_forget(&p, 200007);
     assert(!p.status.persistence_uncertain && !p.status.configured && ap_on);
     assert(associates && stops && saves && forgets);
+    recovery_tests(a, b);
     puts("Network policy setup/restart, rollback, loss/recovery, pacing, storage failures and reset: passed");
 }

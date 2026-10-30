@@ -9,7 +9,7 @@ from test_http import App
 
 def status(app):
     s = app.http('/api/network')
-    assert set(s) == {'state', 'setup_result', 'configured', 'recovery_ap', 'attempts', 'ip', 'error', 'persistence_uncertain'}
+    assert set(s) == {'state', 'setup_result', 'configured', 'recovery_ap', 'attempts', 'ip', 'error', 'persistence_uncertain', 'manual_recovery', 'recovery_error', 'event_queue_overflows'}
     return s
 
 
@@ -61,7 +61,7 @@ def run(directory):
                      {'action': 'configure', 'ssid': ssid, 'password': password * 3},
                      {'action': 'configure', 'ssid': ssid, 'password': password + '\n'},
                      {'action': 'configure', 'ssid': ssid + '\0x', 'password': password},
-                     {'action': 'forget', 'extra': True}):
+                     {'action': 'forget', 'confirm': True, 'extra': True}):
             out = app.http('/api/network', body, 400)
             assert ssid not in out and password not in out
         app.http('/api/network', raw=b'{', code=400)
@@ -111,7 +111,7 @@ def run(directory):
         tx = radio['simulation_tx']
         # Forget network with a second admitted RF command: no replay or reset.
         app.command(target=2100); app.advance(1)
-        app.http('/api/network', {'action': 'forget'}, 202)
+        app.http('/api/network', {'action': 'forget', 'confirm': True}, 202)
         assert not wifi.exists() and not status(app)['configured'] and status(app)['recovery_ap']
         assert registry.read_bytes() == before
         app.advance(11000); assert app.http()['command']['phase'] == 'matched'
@@ -139,7 +139,7 @@ def run(directory):
         assert status(app)['state'] == 'failed' and status(app)['error'] == 'storage_invalid'
         assert status(app)['recovery_ap'] and not status(app)['configured']
         assert app.http()['pairing']['saved']
-        app.http('/api/network', {'action': 'forget'}, 202)
+        app.http('/api/network', {'action': 'forget', 'confirm': True}, 202)
         assert not wifi.exists() and registry.read_bytes() == before
         # Real store error path through HTTP: a directory blocks the Wi-Fi key.
         wifi.mkdir()
@@ -148,14 +148,14 @@ def run(directory):
         s = connect(app)
         assert s['state'] == 'failed' and s['setup_result'] == 'failed'
         assert s['error'] == 'persistence_uncertain' and s['persistence_uncertain'] and s['recovery_ap'] and not s['configured']
-        app.http('/api/network', {'action': 'forget'}, 202)
+        app.http('/api/network', {'action': 'forget', 'confirm': True}, 202)
         assert status(app)['error'] == 'persistence_uncertain' and registry.read_bytes() == before
         (wifi / "blocker").unlink()
         wifi.rmdir()
         # Resolve uncertainty with an actual successful write before forgetting.
         configure(app, ssid, password); connect(app)
         assert not status(app)['persistence_uncertain']
-        app.http('/api/network', {'action': 'forget'}, 202)
+        app.http('/api/network', {'action': 'forget', 'confirm': True}, 202)
         assert status(app)['error'] == 'none'
     finally:
         app.stop()
@@ -175,7 +175,7 @@ def run(directory):
         assert status(app)['configured'] and wifi.read_bytes() == saved
         connect(app)
         app.sim('wifi_storage_fault', mode=1)
-        app.http('/api/network', {'action': 'forget'}, 202)
+        app.http('/api/network', {'action': 'forget', 'confirm': True}, 202)
         assert status(app)['error'] == 'storage_failed' and wifi.read_bytes() == saved
     finally:
         app.stop()
@@ -201,7 +201,7 @@ def run(directory):
         assert status(app)['configured'] and wifi.read_bytes() != saved
         connect(app)
         app.sim('wifi_storage_fault', mode=2)
-        app.http('/api/network', {'action': 'forget'}, 202)
+        app.http('/api/network', {'action': 'forget', 'confirm': True}, 202)
         s = status(app)
         assert s['persistence_uncertain'] and s['error'] == 'persistence_uncertain'
         assert s['configured'] and s['recovery_ap'] and not wifi.exists()

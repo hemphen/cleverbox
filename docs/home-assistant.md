@@ -298,4 +298,4 @@ Official documentation consulted for this design: [MQTT setup](https://www.home-
 and [MQTT climate](https://www.home-assistant.io/integrations/climate.mqtt/).
 Discovery is implemented. Remaining usability work is installation walkthroughs and
 physical UI acceptance, followed by endurance/upgrade preservation and hardware
-acceptance. Matter remains optional and deferred.
+acceptance. MQTT and local HTTP remain the product interfaces.

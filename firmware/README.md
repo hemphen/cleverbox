@@ -25,9 +25,10 @@ idf.py -p PORT flash monitor
 
 The console uses the ESP32-C6 native USB Serial/JTAG port.
 
-Join the **Cleverbox** Wi-Fi network using the temporary password printed on
-the serial console. Open **http://192.168.4.1**. The password changes each boot.
-Use Home Wi-Fi on the page to configure persistent station access. See the network policy below.
+Join **Cleverbox**, WPA2 password **cleverbox**, and open **http://192.168.4.1/**
+manually. These public credentials are fixed across first boot, restart, network
+loss, manual recovery and Wi-Fi forget. Use Home Wi-Fi on the page to configure
+persistent station access. No serial monitor is needed for setup or recovery.
 
 The start page prepares pairing offer/bind, poll and target/mode frames.
 **Pairing and live target/mode commands transmit. Buttons labelled Preview do not.**
@@ -36,13 +37,28 @@ preamble/sync and CC1101 framing belong to the upcoming transport.
 
 ## Home Wi-Fi startup and recovery
 
-The protected **Cleverbox** AP starts at boot. Read its random per-boot password
-on USB serial (115200 baud), open **http://192.168.4.1/** and configure home Wi-Fi.
-The application also serves the station IP shown on the page and serial. The AP
-closes 60 seconds after DHCP success and reopens on network loss; uncertain
-Wi-Fi persistence keeps it open with an explicit warning. Wrong credentials
-leave recovery access available. **Forget home Wi-Fi only** preserves all radiator
-configuration. Full [network/recovery policy and hardware checklist](../docs/networking.md).
+The **Cleverbox** AP starts at boot with WPA2 password **cleverbox**; open
+**http://192.168.4.1/** manually. The application also serves the station IP shown
+on the page (or found in router DHCP leases). Ordinarily the AP closes 60 seconds
+after DHCP success and reopens on network loss. Uncertain Wi-Fi persistence keeps
+it open with an explicit warning; wrong credentials leave access available.
+
+After normal startup, hold **BOOT/IO9 for at least five seconds and release** to
+latch recovery AP access without restarting, stopping STA or erasing settings.
+**Finish recovery** resumes automatic policy with a new 60-second grace period
+when STA is usable; otherwise the AP stays open. A successful explicit Wi-Fi save
+can also release the latch. Reconnect/DHCP alone cannot. **Forget home Wi-Fi only**
+is separately confirmed and preserves radiator identities/pairings/templates,
+MQTT credentials/settings, timezone, discovery cleanup and admitted RF work.
+
+**EN** is hardware restart; power cycling has the same configuration-retention
+semantics. Both restore the startup AP window with the same public password.
+Manual recovery is volatile; pending commands are never restored. Do not hold
+BOOT during reset: GPIO9 is a strapping pin and can enter ROM download mode.
+Supplied-enclosure BOOT access has not been verified; opening it or a verified
+access hole may be necessary. EN plus the startup AP window remains an alternative
+without serial. There is no destructive button gesture or factory reset.
+See the full [network/recovery policy and physical checklist](../docs/networking.md).
 
 ## HTTP
 
@@ -120,7 +136,7 @@ buffer, no receive history and no radio work in HTTP handlers.
 ### First board test
 
 1. Confirm the PCB wiring against [hardware](../docs/hardware.md), attach the
-   antenna and flash this build. Open the serial monitor and the HTTP page.
+   antenna and flash this build. Open the HTTP page; serial diagnostics are optional.
 2. Check `ready: true`, `error: 0` and a recognized CC1101 version. If initialization
    fails, check the board revision, power and wiring before changing the profile.
 3. Leave the existing Touch E3/radiator system operating. Wait for normal traffic;
@@ -251,7 +267,7 @@ An explicitly empty, null, non-string, malformed or invalid frame is rejected.
 An explicit `clock_seconds` override remains for compatibility/tests only; it
 takes precedence over device time. The normal page omits it.
 202 means queued; 400 means invalid data/template; 409 means time unavailable, busy, radio
-unavailable, no saved pairing or no learned/saved state. HTTP and future Matter command handling share
+unavailable, no saved pairing or no learned/saved state. HTTP and MQTT command handling share
 the portable command state machine. Target limits/quantization are the same as
 for previews. Off transmits raw 320 and is shown as a requested target of 0 °C.
 

@@ -29,7 +29,7 @@ firmware revision. Populate the board configuration from those sources:
 - CC1101 GDO interrupt/data connections used by the implementation.
 - User button and LED pins and polarity.
 - USB flashing interface, reset and boot procedure.
-- Flash size and partition constraints for the selected Matter build.
+- Actual flash size and partition constraints before the separate OTA milestone.
 
 Pin assignments are intentionally not guessed here. Check the original
 [manufacturer-linked firmware](https://github.com/IMMRMKW/ramses_esp) against the
@@ -54,9 +54,49 @@ The radio adapter uses the manufacturer's
 | GDO2 | 14 |
 
 The received PCB revision is still unverified: compare it with the manufacturer
-reference before flashing. Reception polls the FIFO; short-frame transmit completion uses GDO2. Button and LED behaviour are not implemented.
+reference before flashing. Reception polls the FIFO; short-frame transmit completion uses GDO2.
+Runtime BOOT recovery uses GPIO9, active-low with pull-up. LED behavior is not implemented.
 
 RadioLib 7.3.0 is pinned by commit in the component manifest. The small HAL uses
 ESP-IDF's public GPIO/SPI drivers because RadioLib's bundled ESP-IDF example HAL
 supports the original ESP32 only. `/api/radio` reports initialization status and
 CC1101 version; radio initialization failure leaves HTTP available.
+
+## BOOT / EN reference and physical acceptance (pending)
+
+The manufacturer-linked IMMRMKW/ramses_esp revision
+[`301bbbc4fe46b9c7e35e681aebc2a785cea89e76`](https://github.com/IMMRMKW/ramses_esp/tree/301bbbc4fe46b9c7e35e681aebc2a785cea89e76)
+identifies FUNC as GPIO9 in `components/ramses-buttons/include/ramses_buttons.h`
+and `Kconfig.projbuild`; `ramses_buttons.c` enables its pull-up and reports levels.
+`main/host.c` restarts on release after its configured 15-second hold
+(`sdkconfig.defaults`). Its separate five-second Zigbee reset/re-pair gesture is
+not Wi-Fi recovery. Cleverbox reuses only the verified mapping and deliberate
+hold/release interaction, with its own non-destructive runtime five-second policy.
+
+EN is hardware reset, not an application GPIO. GPIO9 is a boot-strapping pin:
+**do not hold BOOT across EN/power-on** for recovery; that can enter ROM download
+mode. No EN-versus-power-removal detection is promised. Supplied-enclosure BOOT
+access is **unverified**; opening the enclosure or a verified access hole may be
+necessary. EN plus the startup AP window remains available without serial.
+
+Hardware checklist (software tests do not establish these):
+
+- Record PCB revision; verify GPIO9 is high when released and low when pressed,
+  with pull-up, and check normal boot with BOOT released.
+- After normal boot/release, hold BOOT for at least five seconds and release:
+  join **Cleverbox**, WPA2 password **cleverbox**, open **http://192.168.4.1/**.
+  Check a short press does nothing and long/stuck-low holds do not repeat.
+- While STA/MQTT are connected, check recovery retains STA operation and AP
+  access beyond 60 seconds and through DHCP renewal. Check Finish recovery and
+  successful explicit save; reconnect alone must not release the latch.
+- Press EN and separately power-cycle with BOOT released: setup survives,
+  recovery latch clears, startup AP uses the same credentials and no pairing or
+  heating command is sent. Never claim boot-time held-low tests prove normal boot.
+- Inspect actual enclosure access before suggesting a hole location. Verify BOOT
+  can be operated safely; otherwise use EN and the startup AP window.
+- Complete first setup and recovery on a phone without serial, including manual
+  URL entry, remaining connected to an AP without internet, AP/STA channel changes,
+  wrong credentials and absent-router recovery. Check confirmed Wi-Fi-only forget
+  preserves radiators/templates, MQTT, timezone and discovery cleanup.
+- With real radiators, verify admitted work continues through runtime recovery
+  and no recovery action itself sends RF. Record Wi-Fi/flash/RF results separately.

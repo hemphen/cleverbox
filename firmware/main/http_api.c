@@ -393,6 +393,9 @@ static esp_err_t network_status_page(httpd_req_t *r) {
     cJSON_AddBoolToObject(j, "configured", s.configured);
     cJSON_AddBoolToObject(j, "persistence_uncertain", s.persistence_uncertain);
     cJSON_AddBoolToObject(j, "recovery_ap", s.recovery_ap);
+    cJSON_AddBoolToObject(j, "manual_recovery", s.manual_recovery);
+    cJSON_AddStringToObject(j, "recovery_error", s.recovery_error);
+    cJSON_AddNumberToObject(j, "event_queue_overflows", s.event_queue_overflows);
     cJSON_AddNumberToObject(j, "attempts", s.attempts);
     cJSON_AddStringToObject(j, "ip", s.ip);
     cJSON_AddStringToObject(j, "error", s.error);
@@ -429,14 +432,17 @@ static esp_err_t network_action(httpd_req_t *r) {
         strlen(ssid) < sizeof(credentials.ssid) && strlen(password) < sizeof(credentials.password)) {
         strcpy(credentials.ssid, ssid); strcpy(credentials.password, password);
         err = network_configure(&credentials);
-    } else if (cJSON_IsObject(j) && action && !strcmp(action, "forget") && cJSON_GetArraySize(j) == 1)
+    } else if (cJSON_IsObject(j) && action && !strcmp(action, "forget") && cJSON_GetArraySize(j) == 2 &&
+               cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(j, "confirm")))
         err = network_forget();
+    else if (cJSON_IsObject(j) && action && !strcmp(action, "finish_recovery") && cJSON_GetArraySize(j) == 1)
+        err = network_finish_recovery();
     // Avoid retaining the password in the parsed request after admission.
     cJSON *secret = cJSON_GetObjectItemCaseSensitive(j, "password");
     if (cJSON_IsString(secret)) memset(secret->valuestring, 0, strlen(secret->valuestring));
     memset(&credentials, 0, sizeof(credentials)); cJSON_Delete(j);
     if (err == ESP_ERR_INVALID_ARG)
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use configure with SSID (1–32 bytes) and personal-network password (8–63 printable ASCII characters), or forget");
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use configure with SSID (1–32 bytes) and personal-network password (8–63 printable ASCII characters), finish_recovery, or forget with confirm:true");
     if (err != ESP_OK) {
         httpd_resp_set_status(r, "409 Conflict");
         return httpd_resp_sendstr(r, "Network setup busy or unavailable; check status and retry");

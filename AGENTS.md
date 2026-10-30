@@ -24,7 +24,8 @@ back to the source project. Do not expand this repository into a research archiv
 - Do not duplicate protocol specifications, captures, conversation history or
   general Matter/ESP-IDF documentation.
 - Use C/C++, ESP-IDF and RadioLib for firmware. Keep the host adapter small.
-  Add MQTT/HA discovery after setup/network milestones; Matter is optional later.
+  Keep MQTT/HA and local HTTP as product interfaces; OTA is a separate milestone.
+  Do not add Matter/Thread/Zigbee stacks or reserve resources for them.
   Pin dependencies when introduced. Use MIT for project code.
 - Build only components required by the current milestone. Avoid speculative
   abstractions for other hardware, transports or providers.
@@ -36,7 +37,7 @@ back to the source project. Do not expand this repository into a research archiv
   chronology of attempts. Remove abandoned alternatives.
 
 Build and test local HTTP, the persistent registry and independent per-radiator
-delivery before home Wi-Fi/device time, MQTT transport and then HA discovery. Keep Matter optional later.
+delivery before home Wi-Fi/device time, MQTT transport and then HA discovery.
 All interfaces must use the same protocol component and command handling.
 Host simulation must reuse production receive/learning and state machines; keep
 synthetic controller fixtures explicit and separate from radiator reports. Never
