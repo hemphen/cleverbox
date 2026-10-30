@@ -82,6 +82,25 @@ static void recovery_tests(network_credentials a, network_credentials b) {
     assert(p.status.manual_recovery && !ap_on && !strcmp(p.status.recovery_error, "ap_open_failed"));
     ap_error = ESP_OK; network_policy_tick(&p, 61001); assert(!ap_on);
     network_policy_tick(&p, 61002); assert(ap_on && !strcmp(p.status.recovery_error, "none"));
+    // AP recovery through disconnect/reconnect must clear a stale manual error,
+    // without releasing the latch or changing the saved Wi-Fi configuration.
+    for (unsigned fail_disconnect = 0; fail_disconnect < 2; ++fail_disconnect) {
+        network_policy_init(&p, platform, &a, false, 0); ip(&p, 1);
+        network_policy_tick(&p, 60001); assert(!ap_on);
+        n = saves; f = forgets;
+        ap_error = ESP_FAIL; network_policy_recover(&p, 60002);
+        assert(!strcmp(p.status.recovery_error, "ap_open_failed"));
+        if (!fail_disconnect) ap_error = ESP_OK;
+        network_policy_disconnected(&p, 60003);
+        assert(p.status.recovery_ap == !fail_disconnect);
+        assert(!strcmp(p.status.recovery_error, fail_disconnect ? "ap_open_failed" : "none"));
+        // If disconnect's opening also failed, start() opens it on reconnect.
+        ap_error = ESP_OK; network_policy_tick(&p, 65003); ip(&p, 65004);
+        network_policy_tick(&p, 125004);
+        assert(p.status.state == NET_CONNECTED && p.status.recovery_ap && p.status.manual_recovery);
+        assert(!strcmp(p.status.recovery_error, "none"));
+        assert(saves == n && forgets == f && !memcmp(&p.saved, &a, sizeof(a)));
+    }
     // Ordinary restart forgets only the volatile latch and keeps the saved setup.
     network_policy_init(&p, platform, &a, false, 0);
     assert(!p.status.manual_recovery && p.status.configured && ap_on);

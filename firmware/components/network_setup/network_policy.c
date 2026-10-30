@@ -15,7 +15,12 @@ bool network_credentials_valid(const network_credentials *c) {
 }
 static void ap(network_policy *p, bool enabled) {
     if (p->status.recovery_ap == enabled) return;
-    if (p->platform.ap(enabled) == ESP_OK) p->status.recovery_ap = enabled;
+    if (p->platform.ap(enabled) == ESP_OK) {
+        p->status.recovery_ap = enabled;
+        // Any successful opening resolves the manual recovery failure, including
+        // ordinary disconnect/reconnect paths that do not retry the gesture.
+        if (enabled) p->status.recovery_error = "none";
+    }
     else p->status.error = "platform_failed";
 }
 static void failed_attempt(network_policy *p, int64_t now);
