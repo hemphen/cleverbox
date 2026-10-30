@@ -149,6 +149,10 @@ bool rf_live_state(rf_frame *out, const rf_frame *state, const rf_frame *report,
     memcpy(f.bytes + 1, controller, 4);
     memcpy(f.bytes + 6, radiator, 4);
     memcpy(f.bytes + 14, report->bytes + 16, 2); // 4B, including unavailable sentinel
+    // 97 echoes the answered report's DF: byte 0, and DF byte 2 bit 0 (heating
+    // now) into 97 byte 2 bit 0. 97's other bits stay from the template.
+    f.bytes[31] = report->bytes[11];
+    f.bytes[33] = (uint8_t)((f.bytes[33] & 0xfe) | (report->bytes[13] & 1));
     // Prototype policy: echo current E1; do not invent a thermostat/PID output.
     memcpy(f.bytes + 39, report->bytes + 23, 4);
     memset(f.bytes + 44, 0, 4); // DA is zero in the documented controller states.

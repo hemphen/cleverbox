@@ -150,11 +150,12 @@ Open questions to answer here, using genuine captured templates only:
 
 - [ ] Does a template captured from the Touch E3 work after pairing under a new controller address?
 - [ ] Does a saved template stop working over days?
+- [ ] After a change made at the radiator itself, its next report has `DF` byte 1 bit 0 set. Does a command answering that report behave normally? The Touch E3 was never observed sending a state frame in reply to such a report.
 
-Do not substitute values for `97` or `5B` during acceptance. A `matched` result
-would not show that a substitute is harmless. Constructing these fields is a
-separate protocol investigation with a known-good baseline and a recovery
-procedure; its questions belong in clevertouch-protocol (see
+Do not substitute values for template fields during acceptance. A `matched`
+result would not show that a substitute is harmless. Building a frame without a
+template is a separate protocol investigation with a known-good baseline and a
+recovery procedure; its questions belong in clevertouch-protocol (see
 [AGENTS.md](../AGENTS.md#protocol)).
 
 ### 6. Two radiators and overlapping traffic

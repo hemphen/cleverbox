@@ -16,7 +16,8 @@ ESP32-C6 + CC1101 board. Read [README.md](README.md) and
   defines it.
 - When hardware contradicts the specification, record a short finding and take
   the protocol question to clevertouch-protocol.
-- Never use the synthetic `97`/`5B` values as defaults in physical firmware.
+- Never use the synthetic fixture's template values (such as `5B`) as defaults
+  in physical firmware.
 
 ## Scope
 

@@ -32,9 +32,10 @@ frame with the new target and mode. A command counts as `matched` only when a
 later report shows the requested values.
 
 Each controller-state frame is built from a **template**: a 59-byte frame for
-that radiator captured from real traffic. Two of its fields (`97` and `5B`) have
-no known construction rule, so they are copied from the template unchanged. See
-[architecture](docs/architecture.md#templates).
+that radiator captured from real traffic. The fields with no known meaning
+(`45`, `3B`, `4C`, `8E`, `CC` and part of `97`) and the Boost time (`5B`) come
+from the template; the rest comes from the fresh report, the command and the
+clock. See [architecture](docs/architecture.md#templates).
 
 ## Known limitations
 
@@ -108,7 +109,9 @@ http://192.168.4.1/ and enter your home Wi-Fi. Then follow the
 
 The radio protocol is specified in
 [clevertouch-protocol](https://github.com/hemphen/clevertouch-protocol/tree/main/docs/radiator-rf)
-(implemented against revision `b70fab79300544a62ee2606bd4055cdb81763fd4`).
+(implemented against revision `b70fab79300544a62ee2606bd4055cdb81763fd4`;
+the `97`, `5B` and `DF` readings follow `ac6e945` on branch
+`decode-boost-and-heating`).
 The reference decoder is in
 [clevertouch-radio](https://github.com/hemphen/clevertouch-radio).
 
