@@ -10,6 +10,14 @@ static int subscription_id, last_subscription_id, starts, subscribe_mode;
 
 static char publications[64][16384];
 static size_t head, count;
+// Socket-boundary model: an unacknowledged QoS1 packet belongs to the client,
+// survives connection loss and may retransmit until that client is destroyed.
+static char outbox_topic[MQTT_TOPIC_BYTES], outbox_payload[MQTT_DISCOVERY_PAYLOAD_BYTES];
+static int outbox_mid, outbox_discarded, replay_attempts, replayed;
+int host_mqtt_outbox_pending(void) { return outbox_mid != 0; }
+int host_mqtt_outbox_discarded(void) { return outbox_discarded; }
+int host_mqtt_outbox_replay_attempts(void) { return replay_attempts; }
+int host_mqtt_outbox_replayed(void) { return replayed; }
 void mqtt_platform_lock(void) {}
 void mqtt_platform_unlock(void) {}
 static esp_err_t start(const mqtt_settings *s, const char *id, const char *will) {
@@ -23,7 +31,18 @@ static bool publish(const char *topic, const char *payload, bool retain) {
     if (count == 64) head = (head+1)%64; else ++count;
     cJSON_PrintPreallocated(j, publications[index], sizeof(publications[index]), false); cJSON_Delete(j); return true;
 }
-static void stop(const char *will) { if (connected) publish(will, "offline", true); started = connected = false; }
+static void stop(const char *will) {
+    if (connected) publish(will, "offline", true);
+    if (outbox_mid) ++outbox_discarded;
+    outbox_mid = 0; started = connected = false;
+}
+int host_mqtt_replay_outbox(void) {
+    ++replay_attempts;
+    if (outbox_mid && connected && publish(outbox_topic, outbox_payload, true)) {
+        ++replayed; mqtt_bridge_puback(outbox_mid); outbox_mid = 0;
+    }
+    return 1;
+}
 static int subscribe(const char *topic) {
     (void)topic; if (!connected || subscribe_mode == 2) return -1;
     last_subscription_id = ++subscription_id;
@@ -42,6 +61,9 @@ static int publish_confirmed(const char *topic, const char *payload) {
     if (confirmed_mode == 1 || !publish(topic, payload, true)) return -1;
     int id = ++subscription_id;
     if (confirmed_mode != 2) mqtt_bridge_puback(id);
+    else if (!outbox_mid) {
+        strcpy(outbox_topic, topic); strcpy(outbox_payload, payload); outbox_mid = id;
+    }
     return id;
 }
 static void nonce(char out[33]) {

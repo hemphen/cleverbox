@@ -37,7 +37,9 @@ static esp_err_t start(const mqtt_settings *s, const char *id, const char *will)
                         .authentication.password = s->username[0] ? s->password : NULL},
         .session = {.last_will = {.topic = will, .msg = "offline", .qos = 1, .retain = true},
                     .disable_clean_session = false, .keepalive = 30, .protocol_ver = MQTT_PROTOCOL_V_3_1_1},
-        .network = {.reconnect_timeout_ms = 5000, .timeout_ms = 1000},
+        // The owner recreates clients after loss; automatic reconnect could
+        // retransmit the old QoS1 outbox before that owner gets a task turn.
+        .network = {.disable_auto_reconnect = true, .reconnect_timeout_ms = 5000, .timeout_ms = 1000},
         .buffer = {.size = 256, .out_size = 1024},
         .outbox.limit = MQTT_DISCOVERY_PAYLOAD_BYTES + 1024,
         .task.stack_size = 6144,

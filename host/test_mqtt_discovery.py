@@ -106,6 +106,48 @@ def run(directory):
     finally: app.stop()
 
 
+def disconnect_outbox(directory, fast_reconnect=False):
+    storage=Path(directory)/('fast-outbox.bin' if fast_reconnect else 'outbox.bin')
+    storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    app=App(storage)
+    try:
+        app.http('/api/mqtt',dict(action='configure',host='broker.test',port=1883,username='',password='',enabled=True),202)
+        app.http('/api/network',dict(action='configure',ssid='synthetic',password='synthetic'),202)
+        app.sim('network_event',name='started'); app.sim('network_event',name='got_ip'); app.advance(100); connect(app)
+        app.sim('mqtt_confirmed_mode',mode=2)
+        app.http('/api/mqtt',dict(action='discovery_enable'),202); app.advance(500)
+        rows=[r for r in publications(app) if r['topic'].startswith('homeassistant/')]
+        assert len(rows)==1 and 'unique_id' in rows[0]['payload']['components']['mode']
+        assert app.http('/api/simulation/mqtt-client')['outbox_pending']==1
+        starts=app.http('/api/simulation/mqtt-client')['starts']
+        app.sim('mqtt_connection',connected=False)
+        if fast_reconnect:
+            # Callback coalescing cannot hide a disconnect from the owner.
+            app.sim('mqtt_connection',connected=True)
+        app.http('/api/radiators',dict(action='remove',id=1),202); app.advance(100)
+        app.sim('mqtt_confirmed_mode',mode=0)
+        # Allow a surviving old client to reconnect before the owner retries.
+        if not app.http('/api/simulation/mqtt-client')['outbox_pending']:
+            assert not app.http('/api/mqtt')['connected']
+            app.advance(4900)
+            assert app.http('/api/simulation/mqtt-client')['starts']==starts
+            app.advance(200)
+        connect(app); app.advance(1000)
+        rows=[r for r in publications(app) if r['topic'].startswith('homeassistant/')]
+        assert rows and all(all(set(c)=={'platform'} for c in r['payload']['components'].values()) for r in rows)
+        app.advance(100); assert app.http('/api/mqtt')['discovery_pending']==0
+        # Try the stale retransmission AFTER successful removal. Old code retains
+        # and delivers this active config; client destruction must make it inert.
+        app.sim('mqtt_replay_outbox'); app.advance(100)
+        assert not any(r['topic'].startswith('homeassistant/') for r in publications(app))
+        state=app.http('/api/simulation/mqtt-client')
+        assert state['replay_attempts']==1 and state['replayed']==0
+        assert state['outbox_pending']==0 and state['outbox_discarded']==1
+        assert state['starts']==starts+1
+        assert app.http()['simulation_tx']==[]
+    finally: app.stop()
+
+
 def payload_limit(directory):
     path=Path(directory)/'limit.bin'; path.write_bytes(bytes.fromhex('01F1010203F1040506'))
     app=App(path)
@@ -123,5 +165,10 @@ def payload_limit(directory):
 
 if __name__=='__main__':
     with tempfile.TemporaryDirectory() as directory:
-        (payload_limit if os.environ.get('CLEVERBOX_DISCOVERY_LIMIT_TEST') else run)(directory)
+        if os.environ.get('CLEVERBOX_DISCOVERY_LIMIT_TEST'):
+            payload_limit(directory)
+        else:
+            run(directory)
+            disconnect_outbox(directory)
+            disconnect_outbox(directory,fast_reconnect=True)
     print('Discovery boundary: bounded payload, stable IDs, birth, publish failure/PUBACK timeout, restart/offline cleanup, freshness, full journal and corruption: passed')

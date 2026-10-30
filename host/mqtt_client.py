@@ -5,7 +5,6 @@ Requires paho-mqtt==2.1.0. Call poll() from the simulator owner, never loop_star
 """
 import ctypes as C
 import secrets
-import time
 import paho.mqtt.client as mqtt
 
 
@@ -30,7 +29,7 @@ class Ops(C.Structure):
 
 class BrokerClient:
     def __init__(self,lib):
-        self.lib=lib; self.client=None; self.connected=False; self.reconnect_at=0
+        self.lib=lib; self.client=None; self.connected=False
         self.ops=Ops(START(self.start),STOP(self.stop),SUBSCRIBE(self.subscribe),PUBLISH(self.publish),NONCE(self.nonce),PUBLISH_CONFIRMED(self.publish_confirmed))
         lib.mqtt_bridge_init.argtypes=[Ops,C.c_char_p]
         lib.mqtt_bridge_input.argtypes=[C.c_char_p,C.c_size_t,C.c_char_p,C.c_size_t,C.c_size_t,C.c_size_t,C.c_bool]
@@ -44,20 +43,18 @@ class BrokerClient:
         if s.username: self.client.username_pw_set(s.username.decode(),s.password.decode())
         self.client.will_set(will.decode(),'offline',qos=1,retain=True)
         self.client.connect_timeout=1
-        self.reconnect_at=time.monotonic()+5
         self.client.on_subscribe=self.on_subscribe
         self.client.on_publish=lambda c,u,mid,r,p: self.lib.mqtt_bridge_puback(mid)
         self.client.on_connect=self.on_connect; self.client.on_disconnect=self.on_disconnect; self.client.on_message=self.on_message
-        self.client.reconnect_delay_set(5,5)
         try: self.client.connect(s.host.decode(),s.port,30)
         except OSError: self.client=None; return -1
         return 0
 
     def on_connect(self,client,userdata,flags,reason,properties):
-        self.connected=reason==0; self.reconnect_at=time.monotonic()+5; self.lib.mqtt_bridge_connection(self.connected)
+        self.connected=reason==0; self.lib.mqtt_bridge_connection(self.connected)
 
     def on_disconnect(self,client,userdata,flags,reason,properties):
-        self.connected=False; self.reconnect_at=time.monotonic()+5; self.lib.mqtt_bridge_connection(False)
+        self.connected=False; self.lib.mqtt_bridge_connection(False)
 
     def on_message(self,client,userdata,message):
         topic=message.topic.encode(); payload=message.payload
@@ -95,8 +92,6 @@ class BrokerClient:
 
     def poll(self):
         if self.client:
-            if not self.connected and time.monotonic() >= self.reconnect_at:
-                self.reconnect_at=time.monotonic()+5
-                try: self.client.reconnect()
-                except OSError: return
+            # Client recreation/backoff belongs to the production C owner.
+            # Reusing this Paho object would also preserve its QoS1 outbox.
             self.client.loop(timeout=0.001)

@@ -82,7 +82,7 @@ def run(directory):
         assert app.http('/api/mqtt')['connected'] and not app.http('/api/mqtt')['subscription_error']
         assert any(r['payload']=='online' for r in publications(app))
         app.sim('mqtt_subscribe_mode',mode=0)
-        app.sim('mqtt_connection',connected=False)
+        app.sim('mqtt_connection',connected=False); app.advance(5100)
         session=connect(app); rows=publications(app)
         assert app.http('/api/mqtt')['subscription_error']==0
         assert any(r['payload']=='online' and r['retain'] for r in rows)
@@ -143,7 +143,7 @@ def run(directory):
         assert app.http()['simulation_tx']==tx
         # Lost connection clears pending input before admission, including partial input.
         app.sim('mqtt_input',topic=f'{BASE}/radiators/1/set',payload=json.dumps(dict(session=new_session,request_id=1,mode=0,centi_c=2100)))
-        app.sim('mqtt_connection',connected=False); app.advance(100); new_session=connect(app)
+        app.sim('mqtt_connection',connected=False); app.advance(5100); new_session=connect(app)
         assert app.http()['simulation_tx']==tx
         # Queue pressure is bounded; no input admitted while disconnected.
         dropped=app.http('/api/mqtt')['dropped_input']

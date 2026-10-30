@@ -248,8 +248,10 @@ broker with anonymous access, real Paho MQTT 3.1.1 sockets and the production C
 MQTT service/HTTP/time/RF simulator. This test covers actual topics/JSON,
 admission/readback, duplicates, retained resubscription, graceful offline,
 abrupt-close last will, broker process restart and RF completion while offline.
-The Paho adapter has no routing policy; it reconnects at a five-second pace.
-The smoke test also explicitly reconnects after its forced socket loss. Firmware's ESP-MQTT paced reconnect is separate.
+The Paho adapter has no routing/reconnect policy. The production MQTT owner
+recreates both socket adapters after disconnect at a five-second pace, destroying
+any unacknowledged QoS-1 outbox before publishing newer discovery state. ESP-MQTT
+automatic reconnect is disabled; clean sessions alone do not remove that outbox.
 The optional Python dependency is pinned in the test instructions and is never
 imported into the physical firmware or ordinary simulator.
 

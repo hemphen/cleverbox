@@ -97,9 +97,8 @@ def run(directory):
         before_offline=len([p for t,p,r in messages if p=='offline'])
         adapter.client.socket().shutdown(socket.SHUT_RDWR)
         pump(lambda:len([p for t,p,r in messages if p=='offline'])>before_offline)
-        adapter.client.reconnect()
         previous=http('/api/mqtt')['session']
-        pump(lambda:http('/api/mqtt')['connected'] and http('/api/mqtt')['session']!=previous)
+        pump(lambda:http('/api/mqtt')['connected'] and http('/api/mqtt')['session']!=previous,timeout=10)
         assert http()['simulation_tx']==tx
         # Broker process loss/restart: RF finishes independently, no reconnect replay.
         new_session=http('/api/mqtt')['session']; lib.simulation_scenario(b'delayed')
@@ -115,10 +114,8 @@ def run(directory):
             try: observer.reconnect(); break
             except ConnectionRefusedError:
                 assert process.poll() is None and time.monotonic()<until; time.sleep(.02)
-        # Paho host adapter deliberately needs an explicit reconnect after loss;
-        # physical ESP-MQTT uses its configured paced reconnect internally.
-        adapter.client.reconnect()
-        pump(lambda:http('/api/mqtt')['connected'] and http('/api/mqtt')['session']!=new_session)
+        # The production owner recreates either adapter with a fresh outbox.
+        pump(lambda:http('/api/mqtt')['connected'] and http('/api/mqtt')['session']!=new_session,timeout=10)
         assert http()['simulation_tx']==tx
         http('/api/mqtt',dict(action='forget'),202); pump(lambda:not http('/api/mqtt')['configured'])
         assert http()['pairing']['saved'] and http('/api/time')['usable']

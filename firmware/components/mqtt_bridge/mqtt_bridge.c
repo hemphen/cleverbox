@@ -16,7 +16,7 @@
 static mqtt_client_ops client;
 static mqtt_settings settings, candidate;
 static mqtt_bridge_status status;
-static bool action_pending, link_connected, running;
+static bool action_pending, link_connected, running, reset_requested;
 static int discovery_action;
 static bool discovery_records;
 static unsigned link_epoch, owner_epoch;
@@ -56,7 +56,7 @@ static void update_settings_status(void) {
 void mqtt_bridge_init(mqtt_client_ops ops, const char bridge_id[13]) {
     client = ops; memset(&settings, 0, sizeof(settings)); memset(&status, 0, sizeof(status));
     memset(permits, 0, sizeof(permits)); memset(tracked, 0, sizeof(tracked)); memset(&assembly, 0, sizeof(assembly));
-    action_pending = link_connected = running = false; link_epoch = owner_epoch = 0;
+    action_pending = link_connected = running = reset_requested = false; link_epoch = owner_epoch = 0;
     input_head = input_count = 0; high_water = next_cookie = 0; retry_ms = state_ms = 0; session[0] = 0;
     subscription_id = suback_id = suback_qos = 0; suback_received = false;
     subscription_deadline = suback_ms = 0;
@@ -105,6 +105,9 @@ void mqtt_bridge_client_error(esp_err_t error) {
 void mqtt_bridge_connection(bool connected) {
     mqtt_platform_lock();
     link_connected = connected; ++link_epoch;
+    // Latch loss even if CONNECTED follows before the owner's next tick.
+    // Clean sessions do not clear the client's unacknowledged QoS1 outbox.
+    if (!connected) reset_requested = true;
     if (connected) status.client_error = ESP_OK;
     status.connected = false; status.session[0] = 0;
     status.broker_connected = connected; status.subscription_pending = false;
@@ -326,6 +329,9 @@ static void observations(void) {
 static void stop(void) {
     if (running) client.stop(availability);
     running = false; mqtt_bridge_connection(false); session[0] = 0; mqtt_discovery_disconnected();
+    // stop() has joined/destroyed the client and discarded its outbox. Its
+    // DISCONNECTED callback (and the explicit reset above) need no second stop.
+    mqtt_platform_lock(); reset_requested = false; mqtt_platform_unlock();
 }
 static void subscription_failed(int error) {
     stop(); // Clear partial/queued input and destroy the subscription outbox.
@@ -352,6 +358,12 @@ void mqtt_bridge_tick(void) {
         status.persistence_uncertain = err != ESP_OK;
         if (err == ESP_OK) { settings = change; update_settings_status(); }
         mqtt_platform_unlock(); memset(&change, 0, sizeof(change)); retry_ms = now();
+    }
+    mqtt_platform_lock(); bool reset = reset_requested; mqtt_platform_unlock();
+    if (reset) {
+        // Never issue a newer discovery configuration while an older client's
+        // QoS1 packet remains eligible for retransmission, even after link loss.
+        stop(); retry_ms = now()+MQTT_RETRY_MS; return;
     }
     network_status network; bool wifi = network_get_status(&network) == ESP_OK && network.state == NET_CONNECTED;
     if (!settings.configured || !settings.enabled || !wifi) { if (running) stop(); return; }

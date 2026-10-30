@@ -79,7 +79,7 @@ def main():
                     item=json.loads(row); item['payload']=json.loads(item['payload']) if item['payload'].startswith('{') else item['payload']; rows.append(item)
                 self.reply(200,json.dumps(rows),'application/json')
             elif args.test_clock and self.path == '/api/simulation/mqtt-client':
-                self.reply(200,json.dumps(dict(subscription_id=lib.host_mqtt_subscription_id(),starts=lib.host_mqtt_starts())),'application/json')
+                self.reply(200,json.dumps(dict(subscription_id=lib.host_mqtt_subscription_id(),starts=lib.host_mqtt_starts(),outbox_pending=lib.host_mqtt_outbox_pending(),outbox_discarded=lib.host_mqtt_outbox_discarded(),replay_attempts=lib.host_mqtt_outbox_replay_attempts(),replayed=lib.host_mqtt_outbox_replayed())),'application/json')
             else:
                 self.production(0, b'')
 
@@ -121,6 +121,8 @@ def main():
                     if not lib.host_mqtt_subscribe_mode(data['mode']): raise ValueError()
                 elif args.test_clock and action == 'discovery_storage_fault':
                     lib.host_discovery_storage_fault(data['mode'])
+                elif args.test_clock and action == 'mqtt_replay_outbox':
+                    lib.host_mqtt_replay_outbox()
                 elif args.test_clock and action == 'mqtt_confirmed_mode':
                     lib.host_mqtt_confirmed_mode(data['mode'])
                 elif args.test_clock and action == 'mqtt_suback' and type(data.get('id')) is int and type(data.get('qos')) is int:

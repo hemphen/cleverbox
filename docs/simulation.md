@@ -210,8 +210,9 @@ See the full [time policy and hardware checklist](time.md).
 `python host/serve.py --real-mqtt` opts into Paho 2.1.0 socket I/O in the same
 production application; broker setup still uses `/api/mqtt`, and RF/time/Wi-Fi
 boundaries are unchanged. Without this flag the existing fake-client adapter
-remains the default. The socket adapter reconnects at a five-second pace and
-contains no admission, decoding or delivery policy.
+remains the default. The production MQTT owner recreates the socket adapter at a five-second pace
+after disconnect; the old QoS-1 outbox is discarded. The adapter contains no
+admission, reconnect, decoding or delivery policy.
 
 `make test-home-assistant` validates the shipped HA package and actual helper/
 button service calls using pinned HA Core 2026.10.4 and a real Mosquitto process.
