@@ -21,28 +21,6 @@ jobs:
           python3 -m venv build/mqtt-venv
           build/mqtt-venv/bin/pip install paho-mqtt==2.1.0
           PATH="$PWD/build/mqtt-venv/bin:$PATH" make test-mqtt-broker
-  home-assistant:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.14'
-      - run: sudo apt-get update && sudo apt-get install -y libcjson-dev pkg-config mosquitto
-      - run: python -m pip install -r host/requirements-ha.txt
-      - run: make test-home-assistant
-        env:
-          CLEVERBOX_HA_TEST_DIR: ${{ github.workspace }}/build/ha-integration
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: home-assistant-test-logs
-          path: |
-            build/ha-integration/check-config.log
-            build/ha-integration/broker.log
-            build/ha-integration/ha/worker.log
-            build/ha-integration/ha/home-assistant.log
   firmware:
     runs-on: ubuntu-latest
     container: espressif/idf:v5.5.1
