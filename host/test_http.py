@@ -132,7 +132,8 @@ def saved_state_workflow(directory):
         assert app.advance(1)['command']['phase'] == 'matched'
         # A command owns its explicit override even when a new frame is learned
         # while waiting for the fresh report. The override never reaches flash.
-        override = changed_frame(changed_frame(STATE, 31), 4)
+        # 97 byte 1 (offset 32) is template-owned; byte 0 and byte 2 bit 0 echo DF.
+        override = changed_frame(changed_frame(STATE, 32), 4)
         app.command(state=override)
         app.advance(1)
         newer = changed_frame(STATE, 49)
@@ -163,7 +164,7 @@ def saved_state_workflow(directory):
         assert s['command']['phase'] == 'idle' and s['command']['template_source'] == 'saved'
         assert s['simulation_tx'] == [] and 'observed' not in s
         # Import-and-save accepts the historic manual source policy, without RX/TX.
-        imported = changed_frame(changed_frame(STATE, 4), 31)
+        imported = changed_frame(changed_frame(STATE, 4), 32)  # 97 byte 1: template-owned
         app.http('/api/controller-state', {'action': 'import', 'state': imported}, 202)
         s = app.advance(1)
         assert s['command']['save_status'] == 'succeeded' and s['simulation_tx'] == []

@@ -125,18 +125,23 @@ saves a supplied frame. `clear` removes both saved and learned templates.
 | 11–12, 17, 19–20 | `45`, `3B`, `4C` | Template |
 | 14–15 | `4B` measured temperature | Copied from the fresh report, including `084C` (unavailable) |
 | 22–24, 26–29 | `8E`, `CC` | Template |
-| 31–33 | `97` | Template. No known construction rule. |
+| 31–33 | `97` | Echo of the fresh report's `DF`: byte 0 copied, and `DF` byte 2 bit 0 (heating now) into byte 2 bit 0. Byte 1 and the rest of byte 2 from the template |
 | 35–37 | `94` target and mode | Raw target `320 + 18 × °C` rounded (tenths of °F); Off sends raw 320. Mode byte 0 Comfort, 1 Off, 2 Frost, 3 Eco |
 | 39–42 | `E1` | Copied from the fresh report |
 | 44–47 | `DA` | Zero |
-| 49–50 | `5B` | Template. No known construction rule; varies slightly over time. |
+| 49–50 | `5B` Boost time | Template. Minutes; the next Boost's duration, or the time left during a Boost |
 | 52–54 | `B2` clock | Local hour, minute, second (see [Time](#time)) |
 | 55–56 | Inner CRC | CRC-16/MODBUS over bytes 1–54, little-endian |
 | 57–58 | Outer CRC | CRC-16/CMS over bytes 0–56, big-endian |
 
-Non-Off targets must be 5–30 °C. Zeroing `DA` matches the controller frames in
-the protocol reference. Copying `E1` from the report is an assumption. Neither
-is confirmed on hardware.
+Non-Off targets must be 5–30 °C. Zeroing `DA` and echoing `DF` in `97` match
+the controller frames in the protocol reference. Copying `E1` from the report is
+an assumption. None of this is confirmed on hardware.
+
+The controller holds the Boost time and counts it down during a Boost.
+Cleverbox has no Boost mode and never changes `5B`, so the template's value only
+sets the next Boost's duration. A template captured during a Boost carries the
+time then left.
 
 ## Pairing
 
@@ -311,7 +316,7 @@ MQTT client (fake, or real sockets with `--real-mqtt`).
 
 Two invented radiators answer offers, binds, polls and valid state frames with
 replies and reports. Their report writer uses its own CRC code. The synthetic
-fixture and its `97`/`5B` values exist only in the simulator and tests.
+fixture and its template values exist only in the simulator and tests.
 
 Because the simulation is single-threaded, it does not exercise task
 scheduling, lock contention, stack depth or RF timing.

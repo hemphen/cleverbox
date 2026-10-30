@@ -43,8 +43,8 @@ static void complete_state_vectors(void)
     // Independently assembled from the fixed record order in protocol b70fab79,
     // with CRCs calculated by clevertouch-radio 7706b90c radiatord/decoder.py
     // crc16 (not this codec). Raw words = 320 + 18*C: 410,689,860,320,446,599.
-    // Clock 23:59:59 = 17 3B 3B; 97/5B and other opaque values are fixture data,
-    // NOT adopted defaults. See docs/architecture.md (Templates) for the byte mapping.
+    // Clock 23:59:59 = 17 3B 3B; 5B and the opaque values are fixture data, NOT
+    // adopted defaults. See docs/architecture.md (Templates) for the byte mapping.
     static const struct { rf_mode mode; int target; const char *hex; } vectors[] = {
         {RF_COMFORT, 500, "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494019A00E100641919DA000000005B0078B2173B3B4F1FC430"},
         {RF_COMFORT, 2050, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402B100E100641919DA000000005B0078B2173B3B26CE6271"},
@@ -57,6 +57,30 @@ static void complete_state_vectors(void)
         assert(rf_live_state(&out, &state, &report, controller, radiator,
                              vectors[i].mode, vectors[i].target, 86399));
         expect_frame(&out, vectors[i].hex);
+    }
+    // 97 echoes the answered report's DF (byte 0, and byte 2 bit 0 = heating),
+    // keeping the template's other bits and its 5B. Templates and reports are the
+    // vectors controller_state, state_boost, radiator_report and report_heating
+    // from protocol ac6e945 (decode-boost-and-heating); the report with DF byte 0
+    // = 00 and all expected frames were built by radiator-rf e509494
+    // controller_state(..., mode=0, setpoint_C=21.0, clock=(12,0,0)).
+    static const char *state_boost_hex = "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300594029604E100641919DA000000005B0075B20C000086A53F89";
+    static const char *report_heating_hex = "23F1040506C6F1010203DF203001404B02A88A02BA00E100641919DA000A000A0A47DD99311E";
+    static const char *report_df0_hex = "23F1040506C6F1010203DF003000404B02A88A02BA00E100641919DA000A000A0A475751B366";
+    const struct { const char *state, *report, *hex; } echoes[] = {
+        // Heating report: 97 byte 2 bit 0 set (203004 -> 203005).
+        {state_hex, report_heating_hex, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030059402BA00E100641919DA000000005B0078B20C000072C3640A"},
+        // Template that echoed a heating report, answering one that is not: the bit
+        // clears (203005 -> 203004) and the template's Boost time 117 (0075) stays.
+        {state_boost_hex, report_hex, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0075B20C00008FCE818F"},
+        // DF byte 0 differs from the template's 97 byte 0: the report wins.
+        {state_hex, report_df0_hex, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000970030049402BA00E100641919DA000000005B0078B20C00003B641056"},
+    };
+    for (size_t i = 0; i < sizeof(echoes) / sizeof(echoes[0]); ++i) {
+        rf_frame template_frame = parse(echoes[i].state), answered = parse(echoes[i].report);
+        assert(rf_live_state(&out, &template_frame, &answered, controller, radiator,
+                             RF_COMFORT, 2100, 43200));
+        expect_frame(&out, echoes[i].hex);
     }
     rf_frame empty = {0};
     assert(!rf_live_state(&out, &empty, &report, controller, radiator, RF_COMFORT, 2000, 0));
