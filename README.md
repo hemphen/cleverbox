@@ -124,6 +124,7 @@ The reference decoder is in
 | `make test-capacity` | `test` and `test-http` with a 3-radiator build |
 | `make test-discovery-limit` | Discovery with an undersized payload buffer |
 | `make test-mqtt-broker` | Real Mosquitto 2.x broker; needs `paho-mqtt==2.1.0` |
+| `make RADIOLIB_SOURCE=/path/to/checkout test-radiolib` | Real RadioLib CC1101 register/HAL probes; needs CMake ([details](docs/radiolib.md)) |
 | `make test-home-assistant` | Home Assistant Core 2026.10.4 with a real broker; needs `host/requirements-ha.txt` |
 | `make simulate` | Interactive simulator on http://127.0.0.1:8080 |
 

@@ -11,6 +11,12 @@
 #include "freertos/queue.h"
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+// Component-manager Git locks can retain a previous revision until explicitly
+// updated. Fail compilation if the build resolves a different release.
+static_assert(RADIOLIB_VERSION == 0x07080100, "Expected pinned RadioLib 7.8.1");
+#endif
+
 static IdfHal hal;
 static Module module(&hal, RADIO_CS, RADIO_GDO0, RADIOLIB_NC, RADIO_GDO2);
 static CC1101 radio(&module);
