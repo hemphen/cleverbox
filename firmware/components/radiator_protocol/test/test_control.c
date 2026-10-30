@@ -44,7 +44,7 @@ static void complete_state_vectors(void)
     // with CRCs calculated by clevertouch-radio 7706b90c radiatord/decoder.py
     // crc16 (not this codec). Raw words = 320 + 18*C: 410,689,860,320,446,599.
     // Clock 23:59:59 = 17 3B 3B; 97/5B and other opaque values are fixture data,
-    // NOT adopted defaults. See docs/controller-state.md for the byte mapping.
+    // NOT adopted defaults. See docs/architecture.md (Templates) for the byte mapping.
     static const struct { rf_mode mode; int target; const char *hex; } vectors[] = {
         {RF_COMFORT, 500, "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494019A00E100641919DA000000005B0078B2173B3B4F1FC430"},
         {RF_COMFORT, 2050, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402B100E100641919DA000000005B0078B2173B3B26CE6271"},

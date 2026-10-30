@@ -1,87 +1,86 @@
-# Instructions for agents and contributors
+# Instructions for contributors and coding agents
 
-## Build this appliance
+Cleverbox is firmware for one appliance: a local radiator bridge on the Elecram
+ESP32-C6 + CC1101 board. Read [README.md](README.md) and
+[docs/architecture.md](docs/architecture.md) first.
 
-Cleverbox implements a local radiator bridge targeting the Elecram
-ESP32-C6 + CC1101 Sub-GHz 855–925 MHz board. Keep changes specific to that
-hardware and purpose, with a small opt-in host simulation. Read README.md,
-docs/implementation.md and docs/libraries.md first.
+## Protocol
 
-Treat the protocol descriptions in hemphen/clevertouch-protocol as the working
-contract. Use hemphen/clevertouch-radio for implementation references when needed.
-Do not start a protocol audit, repeat reverse engineering, or block implementation
-because a documented finding is provisional. We are building a useful tool based
-on believed truths, not evaluating the research project.
+- Treat [clevertouch-protocol](https://github.com/hemphen/clevertouch-protocol)
+  as the specification. Use [clevertouch-radio](https://github.com/hemphen/clevertouch-radio)
+  as implementation reference.
+- Do not re-derive or audit the protocol here, and do not block work because a
+  finding is marked provisional.
+- When the specification leaves a detail open, choose the smallest reversible
+  assumption and document it next to the code. Do not claim the specification
+  defines it.
+- When hardware contradicts the specification, record a short finding and take
+  the protocol question to clevertouch-protocol.
+- Never use the synthetic `97`/`5B` values as defaults in physical firmware.
 
-If a necessary detail is unspecified, choose the smallest explicit, reversible
-implementation assumption and document it beside the relevant code. Do not invent
-a claim that the reference specifies it. If an actual implementation test produces
-contradictory evidence, record a concise finding and refer protocol investigation
-back to the source project. Do not expand this repository into a research archive.
+## Scope
 
-## Keep the repository small
+- C/C++ with ESP-IDF 5.5.1 and RadioLib. Pin every dependency.
+- Interfaces: local HTTP, MQTT and Home Assistant discovery. OTA is the next
+  milestone. No Matter, Thread or Zigbee, and no resources reserved for them.
+- No scheduler or schedule storage. Home Assistant owns schedules. Cleverbox
+  accepts immediate target and mode commands only.
+- Build only what the current milestone needs. No abstractions for other boards,
+  transports or vendors.
+- MIT license for project code.
 
-- Do not duplicate protocol specifications, captures, conversation history or
-  general Matter/ESP-IDF documentation.
-- Use C/C++, ESP-IDF and RadioLib for firmware. Keep the host adapter small.
-  Keep MQTT/HA and local HTTP as product interfaces; OTA is a separate milestone.
-  Do not add Matter/Thread/Zigbee stacks or reserve resources for them.
-  Pin dependencies when introduced. Use MIT for project code.
-- Build only components required by the current milestone. Avoid speculative
-  abstractions for other hardware, transports or providers.
-- Use the libraries and component boundaries in docs/libraries.md. Keep one
-  protocol codec, independent of chip/RTOS code and testable on a host.
-- Never commit credentials, Matter fabric secrets, real household addresses,
-  pairing codes, NVS dumps or private captures.
-- Make focused commits. Update documentation for resulting behaviour, not the
-  chronology of attempts. Remove abandoned alternatives.
+## Design rules
 
-Build and test local HTTP, the persistent registry and independent per-radiator
-delivery before home Wi-Fi/device time, MQTT transport and then HA discovery.
-All interfaces must use the same protocol component and command handling.
-Host simulation must reuse production receive/learning and state machines; keep
-synthetic controller fixtures explicit and separate from radiator reports. Never
-use synthetic 97/5B values as physical firmware defaults. Controller state is
-persisted only by explicit save/import actions; passive learning never writes flash.
+- One protocol codec, independent of RTOS and chip code and testable on a host.
+  HTTP and MQTT share the same admission and delivery code.
+- Keep requested settings separate from reported state. A transmitted frame or
+  an ack is not confirmation.
+- Report stale or unavailable data as such. Do not invent heating activity or
+  energy figures.
+- Radiator IDs are stable across restarts and never reused.
+- Nothing is sent at boot: no inclusion, polls or settings changes.
+- Templates reach flash only through the save and import actions. Passive learning
+  stays in RAM.
+- Use bounded queues, timeouts and retries. Do not block network or event loops.
+- Do not add a thermostat or PID loop without an explicit requirement.
+- Take pin assignments from the board schematic or manufacturer firmware and
+  record the source and board revision. Do not guess.
 
-## Scheduling
+## Host simulation
 
-Do not implement a scheduler, weekly-program storage or Matter schedule execution
-in Cleverbox. Scheduling belongs in HA because it is controller-side, not native
-to the radiators. Cleverbox accepts immediate target/mode commands. Reconsider
-only if the external protocol reference establishes a native radiator scheduling
-operation; even then, expose that operation rather than execute schedules here.
+The simulation must run the production receive, learning and state-machine
+code. Keep synthetic controller fixtures explicit and separate from radiator
+reports.
 
-## Implementation and validation
+## Tests
 
-- Do not guess the board's pin mapping. Obtain it from the board schematic or
-  manufacturer firmware and record its source and board revision.
-- Separate requested settings from radiator-reported state. A transmitted packet
-  or ack-shaped reply alone must not be labelled confirmed application.
-- Preserve stable radiator identities across restarts. Report stale or
-  unavailable state honestly; do not invent heating activity or energy readings.
-- No automatic inclusion or unsolicited settings changes at boot.
-- Use bounded queues, timeouts and retries; avoid blocking network/event loops.
-- Test codec behaviour with synthetic vectors from the public specification.
-  Test state transitions and error paths that affect command delivery.
-- State exactly what was built, tested in software and tested on hardware.
-  Do not describe planned behaviour as already working.
-- Do not assume the location of the radiator thermostat control loop. Implement
-  the reference behaviour and check continued operation during HA/network loss.
-  Do not add a new PID controller without an explicit requirement.
+- Test the codec with synthetic vectors from the public specification.
+- Test state transitions and error paths that affect command delivery.
+- State exactly what was built, what was tested in software and what was tested
+  on hardware. Do not describe planned behaviour as working.
 
-## CI validation
+## Repository hygiene
 
-The `Build` workflow checks protocol/HTTP/MQTT behavior and compiles firmware on
-pull requests and `main`. The full Home Assistant Core/broker integration is a
-separate workflow: weekly on `main`, manually dispatched to a chosen branch, or
-triggered by adding the `run-ha` label to a pull request. Reapply the label to
-rerun after changes; ordinary PR updates do not rerun the HA integration.
+- Never commit credentials, real household addresses, pairing codes, NVS dumps
+  or RF captures.
+- Do not copy the protocol specification or general ESP-IDF documentation into
+  this repository.
+- Make focused commits. Documentation describes current behaviour, not the
+  history of changes. Remove abandoned alternatives.
+- Write documentation in short, plain sentences. Put each fact in one place and
+  link to it rather than repeating it.
 
-For changes to MQTT command/session/state publishing, HA discovery or controls,
-registry identity/observations, time/network recovery, HA host code or integration
-tests, request `run-ha` on the final PR revision and await the result before
-claiming full HA validation. Keep a successful HA integration run in the release
-checklist. A green `Build` does not imply the HA integration was exercised.
+## CI
 
-No approval is required for routine implementation choices within this scope.
+The `Build` workflow runs the unit, host and broker tests and builds the
+firmware on pull requests and `main`. The `Home Assistant integration` workflow
+runs weekly on `main`, on manual dispatch, and when a pull request gets the
+`run-ha` label. Re-apply the label to rerun it after new commits.
+
+For changes to MQTT commands, sessions or state publishing, discovery or the HA
+package, registry identity or observations, time or network recovery, or the
+host HA code and tests: request `run-ha` on the final revision and wait for the
+result before claiming Home Assistant validation. A green `Build` does not
+cover Home Assistant.
+
+No approval is needed for routine implementation choices within this scope.

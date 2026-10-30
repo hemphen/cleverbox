@@ -1,151 +1,168 @@
 # Hardware
 
-## Fixed target and parts
+## Parts
 
-| Item | Purpose |
+| Item | Use |
 | --- | --- |
-| Elecram Sub-GHz 855–925 MHz Bridge, ESP32-C6 + CC1101 | Only supported controller board |
-| Matching 868 MHz antenna with the board's connector | Radiator radio |
-| Matching Elecram enclosure and fixings | Finished appliance |
-| 5 V USB-C supply and suitable cable | Operating power |
-| USB data cable and development computer | Flashing and serial diagnostics |
-| Purmo/LVI radiator supported by the reference protocol | Initial physical target |
-| Home Assistant with MQTT integration and a local broker | Controller for MQTT/discovery acceptance testing |
+| [Elecram Sub-GHz 855–925 MHz Bridge](https://elecram.com/products/esp32-c6-wifi-zigbee-to-855-925mhz-wireless) (ESP32-C6 + CC1101) | The only supported board |
+| 868 MHz antenna for the board's connector | Radio |
+| Elecram enclosure | Housing |
+| 5 V USB-C supply | Power |
+| USB data cable | Flashing and serial console (USB Serial/JTAG) |
+| Purmo/LVI radiator supported by the protocol reference | Target device |
+| MQTT broker and Home Assistant | For MQTT and discovery tests |
 
-Manufacturer: [board and accessories](https://elecram.com/products/esp32-c6-wifi-zigbee-to-855-925mhz-wireless).
-The quoted delivered price for board, antenna and enclosure was 621 SEK;
-this is planning context, not a maintained price or a complete power-supply quote.
+A Touch E3 controller and an SDR are useful on the bench but not needed in
+operation. The board has no Ethernet.
 
-A Touch E3 and SDR may be useful bench tools but are not runtime dependencies.
-The board has no built-in Ethernet or PoE. A PoE-to-USB power splitter would
-supply power only, not wired networking.
+## Wiring
 
-## Before the first firmware build
+From the manufacturer-linked firmware
+[IMMRMKW/ramses_esp at 301bbbc](https://github.com/IMMRMKW/ramses_esp/blob/301bbbc4fe46b9c7e35e681aebc2a785cea89e76/sdkconfig.defaults).
+Not yet checked against a received board; record the PCB revision before
+flashing.
 
-Record the received PCB revision and the manufacturer's matching schematic or
-firmware revision. Populate the board configuration from those sources:
+| Signal | ESP32-C6 GPIO |
+| --- | --- |
+| CC1101 SCLK | 6 |
+| CC1101 MOSI | 7 |
+| CC1101 MISO | 2 |
+| CC1101 CSn | 18 |
+| CC1101 GDO0 | 15 |
+| CC1101 GDO2 | 14 (transmit completion) |
+| BOOT button | 9 (active low, pull-up; strapping pin) |
 
-- CC1101 SPI SCLK, MOSI, MISO and chip-select.
-- CC1101 GDO interrupt/data connections used by the implementation.
-- User button and LED pins and polarity.
-- USB flashing interface, reset and boot procedure.
-- Actual flash size and partition constraints before the separate OTA milestone.
+SPI runs at 2 MHz on SPI2 without DMA. Reception polls the FIFO; no radio
+interrupts are used. The LED is not used.
 
-Pin assignments are intentionally not guessed here. Check the original
-[manufacturer-linked firmware](https://github.com/IMMRMKW/ramses_esp) against the
-received board. It is a wiring/driver reference, not the radiator application.
+## RF profile
 
-Fit the antenna before transmission. Use the public RF specification for initial
-radio parameters; keep the resulting CC1101 register profile in the firmware's
-board/radio configuration with its implementation assumptions.
+Taken from the protocol reference. Not yet verified on hardware.
 
-## Receive prototype wiring
+| Setting | Value |
+| --- | --- |
+| Frequency | 868.3 MHz |
+| Modulation | 2-FSK, 17 kHz deviation |
+| Bit rate | 1000/27 kbit/s (≈ 37.04 kbit/s) |
+| Receive bandwidth | 101.6 kHz |
+| Sync | `D391` repeated, 30 of 32 bits must match |
+| Preamble | 32 bits on transmit; preamble quality not checked on receive |
+| Coding | NRZ, no whitening, no hardware CRC or address filtering |
+| Packet mode | Infinite on receive (length and CRCs checked in software); fixed length on transmit |
+| Transmit power | 0 dBm |
 
-The radio adapter uses the manufacturer's
-[`sdkconfig.defaults` at 301bbbc](https://github.com/IMMRMKW/ramses_esp/blob/301bbbc4fe46b9c7e35e681aebc2a785cea89e76/sdkconfig.defaults):
+## Flash layout
 
-| CC1101 signal | ESP32-C6 GPIO |
-| --- | ---: |
-| SCLK | 6 |
-| MOSI | 7 |
-| MISO | 2 |
-| CSn | 18 |
-| GDO0 | 15 |
-| GDO2 | 14 |
+ESP-IDF's single factory app layout (`CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE`):
+NVS at `0x9000` (24 KiB), PHY data at `0xf000`, a 1500 KiB app at `0x10000`.
+It fits in 2 MiB. There are no OTA partitions. Confirm the board's flash size
+before planning OTA. If you build with an existing `sdkconfig`, set the same
+option there.
 
-The received PCB revision is still unverified: compare it with the manufacturer
-reference before flashing. Reception polls the FIFO; short-frame transmit completion uses GDO2.
-Runtime BOOT recovery uses GPIO9, active-low with pull-up. LED behavior is not implemented.
+## Building and flashing
 
-RadioLib 7.3.0 is pinned by commit in the component manifest. The small HAL uses
-ESP-IDF's public GPIO/SPI drivers because RadioLib's bundled ESP-IDF example HAL
-supports the original ESP32 only. `/api/radio` reports initialization status and
-CC1101 version; radio initialization failure leaves HTTP available.
+With ESP-IDF 5.5.1:
 
-## BOOT / EN reference and physical acceptance (pending)
+```sh
+cd firmware
+idf.py set-target esp32c6
+idf.py build
+idf.py -p PORT flash monitor
+```
 
-The manufacturer-linked IMMRMKW/ramses_esp revision
-[`301bbbc4fe46b9c7e35e681aebc2a785cea89e76`](https://github.com/IMMRMKW/ramses_esp/tree/301bbbc4fe46b9c7e35e681aebc2a785cea89e76)
-identifies FUNC as GPIO9 in `components/ramses-buttons/include/ramses_buttons.h`
-and `Kconfig.projbuild`; `ramses_buttons.c` enables its pull-up and reports levels.
-`main/host.c` restarts on release after its configured 15-second hold
-(`sdkconfig.defaults`). Its separate five-second Zigbee reset/re-pair gesture is
-not Wi-Fi recovery. Cleverbox reuses only the verified mapping and deliberate
-hold/release interaction, with its own non-destructive runtime five-second policy.
+Or download the `cleverbox-esp32c6` artifact from a CI run, extract it and
+flash from its `build` directory:
 
-EN is hardware reset, not an application GPIO. GPIO9 is a boot-strapping pin:
-**do not hold BOOT across EN/power-on** for recovery; that can enter ROM download
-mode. No EN-versus-power-removal detection is promised. Supplied-enclosure BOOT
-access is **unverified**; opening the enclosure or a verified access hole may be
-necessary. EN plus the startup AP window remains available without serial.
+```sh
+python -m esptool --chip esp32c6 --port PORT write_flash @flash_args
+```
 
-Hardware checklist (software tests do not establish these):
+Flashing a new build keeps NVS (pairings, templates, settings).
 
-- Record PCB revision; verify GPIO9 is high when released and low when pressed,
-  with pull-up, and check normal boot with BOOT released.
-- After normal boot/release, hold BOOT for at least five seconds and release:
-  join **Cleverbox**, WPA2 password **cleverbox**, open **http://192.168.4.1/**.
-  Check a short press does nothing and long/stuck-low holds do not repeat.
-- While STA/MQTT are connected, check recovery retains STA operation and AP
-  access beyond 60 seconds and through DHCP renewal. Check Finish recovery and
-  successful explicit save; reconnect alone must not release the latch.
-- Press EN and separately power-cycle with BOOT released: setup survives,
-  recovery latch clears, startup AP uses the same credentials and no pairing or
-  heating command is sent. Never claim boot-time held-low tests prove normal boot.
-- Inspect actual enclosure access before suggesting a hole location. Verify BOOT
-  can be operated safely; otherwise use EN and the startup AP window.
-- Complete first setup and recovery on a phone without serial, including manual
-  URL entry, remaining connected to an AP without internet, AP/STA channel changes,
-  wrong credentials and absent-router recovery. Check confirmed Wi-Fi-only forget
-  preserves radiators/templates, MQTT, timezone and discovery cleanup.
-- With real radiators, verify admitted work continues through runtime recovery
-  and no recovery action itself sends RF. Record Wi-Fi/flash/RF results separately.
+**Do not hold BOOT while resetting or powering on.** GPIO9 is a strapping pin
+and the chip may enter ROM download mode.
 
-## Overlapping RX and TX acceptance (pending)
+## Bring-up checklist
 
-Fake FIFO/count/time tests run the production worker but do not model CC1101
-RF timing. No physical overlap test has been performed. Use the
-[transport arbitration policy](../firmware/README.md#receivetransmit-arbitration)
-when interpreting these checks:
+Run the stages in order. Record results per stage, separately from software
+test results. Keep household addresses, templates and captures out of the
+repository.
 
-1. Verify the received PCB revision/wiring and attach the antenna. Use two paired
-   radiators with explicit same-device controller templates, a broker/HA and an
-   independent receiver/capture tool with monotonic timestamps. Keep private
-   addresses, templates and captures out of commits. Disconnect competing
-   controllers during live control; use a controlled reference transmitter for
-   overlapping traffic where available.
-2. Record the pinned RadioLib commit and dump/compare CC1101 registers before RX,
-   during fixed-length TX and after RX restoration against the previous build.
-   Confirm unchanged 868.3 MHz, 1000/27 kbit/s, 17 kHz deviation, 101.6 kHz RX
-   bandwidth, NRZ/no whitening/no hardware CRC/address filtering, repeated D391
-   sync, preamble policy, 0 dBm TX and infinite RX/fixed-length TX. Independently
-   compare poll/offer/bind/state payloads and both software CRCs; no new 97/5B rules.
-3. Establish a baseline with no intentional overlaps. Repeat at several relative
-   offsets: queue B's poll/state while A's report is beginning, midway through its
-   envelope and ending. Also overlap an offer and a delayed bind with unrelated
-   traffic. Capture RX byte arrival, final count checks, standby/TX start and RX
-   re-entry using temporary bench instrumentation/logic-analyser SPI traces.
-   Separate FIFO-visible reception from preamble/on-air-only arrivals.
-4. For a recorded trial count at each offset, measure valid reports received,
-   missing/invalid reports, overflow/recovery counts, actual TX frames, time from
-   work-ready to TX, deferred iterations and command attempt counts/results.
-   Compare against the baseline and previous build. FIFO-visible partial frames
-   should finish (or reach bounded RX recovery) before TX. Deferral must not add
-   attempts, duplicate polls/states or erase another radiator's result. Check
-   round-robin progress with both devices ready; one silent device must not block
-   the other's independent delivery.
-5. Send truncated/malformed bursts and sustained input. Confirm bounded RX
-   flush/rearm, responsive HTTP/status/MQTT and expiry under the documented
-   admission/report deadlines, with no expired frame later appearing on air.
-   Introduce broker loss/reconnect during deferral: admitted RF work stays
-   independent and the old MQTT client/outbox is destroyed before newer discovery.
-6. Repeat TX timeout/failure and RX re-entry checks; verify the RX register
-   profile and subsequent reception. RX restoration failure must produce honest
-   terminal results. Record HTTP latency, packet loss, deferral latency, task
-   stack/heap high-water marks and packet profiles alongside captures. Repeat
-   under Wi-Fi activity and after reboot; no pending work is replayed.
+### 1. Board and radio
 
-Publish measured outcomes separately from software-test results. Expect a residual
-half-duplex collision window after the final FIFO check, a receive gap during
-blocking TX and possible loss of trailing envelopes at the existing frame flush.
-Do not claim that local FIFO arbitration eliminates those losses.
+- [ ] Record the PCB revision and compare the wiring with the manufacturer reference.
+- [ ] Confirm the flash size.
+- [ ] Fit the antenna.
+- [ ] Flash and open the page. `GET /api/radio` shows `ready: true`, `error: 0` and a CC1101 version.
+
+### 2. Reception
+
+Leave the existing Touch E3 system running.
+
+- [ ] `valid_frames` increases.
+- [ ] `report` shows plausible temperature, target and mode.
+- [ ] After changing a target on the Touch E3, the next report shows it and `report.age_ms` resets.
+- [ ] Copy a 59-byte controller-state frame (hex starting `38`) addressed to each radiator from `last_frame`. These are candidate templates for stage 5.
+
+### 3. Network and recovery
+
+- [ ] The `Cleverbox` access point is up at boot; http://192.168.4.1/ loads on a phone.
+- [ ] Home Wi-Fi setup succeeds; the access point closes 60 s after the station gets an IP.
+- [ ] A wrong password reports `setup_result: failed` and keeps the previous setup.
+- [ ] Router off: the access point reopens. Router on: the station reconnects.
+- [ ] GPIO9 reads high when released and low when pressed.
+- [ ] BOOT held 5 s and released opens the access point; a short press does nothing; the station stays connected.
+- [ ] **Finish recovery** closes the access point 60 s later.
+- [ ] EN and a power cycle keep all settings and send no RF.
+- [ ] **Forget home Wi-Fi only** keeps radiators, templates, MQTT and time zone.
+- [ ] Check whether BOOT is reachable through the enclosure.
+
+### 4. Time
+
+- [ ] SNTP syncs after Wi-Fi connects (`source: network`).
+- [ ] With internet blocked, manual UTC works and HTTP and RF keep working.
+- [ ] The configured time zone and DST show correctly.
+
+### 5. Pairing and control
+
+Disconnect the Touch E3. Put one radiator in pairing mode (`rF.bi`). Pairing
+can reset the radiator's stored settings.
+
+- [ ] Pairing goes through `offer`, `waiting_reply`, `bind`, `waiting_ack`, `complete`, and `saved: true`.
+- [ ] Pairing with no radiator in pairing mode times out and saves nothing.
+- [ ] Cancelling during the bind delay saves nothing.
+- [ ] Import a template for the radiator and send Comfort, Off, Frost and Eco. Each reaches `matched`, and the radiator display agrees.
+- [ ] Heating behaviour matches the setting (observe the radiator, not only reports).
+- [ ] With the radiator unpowered, a command reaches `timeout`; a later matching report changes it to `matched` without new transmissions.
+- [ ] Reboot with a command pending: the pairing and saved template remain, the command is not resumed and nothing is sent at boot.
+
+Open questions to answer here:
+
+- [ ] Does a template captured from the Touch E3 work after pairing under a new controller address?
+- [ ] Do simple values for `97` and `5B` work (zeros, `97` byte 0 copied from the report's `DF` byte 0)?
+- [ ] Does a saved template stop working over days?
+
+### 6. Two radiators and overlapping traffic
+
+- [ ] Dump CC1101 registers before receive, during transmit and after receive restarts; compare with the [RF profile](#rf-profile).
+- [ ] Commands to two radiators run independently; a silent radiator does not block the other.
+- [ ] Measure valid and missing reports, time from ready to transmit and attempt counts, first with no overlap, then with commands queued while the other radiator's report is starting, midway and ending. Compare with the baseline.
+- [ ] Malformed bursts and sustained traffic: reception recovers, HTTP and MQTT stay responsive, expired work is never sent.
+- [ ] Transmit failure: reception restarts and later frames are received.
+
+Expect some loss: a frame can start after the last FIFO check, and reception
+stops while a frame is being sent.
+
+### 7. MQTT and Home Assistant
+
+- [ ] Broker connection with authentication over Wi-Fi.
+- [ ] `offline` is published by the last will after a power cut and by a router outage.
+- [ ] Discovery devices appear; rename and removal update Home Assistant.
+- [ ] Apply from Home Assistant reaches `matched`.
+- [ ] An admitted command completes while the broker or Wi-Fi is down.
+
+### 8. Endurance
+
+- [ ] Run for several days with all radiators. Record task stack and heap high-water marks.
+- [ ] Settings survive repeated power cycles.
+- [ ] Heating continues with Home Assistant, the network and the Touch E3 absent.
