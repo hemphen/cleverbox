@@ -61,8 +61,8 @@ static void complete_state_vectors(void)
     // 97 echoes the answered report's DF (byte 0, and byte 2 bit 0 = heating),
     // keeping the template's other bits and its 5B. Templates and reports are the
     // vectors controller_state, state_boost, radiator_report and report_heating
-    // from protocol ac6e945 (decode-boost-and-heating); the report with DF byte 0
-    // = 00 and all expected frames were built by radiator-rf e509494
+    // from protocol 5dc2bcf; the report with DF byte 0 = 00 and all expected
+    // frames were built by radiator-rf 6977a94
     // controller_state(..., mode=0, setpoint_C=21.0, clock=(12,0,0)).
     static const char *state_boost_hex = "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300594029604E100641919DA000000005B0075B20C000086A53F89";
     static const char *report_heating_hex = "23F1040506C6F1010203DF203001404B02A88A02BA00E100641919DA000A000A0A47DD99311E";
