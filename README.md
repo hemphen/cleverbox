@@ -1,108 +1,144 @@
 # Cleverbox
 
-A small, local bridge for Purmo/LVI radiators, targeting the Elecram Sub-GHz
-855–925 MHz Bridge (ESP32-C6 + CC1101).
+Cleverbox is a local bridge between Purmo/LVI electric radiators and Home
+Assistant. It speaks the radiators' 868 MHz CleverTouch RF protocol and exposes
+them over a local web page, an HTTP API and MQTT. It needs no cloud account or
+vendor service.
 
-**Status: locally runnable HTTP application with simulated RF traffic; physical
-firmware supports reception, a persistent multi-radiator registry with explicit HTTP routing,
-explicit controller-state saving, independent per-radiator report-driven commands and
-persistent home Wi-Fi setup/recovery, device-managed time and local MQTT transport. No hardware test yet.**
+Target hardware: Elecram Sub-GHz 855–925 MHz Bridge (ESP32-C6 + CC1101).
 
-## Run locally without hardware
+## Status
 
-With a C/C++17 compiler, Make, Python 3, pkg-config and cJSON development package
-installed, run from the repository root:
+All features below are implemented and covered by host tests. None has been
+tested on the board.
+
+| Feature | Software | Hardware |
+| --- | --- | --- |
+| Receive and decode radiator reports | Tested | Not tested |
+| Pair radiators (one at a time, up to 8) | Tested | Not tested |
+| Set target and mode, confirmed by radiator readback | Tested | Not tested |
+| Wi-Fi setup, setup access point and button recovery | Tested | Not tested |
+| Device time (SNTP, POSIX time zone) | Tested | Not tested |
+| MQTT commands and state | Tested | Not tested |
+| Home Assistant discovery | Tested | Not tested |
+| OTA firmware updates | Not started | |
+
+## How it works
+
+Cleverbox pairs with each radiator as its RF controller and listens for the
+reports the radiator sends about every two minutes. To change a setting it
+polls the radiator, waits for a fresh report, then sends a controller-state
+frame with the new target and mode. A command counts as `matched` only when a
+later report shows the requested values.
+
+Each controller-state frame is built from a **template**: a 59-byte frame for
+that radiator captured from real traffic. Two of its fields (`97` and `5B`) have
+no known construction rule, so they are copied from the template unchanged. See
+[architecture](docs/architecture.md#templates).
+
+## Known limitations
+
+- No hardware testing yet. RF timing, transmit acceptance and heating behaviour
+  are unverified.
+- A radiator paired by Cleverbox needs an imported template before it can be
+  controlled. Passive learning only accepts frames sent from the record's
+  controller address, which after pairing only Cleverbox itself uses.
+- The HTTP interface has no login. The setup access point uses the fixed,
+  published password `cleverbox` and opens on every boot and every Wi-Fi drop.
+- MQTT uses plain TCP. NVS is not encrypted.
+- UI and MQTT commands are refused after each boot until the clock is set by
+  SNTP or by hand. `POST /api/command` accepts an explicit `clock_seconds`
+  override, intended for tests ([Time](docs/architecture.md#time)).
+- If the radio cannot be initialised, or restoring reception fails at runtime,
+  the radio task stops until the next reboot. A transmit failure ends only the
+  affected command; receive errors are counted and reception restarts
+  ([Receive path](docs/architecture.md#receive-path)).
+
+## Quick start
+
+### Simulation (no hardware)
+
+Requires a C/C++17 compiler, Make, Python 3, pkg-config and cJSON
+(`sudo apt-get install build-essential python3 pkg-config libcjson-dev`).
 
 ```sh
 make simulate
 ```
 
-Open **http://127.0.0.1:8080**. Pair the two invented radiators one at a time, name each, try sending before
-learning state, inject the separate **synthetic controller-state fixture**,
-explicitly save it, restart, then select either radiator and change target/mode without injecting it again.
-Set explicit manual UTC time under **Device time** (simulation starts unsynchronized).
-Observe decoded readback. Choose delayed responses to see
-the requested settings before matching readback. See the
-[startup prerequisites, walkthrough and limitations](docs/simulation.md).
+Open http://127.0.0.1:8080. The simulator runs the production firmware code
+against two invented radiators, `F1040506` and `F1040507`:
 
-Simulation uses the production codec, pairing/command state machines, receive
-handling and page. It checks application behavior against protocol assumptions;
-it does **not** prove RF reception, transmission compatibility, capture-free setup
-or heating behavior.
+1. Choose a simulated device and start pairing. Inclusion completes in about
+   two seconds.
+2. Under **Device time**, set a manual UTC time.
+3. Inject the synthetic controller-state fixture, then **Save learned state**.
+4. Send a target and mode. The requested values appear first, the readback
+   shortly after.
 
-Manual template input is optional once a matching controller-state frame has been
-heard for the saved pair or explicitly saved/imported. Passive learning stays in
-RAM; explicit saving retains validated state across restart. Fully independent
-construction remains
-blocked by unresolved fields `97` and `5B`; synthetic bytes are not physical-device
-defaults. See the [field assessment](docs/controller-state.md).
+Restart `make simulate` to check that pairings, names and saved templates
+persist while commands and observations do not. Simulation-only controls are
+listed in the [HTTP API](docs/http-api.md#simulation-only).
 
-## Physical startup and network recovery
+### Board
 
-Join **Cleverbox** using the fixed WPA2 password **cleverbox**, then open
-**http://192.168.4.1/** manually. No serial monitor is needed. Configure home
-Wi-Fi in the page; credentials are saved after DHCP success. The startup AP
-closes 60 seconds after connection and reopens on network loss or stays open
-while persistence is uncertain.
+Build and flash with ESP-IDF 5.5.1, or use the `cleverbox-esp32c6` artifact
+from CI:
 
-After normal startup, hold **BOOT/IO9 for at least five seconds, then release**
-to open and latch recovery without restarting or erasing anything. Existing STA
-operation continues. **Finish recovery** resumes automatic AP policy; a successful
-explicit Wi-Fi save also releases the latch. **EN** or a power cycle restarts and
-retains configuration, with the same startup AP credentials. Do not hold BOOT
-at reset: GPIO9 is a strapping pin and may enter download mode. BOOT access through
-the supplied enclosure is unverified; opening it or a verified access hole may be
-necessary. EN plus the startup AP window is an alternative without serial.
+```sh
+cd firmware
+idf.py set-target esp32c6
+idf.py build
+idf.py -p PORT flash monitor
+```
 
-**Forget home Wi-Fi only** requires confirmation and erases only Wi-Fi setup;
-radiator identities, pairings, templates, MQTT, timezone and discovery cleanup
-remain. See [network setup, recovery and hardware checklist](docs/networking.md).
+Join Wi-Fi network **Cleverbox** (password **cleverbox**), open
+http://192.168.4.1/ and enter your home Wi-Fi. Then follow the
+[bring-up checklist](docs/hardware.md#bring-up-checklist).
 
-## Product direction
+## Documentation
 
-Local HTTP setup/control comes first, with a persistent registry and independent per-radiator delivery and [device-managed time](docs/time.md) implemented.
-[MQTT broker setup, commands and state publishing](docs/mqtt.md) are implemented.
-[HA discovery](docs/home-assistant.md) automatically adds observation/diagnostic
-devices when enabled; a smaller optional built-in package supplies explicit
-draft/Apply controls. Next: installation/physical UI usability checks →
-OTA as a separate milestone → endurance/upgrade and hardware acceptance.
-MQTT and local HTTP share the same command handling.
-Home Assistant supplies history, schedules, automations and notifications.
-No provider account or cloud service is intended to be required in normal operation.
+| Document | Contents |
+| --- | --- |
+| [Architecture](docs/architecture.md) | Components, tasks, state machines, storage, timing |
+| [HTTP API](docs/http-api.md) | Endpoints, payloads, status fields |
+| [MQTT](docs/mqtt.md) | Topics, command protocol, results, broker setup |
+| [Home Assistant](docs/home-assistant.md) | Discovery, control package, automations |
+| [Hardware](docs/hardware.md) | Board, wiring, RF profile, flashing, bring-up checklist |
+| [AGENTS.md](AGENTS.md) | Rules for contributors and coding agents |
+
+The radio protocol is specified in
+[clevertouch-protocol](https://github.com/hemphen/clevertouch-protocol/tree/main/docs/radiator-rf)
+(implemented against revision `b70fab79300544a62ee2606bd4055cdb81763fd4`).
+The reference decoder is in
+[clevertouch-radio](https://github.com/hemphen/clevertouch-radio).
+
+## Development
+
+| Command | Runs |
+| --- | --- |
+| `make test` | Unit tests: codec, pairing, commands, radio worker, registry, network, time, MQTT store, page script (needs Node.js) |
+| `make test-http` | Host suites over HTTP against the production code: registry, network, recovery, time, MQTT, tokens, discovery |
+| `make test-capacity` | `test` and `test-http` with a 3-radiator build |
+| `make test-discovery-limit` | Discovery with an undersized payload buffer |
+| `make test-mqtt-broker` | Real Mosquitto 2.x broker; needs `paho-mqtt==2.1.0` |
+| `make test-home-assistant` | Home Assistant Core 2026.10.4 with a real broker; needs `host/requirements-ha.txt` |
+| `make simulate` | Interactive simulator on http://127.0.0.1:8080 |
+
+CI ([Build](.github/workflows/build.yml)) runs everything except
+`test-home-assistant` on pull requests and `main`, and builds the firmware image
+in `espressif/idf:v5.5.1`. The
+[Home Assistant workflow](.github/workflows/home-assistant.yml) runs weekly on
+`main`, on manual dispatch, and on pull requests labelled `run-ha`. Re-apply the
+label to rerun after new commits.
 
 ## Scope
 
-This is one embedded appliance, not a general radio gateway or a protocol
-research project. We use the existing specifications as working truths and
-implement them. Hardware acceptance tests check our implementation; they are not
-a prerequisite programme to re-establish every protocol claim.
+In scope: one board, Purmo/LVI radiators, local HTTP, MQTT and Home Assistant
+discovery. OTA is planned as a separate milestone.
 
-Matter, Thread and Zigbee are outside the current MQTT-only product scope.
-Ethernet/PoE, Z-Wave, other boards, cloud fallback, an onboard history
-database and a schedule engine are outside this implementation. Local HTTP is
-the setup/control interface alongside MQTT.
+Out of scope: schedules (Home Assistant owns them), history storage, Matter,
+Thread, Zigbee, Ethernet, other boards and cloud services.
 
-## CI validation
+## License
 
-The [Build workflow](.github/workflows/build.yml) runs protocol, HTTP, MQTT and
-firmware checks for pull requests and updates to `main`. Full Home Assistant
-Core/broker integration runs separately through
-[Home Assistant integration](.github/workflows/home-assistant.yml): Mondays at
-03:17 Europe/Stockholm on `main`, manually against a selected branch, or when the
-`run-ha` label is added to a pull request. Create that repository label once if
-it does not yet exist; remove and reapply it to rerun after subsequent commits.
-An ordinary green Build check does not include the full HA integration test.
-
-## Working here
-
-Read [AGENTS.md](AGENTS.md), the [hardware checklist](docs/hardware.md),
-[implementation plan](docs/implementation.md) and [libraries](docs/libraries.md).
-The [firmware directory](firmware/README.md) describes the build layout.
-
-Protocol definitions live in
-[clevertouch-protocol](https://github.com/hemphen/clevertouch-protocol/tree/main/docs/radiator-rf).
-Existing decoder and tooling live in
-[clevertouch-radio](https://github.com/hemphen/clevertouch-radio).
-Link to these sources rather than copying their documentation or private captures.
-
-Licensed under [MIT](LICENSE).
+[MIT](LICENSE)
