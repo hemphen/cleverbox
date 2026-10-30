@@ -110,8 +110,8 @@ http://192.168.4.1/ and enter your home Wi-Fi. Then follow the
 The radio protocol is specified in
 [clevertouch-protocol](https://github.com/hemphen/clevertouch-protocol/tree/main/docs/radiator-rf)
 (implemented against revision `b70fab79300544a62ee2606bd4055cdb81763fd4`;
-the `97`, `5B` and `DF` readings follow `ac6e945` on branch
-`decode-boost-and-heating`).
+the `97`, `5B` and `DF` readings follow
+`5dc2bcff61a817a574e6fc9df4e9e9c1e5052571`).
 The reference decoder is in
 [clevertouch-radio](https://github.com/hemphen/clevertouch-radio).
 
