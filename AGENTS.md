@@ -70,4 +70,18 @@ operation; even then, expose that operation rather than execute schedules here.
   the reference behaviour and check continued operation during HA/network loss.
   Do not add a new PID controller without an explicit requirement.
 
+## CI validation
+
+The `Build` workflow checks protocol/HTTP/MQTT behavior and compiles firmware on
+pull requests and `main`. The full Home Assistant Core/broker integration is a
+separate workflow: weekly on `main`, manually dispatched to a chosen branch, or
+triggered by adding the `run-ha` label to a pull request. Reapply the label to
+rerun after changes; ordinary PR updates do not rerun the HA integration.
+
+For changes to MQTT command/session/state publishing, HA discovery or controls,
+registry identity/observations, time/network recovery, HA host code or integration
+tests, request `run-ha` on the final PR revision and await the result before
+claiming full HA validation. Keep a successful HA integration run in the release
+checklist. A green `Build` does not imply the HA integration was exercised.
+
 No approval is required for routine implementation choices within this scope.

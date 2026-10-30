@@ -82,6 +82,17 @@ Ethernet/PoE, Z-Wave, other boards, cloud fallback, an onboard history
 database and a schedule engine are outside this implementation. Local HTTP is
 the setup/control interface alongside MQTT.
 
+## CI validation
+
+The [Build workflow](.github/workflows/build.yml) runs protocol, HTTP, MQTT and
+firmware checks for pull requests and updates to `main`. Full Home Assistant
+Core/broker integration runs separately through
+[Home Assistant integration](.github/workflows/home-assistant.yml): Mondays at
+03:17 Europe/Stockholm on `main`, manually against a selected branch, or when the
+`run-ha` label is added to a pull request. Create that repository label once if
+it does not yet exist; remove and reapply it to rerun after subsequent commits.
+An ordinary green Build check does not include the full HA integration test.
+
 ## Working here
 
 Read [AGENTS.md](AGENTS.md), the [hardware checklist](docs/hardware.md),
