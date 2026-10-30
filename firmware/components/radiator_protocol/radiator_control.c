@@ -22,6 +22,8 @@ bool rf_control_start(rf_control *c, const rf_control_request *request,
     c->mode = request->mode; c->centi_c = request->centi_c;
     c->clock_seconds = request->clock_seconds;
     c->started_ms = now_ms;
+    // Bound the initial poll from admission; ready SEND keeps its report deadline.
+    c->deadline_ms = now_ms + RF_CONTROL_WAIT_MS;
     memcpy(c->controller, controller, 4);
     memcpy(c->radiator, radiator, 4);
     return true;
@@ -29,12 +31,12 @@ bool rf_control_start(rf_control *c, const rf_control_request *request,
 
 void rf_control_tick(rf_control *c, int64_t now_ms)
 {
-    if ((c->status.phase == RF_CONTROL_WAIT_REPORT || c->status.phase == RF_CONTROL_WAIT_READBACK) &&
-        now_ms >= c->deadline_ms) c->status.phase = RF_CONTROL_TIMEOUT;
+    if (rf_control_active(&c->status) && now_ms >= c->deadline_ms) c->status.phase = RF_CONTROL_TIMEOUT;
 }
 
 bool rf_control_next(const rf_control *c, int64_t now_ms, rf_frame *out)
 {
+    if (now_ms >= c->deadline_ms) return false;
     if (c->status.phase == RF_CONTROL_POLL)
         return rf_short(out, c->controller, c->radiator, RF_POLL);
     if (c->status.phase == RF_CONTROL_SEND) {

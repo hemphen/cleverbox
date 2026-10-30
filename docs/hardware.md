@@ -100,3 +100,52 @@ Hardware checklist (software tests do not establish these):
   preserves radiators/templates, MQTT, timezone and discovery cleanup.
 - With real radiators, verify admitted work continues through runtime recovery
   and no recovery action itself sends RF. Record Wi-Fi/flash/RF results separately.
+
+## Overlapping RX and TX acceptance (pending)
+
+Fake FIFO/count/time tests run the production worker but do not model CC1101
+RF timing. No physical overlap test has been performed. Use the
+[transport arbitration policy](../firmware/README.md#receivetransmit-arbitration)
+when interpreting these checks:
+
+1. Verify the received PCB revision/wiring and attach the antenna. Use two paired
+   radiators with explicit same-device controller templates, a broker/HA and an
+   independent receiver/capture tool with monotonic timestamps. Keep private
+   addresses, templates and captures out of commits. Disconnect competing
+   controllers during live control; use a controlled reference transmitter for
+   overlapping traffic where available.
+2. Record the pinned RadioLib commit and dump/compare CC1101 registers before RX,
+   during fixed-length TX and after RX restoration against the previous build.
+   Confirm unchanged 868.3 MHz, 1000/27 kbit/s, 17 kHz deviation, 101.6 kHz RX
+   bandwidth, NRZ/no whitening/no hardware CRC/address filtering, repeated D391
+   sync, preamble policy, 0 dBm TX and infinite RX/fixed-length TX. Independently
+   compare poll/offer/bind/state payloads and both software CRCs; no new 97/5B rules.
+3. Establish a baseline with no intentional overlaps. Repeat at several relative
+   offsets: queue B's poll/state while A's report is beginning, midway through its
+   envelope and ending. Also overlap an offer and a delayed bind with unrelated
+   traffic. Capture RX byte arrival, final count checks, standby/TX start and RX
+   re-entry using temporary bench instrumentation/logic-analyser SPI traces.
+   Separate FIFO-visible reception from preamble/on-air-only arrivals.
+4. For a recorded trial count at each offset, measure valid reports received,
+   missing/invalid reports, overflow/recovery counts, actual TX frames, time from
+   work-ready to TX, deferred iterations and command attempt counts/results.
+   Compare against the baseline and previous build. FIFO-visible partial frames
+   should finish (or reach bounded RX recovery) before TX. Deferral must not add
+   attempts, duplicate polls/states or erase another radiator's result. Check
+   round-robin progress with both devices ready; one silent device must not block
+   the other's independent delivery.
+5. Send truncated/malformed bursts and sustained input. Confirm bounded RX
+   flush/rearm, responsive HTTP/status/MQTT and expiry under the documented
+   admission/report deadlines, with no expired frame later appearing on air.
+   Introduce broker loss/reconnect during deferral: admitted RF work stays
+   independent and the old MQTT client/outbox is destroyed before newer discovery.
+6. Repeat TX timeout/failure and RX re-entry checks; verify the RX register
+   profile and subsequent reception. RX restoration failure must produce honest
+   terminal results. Record HTTP latency, packet loss, deferral latency, task
+   stack/heap high-water marks and packet profiles alongside captures. Repeat
+   under Wi-Fi activity and after reboot; no pending work is replayed.
+
+Publish measured outcomes separately from software-test results. Expect a residual
+half-duplex collision window after the final FIFO check, a receive gap during
+blocking TX and possible loss of trailing envelopes at the existing frame flush.
+Do not claim that local FIFO arbitration eliminates those losses.

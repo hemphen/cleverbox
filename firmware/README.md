@@ -130,8 +130,50 @@ the radio task polls the FIFO every tick (1 ms). It uses stable byte counts and
 keeps one byte buffered during reception, following the
 [CC1101 FIFO errata](https://www.ti.com/lit/er/swrz020e/swrz020e.pdf).
 RX stops before the final drain, then flushes/rearms after a frame, overflow or
-100 ms incomplete-frame timeout. There is one bounded frame
-buffer, no receive history and no radio work in HTTP handlers.
+100 ms incomplete-frame timeout. Unstable counts also start this bounded window,
+even before a byte is copied into software. There is one bounded frame buffer,
+no receive history and no radio work in HTTP handlers.
+
+### Receive/transmit arbitration
+
+Each radio-owner iteration hands off at most one queued request, ticks all
+protocol deadlines and services pending reception **before** selecting outgoing
+work. A partial software frame, even one byte only in the hardware FIFO, or an
+unstable RXBYTES count defers TX. The owner does not spin waiting for idle:
+consecutive-count sampling remains bounded to nine SPI reads, and the normal
+one-tick task yield remains. Overflow, impossible FIFO counts and malformed
+frames use the existing flush/rearm recovery. Incomplete/uncertain RX is recovered
+after more than 100 ms from the first busy/uncertain observation; later bytes and
+unstable samples do not restart that timer. Network/HTTP/MQTT ownership is unchanged.
+
+After selection, a final stable-zero FIFO check with no software RX pending gates
+the RX-to-TX transition. Clock-dependent bytes are built at selection; the selected
+deadline is checked again after SPI sampling before calling the unchanged blocking
+short-frame TX, without widening that final window by rebuilding the frame. Both
+`rf_pair_next` and `rf_control_next` are read-only: a deferred frame remains in its
+machine, with no sent callback, attempt increment or round-robin movement. The
+round-robin cursor advances only on an actual TX attempt. Reports are routed by
+both addresses, so reception for A can finish while B remains ready; a matching
+readback can remove a ready retry before selection. RX restoration failure still
+fails all admitted commands, including queued handoffs.
+
+Deferral never refreshes a deadline. The initial poll has 150 seconds from command
+admission (including queue delay); a ready state or retry retains the report wait's
+existing deadline. Pairing's initial offer has five seconds from admission; bind
+retains the offer reply's five-second deadline, including its one-second bind
+delay. A reply too late to leave that gap can therefore lead to timeout without a
+bind. Actual successful sends start their existing five-second reply / 150-second
+readback waits. All active machines tick during deferral; expired work reports
+`timeout`, releases its reservation and cannot transmit later. Existing two-state-
+attempt bounds, explicit pairing, late matching reconciliation and reboot without
+replay remain. These are explicit local timing policies, not new protocol claims.
+
+This is half-duplex arbitration, not carrier sensing or collision avoidance.
+A frame/preamble can start after the last FIFO sample, or be on air without FIFO
+bytes yet. Completing one envelope still flushes any trailing bytes under the
+existing receive profile. Blocking TX still creates an RX gap. Software FIFO tests
+establish ordering and bounds, **not physical RF timing or collision-free operation**.
+See the [overlap measurement procedure](../docs/hardware.md#overlapping-rx-and-tx-acceptance-pending).
 
 ### First board test
 

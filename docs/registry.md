@@ -13,6 +13,10 @@ result. Reports and controller frames are routed by both source and destination;
 selection is never a routing input. Each active command machine owns a compact admitted
 state snapshot and fresh-report/readback exchange. The worker chooses one ready
 frame per tick in round-robin order and restores receive mode after every TX.
+Reception is serviced before TX selection; partial/FIFO-only/uncertain reception
+defers TX without consuming attempts or advancing the round-robin cursor. Ready
+work remains bounded by its deadline. See the
+[transport policy](../firmware/README.md#receivetransmit-arbitration).
 Report waits never reserve the CC1101. After timeout/TX failure,
 matching late reports can reconcile the per-device result without another send.
 There is no per-radiator backlog or replacement policy.

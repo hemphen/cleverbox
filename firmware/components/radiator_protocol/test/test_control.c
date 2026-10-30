@@ -184,5 +184,15 @@ int main(void)
         rf_control_receive(&c, 1400, &mode_report);
         assert(c.status.phase == RF_CONTROL_MATCHED);
     }
+    c = (rf_control){0}; r = request();
+    assert(rf_control_start(&c, &r, controller, radiator, 1000));
+    rf_control unchanged = c;
+    assert(rf_control_next(&c, 150999, &out) && !memcmp(&c, &unchanged, sizeof(c)));
+    assert(!rf_control_next(&c, 151000, &out));
+    rf_control_tick(&c, 151000); assert(c.status.phase == RF_CONTROL_TIMEOUT && !c.status.attempts);
+    start(&c); rf_control_receive(&c, 150999, &report);
+    assert(c.status.phase == RF_CONTROL_SEND && c.deadline_ms == 151000);
+    assert(!rf_control_next(&c, 151000, &out));
+    rf_control_tick(&c, 151000); assert(c.status.phase == RF_CONTROL_TIMEOUT && !c.status.attempts);
     puts("Live state refresh, delivery/readback, retry bounds, timeouts and late reports: passed");
 }

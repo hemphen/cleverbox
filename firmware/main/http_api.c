@@ -109,7 +109,7 @@ static esp_err_t pairing_action(httpd_req_t *r)
         uint8_t source[4], destination[4];
         rf_pairing check = {0};
         if (address(j, "source", source) && address(j, "destination", destination) &&
-            rf_pair_start(&check, source, destination))
+            rf_pair_start(&check, source, destination, 0))
             result = radio_pair_start(source, destination, &id);
     } else if (valid_id && action && !strcmp(action, "cancel")) result = radio_pair_cancel(id);
     else if (valid_id && action && !strcmp(action, "save")) result = radio_pair_save(id);

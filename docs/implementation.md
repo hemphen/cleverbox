@@ -43,7 +43,9 @@ Use the [libraries and component boundaries](libraries.md).
    in milestone 4; pairing remains exclusive. See [registry](registry.md).
 4. **Independent per-radiator delivery.** Implemented: one outstanding command per
    radiator, independent report deadlines/results and round-robin selection of ready
-   TX frames on the single CC1101. Pairing remains exclusive; there is no second
+   TX frames on the single CC1101. Receive-first FIFO arbitration and bounded
+   ready-work deferral are [implemented and software-tested](../firmware/README.md#receivetransmit-arbitration);
+   physical overlap/loss measurements remain pending. Pairing remains exclusive; there is no second
    command queued for a busy radiator. See [registry](registry.md).
 5. **Persistent home Wi-Fi and recovery.** Implemented: local HTTP provisioning,
    save after DHCP, previous-setup retention, fixed-credential WPA2 setup/recovery

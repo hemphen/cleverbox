@@ -67,8 +67,8 @@ static esp_err_t queue_request(const radio_request &r) {
 }
 extern "C" esp_err_t radio_pair_start(const uint8_t controller[4], const uint8_t candidate[4], uint32_t *id) {
     rf_pairing check = {};
-    if (!rf_pair_start(&check, controller, candidate)) return ESP_ERR_INVALID_ARG;
-    radio_request r = {}; r.action = PAIR_START;
+    if (!rf_pair_start(&check, controller, candidate, esp_timer_get_time() / 1000)) return ESP_ERR_INVALID_ARG;
+    radio_request r = {}; r.action = PAIR_START; r.admitted_ms = esp_timer_get_time() / 1000;
     memcpy(r.controller, controller, 4); memcpy(r.candidate, candidate, 4);
     portENTER_CRITICAL(&status_lock);
     esp_err_t result = ESP_ERR_INVALID_STATE;
@@ -242,7 +242,7 @@ static bool receive_count(uint8_t &count)
 // One worker iteration is shared by FreeRTOS and the host's controllable clock.
 struct radio_worker {
     rf_frame frame = {};
-    int64_t started = 0;
+    int64_t started = -1;
     rf_pairing pair = status.pairing;
     bool saved = status.pairing_saved;
     int pair_error = status.pairing_error;
@@ -367,12 +367,19 @@ struct radio_worker {
             else if (request.action == PAIR_START) {
                 saved = false; pair_error = 0; pair = {};
                 portENTER_CRITICAL(&status_lock); exchange_pending = false; portEXIT_CRITICAL(&status_lock);
-                rf_pair_start(&pair, request.controller, request.candidate);
+                rf_pair_start(&pair, request.controller, request.candidate, request.admitted_ms);
             }
         }
         int64_t now_ms = esp_timer_get_time() / 1000;
         rf_pair_tick(&pair, now_ms);
         for (size_t i = 0; i < registry.count; ++i) rf_control_tick(&controls[i], now_ms);
+        if (!radio_transport_status().ready) { fail(status.error); return; }
+        service_receive();
+        if (!radio_transport_status().ready) return;
+        now_ms = esp_timer_get_time() / 1000;
+        rf_pair_tick(&pair, now_ms);
+        for (size_t i = 0; i < registry.count; ++i) rf_control_tick(&controls[i], now_ms);
+        if (started >= 0 || frame.size) { publish(); return; }
         rf_frame outgoing = {};
         bool pairing_tx = rf_pair_next(&pair, now_ms, &outgoing);
         bool control_tx = false;
@@ -380,34 +387,60 @@ struct radio_worker {
         if (!pairing_tx) for (size_t offset = 0; offset < registry.count; ++offset) {
             size_t i = (next_device + offset) % registry.count;
             if (rf_control_next(&controls[i], now_ms, &outgoing)) {
-                chosen = i; control_tx = true; next_device = (i + 1) % registry.count; break;
+                chosen = i; control_tx = true; break;
             }
         }
-        if (pairing_tx || control_tx) {
+        // next() is read-only. A deferral retains the frame in its machine,
+        // without a sent callback, attempt increment or round-robin advancement.
+        if ((pairing_tx || control_tx) && receive_idle()) {
+            // The only change since read-only selection can be expiry. Recheck
+            // that deadline after SPI sampling, without rebuilding the frame and
+            // widening the final FIFO-check-to-standby window.
+            now_ms = esp_timer_get_time() / 1000;
+            rf_pair_tick(&pair, now_ms);
+            if (control_tx) rf_control_tick(&controls[chosen], now_ms);
+            bool still_ready = pairing_tx ? rf_pair_active(&pair) :
+                                            rf_control_active(&controls[chosen].status);
+            if (!still_ready) { publish(); return; }
             int rx_result;
             int tx_result = transmit_frame(outgoing, rx_result);
             if (pairing_tx) {
                 pair_error = tx_result;
                 rf_pair_sent(&pair, esp_timer_get_time() / 1000, tx_result == 0);
             } else {
+                next_device = (chosen + 1) % registry.count;
                 control_errors[chosen] = tx_result;
                 rf_control_sent(&controls[chosen], esp_timer_get_time() / 1000, tx_result == 0);
             }
-            frame = {}; started = 0;
             portENTER_CRITICAL(&status_lock);
             status.error = rx_result;
             status.ready = rx_result == RADIOLIB_ERR_NONE;
             portEXIT_CRITICAL(&status_lock);
         }
         if (!radio_transport_status().ready) { fail(status.error); return; }
+        publish();
+    }
+    // All FIFO/radio access stays in this owner. Unknown counts are busy, even
+    // when no bytes have yet reached the software buffer. No spin-until-idle.
+    bool receive_idle() {
+        if (started >= 0 || frame.size) return false;
+        uint8_t count = 0;
+        if (!receive_count(count) || count) {
+            started = esp_timer_get_time();
+            return false;
+        }
+        // Half-duplex limitation: bytes can still arrive after this check.
+        return true;
+    }
+    void service_receive() {
         uint8_t count = 0;
         bool stable = receive_count(count);
+        if ((!stable || count) && started < 0) started = esp_timer_get_time();
         bool restart = stable && (count & 0x80) != 0;
         bool receive_error = restart;
         int result = RADIOLIB_ERR_NONE;
         count &= 0x7f;
         if (stable && !restart && count) {
-            if (!started) started = esp_timer_get_time();
             if (count > 64) {
                 restart = receive_error = true;
             } else {
@@ -492,7 +525,7 @@ struct radio_worker {
             }
         }
         // A maximum 258-byte envelope takes about 56 ms at this bitrate.
-        if (started && esp_timer_get_time() - started > 100000)
+        if (started >= 0 && esp_timer_get_time() - started > 100000)
             restart = receive_error = true;
         if (restart) {
             if (result == RADIOLIB_ERR_NONE)
@@ -507,9 +540,8 @@ struct radio_worker {
                 fail(result); return;
             }
             frame = {};
-            started = 0;
+            started = -1;
         }
-        publish();
     }
 };
 
