@@ -162,7 +162,7 @@ void network_policy_got_ip(network_policy *p, const char *ip, int64_t now) {
         p->status.recovery_error = "none";
         memset(&p->candidate, 0, sizeof(p->candidate)); p->candidate_active = false;
         p->status.setup = NET_SETUP_SAVED;
-        if (p->ap_requested) { p->close_ap_ms = now + NETWORK_AP_GRACE_MS; p->status.ap_closing = true; }
+        if (p->ap_requested && !p->close_ap_ms) { p->close_ap_ms = now + NETWORK_AP_GRACE_MS; p->status.ap_closing = true; }
     }
     p->status.state = NET_CONNECTED;
     if (p->status.setup != NET_SETUP_FAILED && !p->status.persistence_uncertain) p->status.error = "none";

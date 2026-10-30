@@ -60,6 +60,12 @@ int main(void) {
     network_policy_tick(&p, 60099); assert(ap_on && p.status.ap_closing);
     network_policy_disconnected(&p, 60100); // Closure is independent of connectivity.
     network_policy_tick(&p, 60100); assert(!ap_on && !p.status.ap_closing);
+    // Finishing an in-flight setup keeps the explicit deadline even if DHCP
+    // succeeds later. No network event may extend the warned closure window.
+    init(&p, NULL, false); network_policy_configure(&p, &a, 0);
+    network_policy_finish_recovery(&p, 1); ip(&p, 5000);
+    network_policy_tick(&p, 60000); assert(ap_on);
+    network_policy_tick(&p, 60001); assert(!ap_on);
     // Configured boot never opens AP, not even during repeated failed batches.
     init(&p, &a, false); unsigned opened = ap_calls;
     assert(!ap_on && p.status.configured && !memcmp(&last_start, &a, sizeof(a)));
