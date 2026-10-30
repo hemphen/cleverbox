@@ -133,10 +133,12 @@ same board and settings, with an antenna and independent packet capture:
 
 See the full [bring-up checklist](hardware.md#bring-up-checklist).
 
-## Next milestone
+## Candidate transport milestone
 
-Nonblocking **short-packet TX** is the appropriate next focused transport
-milestone. The current owner still busy-polls GDO2 through an empty HAL yield;
+Nonblocking **short-packet TX** is a candidate transport milestone. Deliberate
+setup/recovery access, practical template acquisition and bounded radio recovery
+have higher product priority before unattended installation (see [issue #20](https://github.com/hemphen/cleverbox/issues/20)).
+The current owner still busy-polls GDO2 through an empty HAL yield;
 the upgrade does not establish lower CPU use or responsiveness. Evaluate
 `startTransmit()` plus owner-polled completion and a bounded deadline, keeping
 all SPI access in that owner and preserving receive-first arbitration. Note that
