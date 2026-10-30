@@ -521,6 +521,9 @@ static esp_err_t mqtt_status_page(httpd_req_t *r) {
     cJSON_AddBoolToObject(j, "broker_connected", s.broker_connected);
     cJSON_AddBoolToObject(j, "subscription_pending", s.subscription_pending);
     cJSON_AddNumberToObject(j, "subscription_error", s.subscription_error);
+    cJSON_AddBoolToObject(j, "discovery_enabled", s.discovery_enabled);
+    cJSON_AddNumberToObject(j, "discovery_error", s.discovery_error);
+    cJSON_AddNumberToObject(j, "discovery_pending", s.discovery_pending);
     cJSON_AddNumberToObject(j, "dropped_input", s.dropped_input); return json_response(r, j);
 }
 static esp_err_t mqtt_action(httpd_req_t *r) {
@@ -557,7 +560,7 @@ static esp_err_t mqtt_action(httpd_req_t *r) {
     memset(&settings, 0, sizeof(settings)); cJSON_Delete(j);
     if (err == ESP_ERR_INVALID_ARG) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST,
         "Use configure with host, port, username, password and enabled, or enable/disable/forget");
-    if (err != ESP_OK) { httpd_resp_set_status(r, "409 Conflict"); return httpd_resp_sendstr(r, "MQTT setup busy; check status"); }
+    if (err != ESP_OK) { httpd_resp_set_status(r, "409 Conflict"); return httpd_resp_sendstr(r, "MQTT setup busy, or discovery records remain. Disable discovery and finish cleanup before changing or forgetting the broker."); }
     httpd_resp_set_status(r, "202 Accepted"); httpd_resp_set_type(r, "application/json");
     return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");
 }

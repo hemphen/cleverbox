@@ -70,7 +70,7 @@ def run(directory):
         assert app.http()['command']['phase'] == 'matched'
         # Old session and token remain unusable after reconnect; no RF on reconnect.
         tx = app.http()['simulation_tx']
-        app.sim('mqtt_connection', connected=False); app.advance(100)
+        app.sim('mqtt_connection', connected=False); app.advance(5100)
         old_session = session; session = connect(app)
         assert session != old_session and app.http()['simulation_tx'] == tx
         assert command(token4, session=old_session)['reason'] == 'session_mismatch'

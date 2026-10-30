@@ -3,9 +3,9 @@
 ## Product behaviour
 
 The ESP32-C6 runs the appliance; the CC1101 supplies bidirectional radiator RF.
-Local HTTP is the first setup/control interface. Home Assistant will record
-readings and run schedules/automations through MQTT, initially with explicit
-configuration and then discovery. Matter is an
+Local HTTP is the setup/control interface. Home Assistant records readings
+and runs schedules/automations through MQTT, with opt-in discovery for observations
+and explicit draft/Apply controls. Matter is an
 optional later interface. Cleverbox holds current device state and saved setup,
 not historical readings.
 
@@ -65,10 +65,13 @@ Use the [libraries and component boundaries](libraries.md).
    session-bound tokens with bridge-side ID allocation, honest observation expiry
    and separate results. Reproducible actual HA Core/broker/simulator tests are
    separate from fake-client and broker-only tests. See [HA setup](home-assistant.md).
-9. **Discovery and usability polish — next.** Publish automatic discovery for the
-   supported measurements/controls and availability. Reuse the tested command
-   contract; keep requested values separate and freshness honest. Avoid changing
-   RF behavior or adding a custom HA integration merely for discovery.
+9. **Discovery and setup polish.** Implemented: opt-in persistent MQTT device
+   discovery, stable radiator devices/observation and diagnostic entities, honest
+   snapshot expiry and bounded durable cleanup on rename/removal/disable/restarts.
+   The smaller optional package retains explicit complete draft/Apply controls;
+   migration is documented. Remaining usability: a fresh-install walkthrough,
+   physical browser/mobile acceptance and checking names/error recovery with real
+   users. No firmware drafts or custom HA integration are needed for this stage.
 10. **Endurance/upgrade and hardware acceptance.** Validate long running operation,
    configuration retention across upgrades/power cycles, physical pairing/control,
    multiple devices and operation without HA/Touch E3. Record RF/heating behavior,
@@ -81,8 +84,8 @@ or broad framework are needed to start.
 
 ## Acceptance for the first prototype
 
-- HA controls explicit radiator IDs through MQTT after the basic interaction
-  milestone; automatic discovery follows separately.
+- HA discovers radiator observations automatically when opted in, and the small
+  control package applies complete settings to explicit stable radiator IDs.
 - Its measured temperature follows radiator reports.
 - A target change reaches that radiator and its observed state converges.
 - Unavailable/stale data is not shown as fresh or confirmed.

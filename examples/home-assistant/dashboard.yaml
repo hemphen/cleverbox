@@ -1,4 +1,5 @@
-# Paste as a manual dashboard card; entity IDs assume the unrenamed package.
+# Discovery observation IDs include bridge identity. Replace 020000000001 and radiator IDs.
+# Helpers/Apply come from the optional package; adjust customized IDs.
 type: vertical-stack
 cards:
   - type: entities
@@ -9,24 +10,24 @@ cards:
   - type: entities
     title: Radiator 1 — observations and explicit draft
     entities:
-      - sensor.cleverbox_1_temperature
-      - sensor.cleverbox_1_observed_target
-      - sensor.cleverbox_1_observed_mode
-      - binary_sensor.cleverbox_1_observation_fresh
+      - sensor.cleverbox_020000000001_1_temperature
+      - sensor.cleverbox_020000000001_1_observed_target
+      - sensor.cleverbox_020000000001_1_observed_mode
+      - binary_sensor.cleverbox_020000000001_1_observation_fresh
       - input_number.cleverbox_1_draft_target
       - input_select.cleverbox_1_draft_mode
       - button.cleverbox_1_apply
-      - sensor.cleverbox_1_last_admission
-      - sensor.cleverbox_1_last_delivery
+      - sensor.cleverbox_020000000001_1_last_admission
+      - sensor.cleverbox_020000000001_1_last_delivery
   - type: entities
     title: Radiator 2 — observations and explicit draft
     entities:
-      - sensor.cleverbox_2_temperature
-      - sensor.cleverbox_2_observed_target
-      - sensor.cleverbox_2_observed_mode
-      - binary_sensor.cleverbox_2_observation_fresh
+      - sensor.cleverbox_020000000001_2_temperature
+      - sensor.cleverbox_020000000001_2_observed_target
+      - sensor.cleverbox_020000000001_2_observed_mode
+      - binary_sensor.cleverbox_020000000001_2_observation_fresh
       - input_number.cleverbox_2_draft_target
       - input_select.cleverbox_2_draft_mode
       - button.cleverbox_2_apply
-      - sensor.cleverbox_2_last_admission
-      - sensor.cleverbox_2_last_delivery
+      - sensor.cleverbox_020000000001_2_last_admission
+      - sensor.cleverbox_020000000001_2_last_delivery

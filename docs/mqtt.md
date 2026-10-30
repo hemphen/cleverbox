@@ -1,8 +1,7 @@
 # MQTT transport (v1)
 
-MQTT transport and [manual Home Assistant interaction](home-assistant.md) are implemented;
-discovery is a separate next milestone. HTTP remains available. No discovery, scheduler, history, Matter or OTA
-is included. MQTT does not own or duplicate radio delivery machines.
+MQTT transport, opt-in [Home Assistant discovery and draft/Apply interaction](home-assistant.md)
+are implemented. HTTP remains available. No scheduler, history, Matter or OTA is included. MQTT does not own or duplicate radio delivery machines.
 
 ## Setup and persistence
 
@@ -144,7 +143,10 @@ existing UI policy, not a protocol heartbeat. Snapshots refresh every five
 seconds and on reconnect. Age uses monotonic time, independent of clock edits.
 Consumers must also age the snapshot locally and expire it after **15 seconds**
 without an update, and treat bridge offline as transport unavailable. Never rely
-on an old `stale:false` indefinitely. State is nonretained to avoid frozen ages
+on an old `stale:false` indefinitely. Snapshots also supply conservative `fresh` (15-second headroom), the latest
+`admission` object when present and separate `delivery` details for discovered
+diagnostics. These are outcomes, never observations; they do not alter the command
+contract. State is nonretained to avoid frozen ages
 being delivered as fresh to a later subscriber. Availability is independent of
 per-radiator freshness. Removed IDs stop publishing; clients should expire their
 snapshots, not infer that a device is still present from historical messages.
@@ -191,7 +193,8 @@ new snapshot; do not automatically retry old drafts.
 
 ## Session, delivery and resource policy
 
-MQTT 3.1.1, clean session, subscription QoS 0, all application publications QoS 0.
+MQTT 3.1.1, clean session, subscription QoS 0, command/result/state publications QoS 0. Discovery configurations/cleanup use
+retained QoS 1 with one acknowledged publication in flight; see [lifecycle](home-assistant.md#discovery-lifecycle-and-persistence).
 Last will is retained QoS 1, with 30-second keepalive. Command delivery is best
 effort: no offline command backlog, QoS retransmission queue or exactly-once
 claim. Never retain commands. Deliveries with the MQTT RETAIN flag are rejected.
@@ -217,7 +220,7 @@ parser recursion and rejects duplicate/missing/extra fields by exact schema.
 The owner ticks every 100 ms; output is bounded per radiator, with snapshots at
 five-second intervals. Capacity-dependent tracking lives in static memory.
 Client network calls have a one-second timeout, 256-byte RX/1024-byte TX buffers,
-1024-byte IDF outbox limit (subscription control traffic only), and paced
+9216-byte IDF outbox limit (one discovery config plus subscription control traffic), and paced
 five-second reconnect. No socket operation blocks the RF worker. NVS writes are
 explicit configuration actions only.
 
@@ -245,8 +248,10 @@ broker with anonymous access, real Paho MQTT 3.1.1 sockets and the production C
 MQTT service/HTTP/time/RF simulator. This test covers actual topics/JSON,
 admission/readback, duplicates, retained resubscription, graceful offline,
 abrupt-close last will, broker process restart and RF completion while offline.
-The Paho adapter has no routing policy; it reconnects at a five-second pace.
-The smoke test also explicitly reconnects after its forced socket loss. Firmware's ESP-MQTT paced reconnect is separate.
+The Paho adapter has no routing/reconnect policy. The production MQTT owner
+recreates both socket adapters after disconnect at a five-second pace, destroying
+any unacknowledged QoS-1 outbox before publishing newer discovery state. ESP-MQTT
+automatic reconnect is disabled; clean sessions alone do not remove that outbox.
 The optional Python dependency is pinned in the test instructions and is never
 imported into the physical firmware or ordinary simulator.
 
