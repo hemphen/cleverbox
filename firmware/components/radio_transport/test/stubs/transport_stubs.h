@@ -61,6 +61,11 @@ inline size_t transmitted_size;
 inline unsigned transmit_count;
 inline uint8_t incoming_bytes[64];
 inline size_t incoming_size, incoming_used;
+inline unsigned count_reads, receive_starts;
+inline bool receiving = true;
+inline int packet_mode = 2;
+inline size_t fixed_length;
+inline uint8_t (*count_hook)(uint8_t) = nullptr;
 class RadioLibHal {
 public:
     RadioLibHal(int, int, int, int, int, int) {}
@@ -87,30 +92,42 @@ public:
 class Module {
 public:
     Module(RadioLibHal *, int, int, uint32_t, int) {}
-    int SPIsetRegValue(int, int, int, int) { return 0; }
+    int SPIsetRegValue(int reg, int value, int, int) {
+        if (reg == RADIOLIB_CC1101_REG_PKTCTRL0) packet_mode = value;
+        return 0;
+    }
     uint8_t SPIreadRegister(int reg) {
-        if (reg == (RADIOLIB_CC1101_REG_RXBYTES | 0x40)) return incoming_size - incoming_used;
+        if (reg == (RADIOLIB_CC1101_REG_RXBYTES | 0x40)) {
+            ++count_reads;
+            uint8_t count = incoming_size - incoming_used;
+            return count_hook ? count_hook(count) : count;
+        }
         assert(reg == RADIOLIB_CC1101_REG_FIFO && incoming_used < incoming_size);
+        assert(!receiving || incoming_size - incoming_used > 1);
         return incoming_bytes[incoming_used++];
     }
     void SPIreadRegisterBurst(int, size_t size, uint8_t *out) {
         assert(incoming_used + size <= incoming_size);
+        assert(!receiving || incoming_used + size < incoming_size);
         memcpy(out, incoming_bytes + incoming_used, size); incoming_used += size;
     }
 };
 class CC1101 {
 public:
     explicit CC1101(Module *) {}
-    int standby() { return 0; }
-    int fixedPacketLengthMode(size_t) { return 0; }
+    int standby() { receiving = false; return 0; }
+    int fixedPacketLengthMode(size_t size) { packet_mode = 0; fixed_length = size; return 0; }
     int transmit(const uint8_t *bytes, size_t size) {
-        assert(size <= sizeof(transmitted_bytes));
+        assert(size <= sizeof(transmitted_bytes) && packet_mode == 0 && size == fixed_length);
         memcpy(transmitted_bytes, bytes, size); transmitted_size = size;
         ++transmit_count;
         if (transmit_hook) transmit_hook();
         return transmit_result;
     }
-    int startReceive() { return receive_result; }
+    int startReceive() {
+        ++receive_starts; incoming_size = incoming_used = 0;
+        receiving = receive_result == 0; return receive_result;
+    }
     int begin(double, double, double, double, int, int) { return 0; }
     int getChipVersion() { return 1; }
     int setPreambleLength(int, int) { return 0; }

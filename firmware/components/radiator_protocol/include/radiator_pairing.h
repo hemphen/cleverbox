@@ -14,7 +14,7 @@ typedef struct {
     int64_t deadline_ms, send_at_ms;
 } rf_pairing;
 bool rf_pair_active(const rf_pairing *p);
-bool rf_pair_start(rf_pairing *p, const uint8_t controller[4], const uint8_t candidate[4]);
+bool rf_pair_start(rf_pairing *p, const uint8_t controller[4], const uint8_t candidate[4], int64_t now_ms);
 void rf_pair_cancel(rf_pairing *p);
 void rf_pair_tick(rf_pairing *p, int64_t now_ms);
 bool rf_pair_next(const rf_pairing *p, int64_t now_ms, rf_frame *out);

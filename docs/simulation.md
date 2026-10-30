@@ -176,6 +176,15 @@ Generated records exercise full capacity; `test-capacity` reruns the same suites
 with a three-record build, including a larger stored configuration that cannot fit.
 Existing host/UI tests and the ESP32-C6 firmware build also run in CI.
 
+`make test` additionally injects FIFO prefixes, changing/overflow counts and
+monotonic time at the small RadioLib stub boundary while executing the production
+worker. It checks partial and FIFO-only reception before TX, matching reports
+before retry selection, bytes/uncertainty at the final pre-TX check, leave-one-byte
+reads, bounded recovery/deadlines, independent two-radiator progress, attempts,
+round-robin retention, TX errors and RX restoration. Fake FIFO tests establish
+software ordering only; they do not simulate on-air timing. The interactive
+simulator still supplies complete synthetic envelopes and has no RF timing model.
+
 **Limits:** simulation checks application behavior against protocol assumptions.
 It does not prove RF reception, transmission compatibility, capture-free setup,
 physical flash persistence, thermostat ownership or heating behavior. It does not

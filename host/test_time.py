@@ -65,7 +65,7 @@ def run(directory):
         app.advance(1)  # poll
         app.http('/api/time', {'action': 'manual', 'unix_seconds': 1893456000}) # forward correction
         app.http('/api/time', {'action': 'timezone', 'timezone': 'UTC0'})
-        app.advance(2499)  # first response at 300ms; TX follows on the next worker tick
+        app.advance(2499)  # first response at 300ms; receive-first TX follows in the same tick
         first = states(app)[-1]
         assert clock(first) == 86399 and first[37] == 3
         assert app.http()['command']['phase'] == 'waiting_readback'
@@ -75,7 +75,7 @@ def run(directory):
         assert app.http('/api/time')['synchronized_this_boot']
         app.advance(7500)
         app.sim('inject', frame=REPORT) # mismatching report permits second state, not a blind retry
-        app.advance(2)
+        app.advance(1)  # injected report and ready state TX share this receive-first iteration
         assert clock(states(app)[-1]) == 9, (clock(states(app)[-1]), app.http()['command'], [clock(f) for f in states(app)])
         assert app.http()['command']['attempts'] == 2
         before = app.http()['simulation_tx']

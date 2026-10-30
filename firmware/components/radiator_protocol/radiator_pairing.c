@@ -7,13 +7,13 @@ bool rf_pair_active(const rf_pairing *p)
     return p->phase >= RF_PAIR_OFFER && p->phase <= RF_PAIR_WAIT_ACK;
 }
 
-bool rf_pair_start(rf_pairing *p, const uint8_t controller[4], const uint8_t candidate[4])
+bool rf_pair_start(rf_pairing *p, const uint8_t controller[4], const uint8_t candidate[4], int64_t now_ms)
 {
     if (rf_pair_active(p) || p->phase == RF_PAIR_COMPLETE ||
         (candidate[0] != 0xf1 && candidate[0] != 0xd0) ||
         controller[0] != candidate[0] || !memcmp(controller, candidate, 4) ||
         !(controller[1] | controller[2] | controller[3])) return false;
-    *p = (rf_pairing){.phase = RF_PAIR_OFFER};
+    *p = (rf_pairing){.phase = RF_PAIR_OFFER, .deadline_ms = now_ms + 5000};
     memcpy(p->controller, controller, 4);
     memcpy(p->candidate, candidate, 4);
     return true;
@@ -26,12 +26,12 @@ void rf_pair_cancel(rf_pairing *p)
 
 void rf_pair_tick(rf_pairing *p, int64_t now_ms)
 {
-    if ((p->phase == RF_PAIR_WAIT_REPLY || p->phase == RF_PAIR_WAIT_ACK) &&
-        now_ms >= p->deadline_ms) p->phase = RF_PAIR_TIMEOUT;
+    if (rf_pair_active(p) && now_ms >= p->deadline_ms) p->phase = RF_PAIR_TIMEOUT;
 }
 
 bool rf_pair_next(const rf_pairing *p, int64_t now_ms, rf_frame *out)
 {
+    if (now_ms >= p->deadline_ms) return false;
     if (p->phase == RF_PAIR_OFFER)
         return rf_short(out, p->controller, p->candidate, RF_OFFER);
     if (p->phase == RF_PAIR_BIND && now_ms >= p->send_at_ms)
@@ -59,6 +59,7 @@ void rf_pair_receive(rf_pairing *p, int64_t now_ms, const rf_frame *frame)
         p->phase = RF_PAIR_BIND;
         // A reversible timing assumption based on the observed one-second gaps.
         p->send_at_ms = now_ms + 1000;
+        // Keep the reply deadline during bind delay/RX deferral; no extension.
     } else if (p->phase == RF_PAIR_WAIT_ACK && frame->size == 18 &&
                !memcmp(frame->bytes + 1, p->radiator, 4) &&
                !memcmp(frame->bytes + 10, "\x01\x00\x0a\x47", 4)) {
