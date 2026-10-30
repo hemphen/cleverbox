@@ -150,3 +150,11 @@ test-home-assistant: host
 test-discovery-limit:
 	$(MAKE) BUILD_DIR=build/discovery-limit CPPFLAGS=-DMQTT_DISCOVERY_PAYLOAD_BYTES=128 host
 	CLEVERBOX_DISCOVERY_LIMIT_TEST=1 CLEVERBOX_SIM_LIBRARY=$(abspath build/discovery-limit/host/libcleverbox.so) python3 host/test_mqtt_discovery.py
+
+# Optional real-library register/HAL probes; no ESP-IDF or physical radio.
+.PHONY: test-radiolib
+test-radiolib:
+	@test -n "$(RADIOLIB_SOURCE)" || (echo 'Set RADIOLIB_SOURCE to an exact checkout'; exit 1)
+	cmake -S test/radiolib -B $(BUILD_DIR)/radiolib -DRADIOLIB_SOURCE=$(abspath $(RADIOLIB_SOURCE))
+	cmake --build $(BUILD_DIR)/radiolib --parallel 4
+	./$(BUILD_DIR)/radiolib/test_cc1101

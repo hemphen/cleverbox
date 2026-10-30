@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.16)
+project(cc1101_compatibility CXX)
+if(NOT EXISTS "${RADIOLIB_SOURCE}/src/RadioLib.h")
+    message(FATAL_ERROR "Set RADIOLIB_SOURCE to an exact RadioLib checkout")
+endif()
+# Match the firmware's driver exclusions, without ESP-IDF or fake RadioLib.
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/../../firmware/CMakeLists.txt" exclusions
+     REGEX "^    RADIOLIB_EXCLUDE_")
+foreach(exclusion IN LISTS exclusions)
+    string(STRIP "${exclusion}" exclusion)
+    add_compile_definitions(${exclusion})
+endforeach()
+add_subdirectory("${RADIOLIB_SOURCE}" radiolib)
+add_executable(test_cc1101 test_cc1101.cpp)
+target_link_libraries(test_cc1101 PRIVATE RadioLib)
+target_compile_features(test_cc1101 PRIVATE cxx_std_17)
+target_compile_options(test_cc1101 PRIVATE -Wall -Wextra -Werror -UNDEBUG)

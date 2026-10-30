@@ -14,8 +14,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libcjson-dev pkg-config mosquitto python3-venv
+      - run: sudo apt-get update && sudo apt-get install -y libcjson-dev pkg-config mosquitto python3-venv cmake
       - run: make test test-http test-capacity test-discovery-limit
+      - name: Real pinned RadioLib register probes
+        run: |
+          pin=$(sed -n 's/^    version: //p' firmware/components/radio_transport/idf_component.yml)
+          git init build/radiolib-source
+          git -C build/radiolib-source fetch --depth=1 https://github.com/jgromes/RadioLib.git "$pin"
+          git -C build/radiolib-source checkout --detach FETCH_HEAD
+          test "$(git -C build/radiolib-source rev-parse HEAD)" = "$pin"
+          make RADIOLIB_SOURCE=build/radiolib-source test-radiolib
       - name: Real local MQTT broker smoke
         run: |
           python3 -m venv build/mqtt-venv

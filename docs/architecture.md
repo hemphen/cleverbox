@@ -49,8 +49,9 @@ machines and writes the radiator registry.
 | `main` | Startup, HTTP handlers (`http_api.c`), embedded page (`index.html`) | all |
 
 Dependencies: ESP-IDF 5.5.1 (FreeRTOS, Wi-Fi, HTTP server, NVS, SNTP, ESP-MQTT)
-and RadioLib 7.3.0 pinned to commit `2a2f6e0edf5a527cd83d2a04a7e2eb5d220329cd`.
-Only RadioLib's CC1101 driver is compiled.
+and RadioLib 7.8.1 pinned to commit `2325a38a89dd0f0e402c19f67fe910111da1e246`.
+Only the CC1101 driver is enabled. See the [dependency evaluation](radiolib.md)
+for compatibility, real-library tests, resources and hardware limits.
 
 ## Tasks and shared state
 
