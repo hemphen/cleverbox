@@ -102,7 +102,17 @@ Leave the existing Touch E3 system running.
 - [ ] `valid_frames` increases.
 - [ ] `report` shows plausible temperature, target and mode.
 - [ ] After changing a target on the Touch E3, the next report shows it and `report.age_ms` resets.
-- [ ] Copy a 59-byte controller-state frame (hex starting `38`) addressed to each radiator from `last_frame`. These are candidate templates for stage 5.
+- [ ] Capture a 59-byte controller-state frame (hex starting `38`) from the Touch E3 to each radiator. These are candidate templates for stage 5.
+
+Cleverbox has no reliable capture mechanism yet. `last_frame` in
+`GET /api/radio` holds only the latest CRC-valid frame of any type and address.
+The next frame, such as an acknowledgement, a report or another radiator's
+traffic, replaces it, often before the page refreshes every 2 s. Capture with an
+external receiver, such as an SDR with the
+[clevertouch-radio](https://github.com/hemphen/clevertouch-radio) decoder.
+Sampling `/api/radio` in a tight loop and keeping each `last_frame` that starts
+with `38` and has the radiator as destination (bytes 6–9) can also work, but it
+is opportunistic.
 
 ### 3. Network and recovery
 
@@ -136,11 +146,16 @@ can reset the radiator's stored settings.
 - [ ] With the radiator unpowered, a command reaches `timeout`; a later matching report changes it to `matched` without new transmissions.
 - [ ] Reboot with a command pending: the pairing and saved template remain, the command is not resumed and nothing is sent at boot.
 
-Open questions to answer here:
+Open questions to answer here, using genuine captured templates only:
 
 - [ ] Does a template captured from the Touch E3 work after pairing under a new controller address?
-- [ ] Do simple values for `97` and `5B` work (zeros, `97` byte 0 copied from the report's `DF` byte 0)?
 - [ ] Does a saved template stop working over days?
+
+Do not substitute values for `97` or `5B` during acceptance. A `matched` result
+would not show that a substitute is harmless. Constructing these fields is a
+separate protocol investigation with a known-good baseline and a recovery
+procedure; its questions belong in clevertouch-protocol (see
+[AGENTS.md](../AGENTS.md#protocol)).
 
 ### 6. Two radiators and overlapping traffic
 

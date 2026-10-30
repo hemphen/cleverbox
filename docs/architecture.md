@@ -214,7 +214,8 @@ with `error` and the radio task stops until reboot.
 
 Commands carry the local time of day (`B2`). Time is usable only after an SNTP
 sync or a manual UTC set during the current boot; no RTC or stored time is
-trusted. Without usable time, commands are refused.
+trusted. Without usable time, UI and MQTT commands are refused. The only
+bypass is the `clock_seconds` field of `POST /api/command`, intended for tests.
 
 - SNTP (`pool.ntp.org`) starts on each station IP event and resyncs hourly.
 - Manual UTC (`/api/time`, action `manual`) is valid until reboot or the next

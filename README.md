@@ -46,8 +46,13 @@ no known construction rule, so they are copied from the template unchanged. See
 - The HTTP interface has no login. The setup access point uses the fixed,
   published password `cleverbox` and opens on every boot and every Wi-Fi drop.
 - MQTT uses plain TCP. NVS is not encrypted.
-- Commands are refused after each boot until the clock is set by SNTP or by hand.
-- A radio error stops the radio task until the next reboot.
+- UI and MQTT commands are refused after each boot until the clock is set by
+  SNTP or by hand. `POST /api/command` accepts an explicit `clock_seconds`
+  override, intended for tests ([Time](docs/architecture.md#time)).
+- If the radio cannot be initialised, or restoring reception fails at runtime,
+  the radio task stops until the next reboot. A transmit failure ends only the
+  affected command; receive errors are counted and reception restarts
+  ([Receive path](docs/architecture.md#receive-path)).
 
 ## Quick start
 
@@ -129,7 +134,7 @@ label to rerun after new commits.
 ## Scope
 
 In scope: one board, Purmo/LVI radiators, local HTTP, MQTT and Home Assistant
-discovery. OTA is the next milestone.
+discovery. OTA is planned as a separate milestone.
 
 Out of scope: schedules (Home Assistant owns them), history storage, Matter,
 Thread, Zigbee, Ethernet, other boards and cloud services.

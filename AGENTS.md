@@ -21,8 +21,9 @@ ESP32-C6 + CC1101 board. Read [README.md](README.md) and
 ## Scope
 
 - C/C++ with ESP-IDF 5.5.1 and RadioLib. Pin every dependency.
-- Interfaces: local HTTP, MQTT and Home Assistant discovery. OTA is the next
-  milestone. No Matter, Thread or Zigbee, and no resources reserved for them.
+- Interfaces: local HTTP, MQTT and Home Assistant discovery. OTA is planned as
+  a separate milestone. No Matter, Thread or Zigbee, and no resources reserved
+  for them.
 - No scheduler or schedule storage. Home Assistant owns schedules. Cleverbox
   accepts immediate target and mode commands only.
 - Build only what the current milestone needs. No abstractions for other boards,
