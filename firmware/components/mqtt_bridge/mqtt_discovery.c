@@ -11,9 +11,9 @@
 // Persist before publishing: even a power cut after broker acceptance leaves a
 // known topic to replay/delete. Capacity bounds churn while offline; no ID range
 // scans, wildcard deletions or unbounded tombstone list. No per-heartbeat writes.
-#define SLOTS (2 * CLEVERBOX_RADIATOR_CAPACITY)
-#define RECORD_BYTES (8 + 4 * SLOTS)
-static uint32_t ids[SLOTS];
+#define SLOTS (2 * (CLEVERBOX_RADIATOR_CAPACITY + RADIO_MONITOR_CAPACITY))
+#define RECORD_BYTES (8 + 8 * SLOTS)
+static uint64_t ids[SLOTS];
 static bool enabled, valid, publish_failed;
 static bool advertised[SLOTS];
 static char names[SLOTS][RADIATOR_NAME_BYTES+1], pending_name[RADIATOR_NAME_BYTES+1];
@@ -21,7 +21,7 @@ static char bridge[13];
 static unsigned cursor;
 static uint32_t generation;
 static int error, pending_mid, ack_mid;
-static uint32_t pending_id;
+static uint64_t pending_id;
 static bool pending_delete;
 static int64_t due, deadline;
 static char payload[MQTT_DISCOVERY_PAYLOAD_BYTES]; // never on task stack
@@ -30,10 +30,10 @@ static int64_t now(void) { return esp_timer_get_time()/1000; }
 static esp_err_t save(void) {
     if (generation == UINT32_MAX) return ESP_ERR_INVALID_STATE;
     ++generation; // Different bytes force NVS to resolve same-value retry writes.
-    memset(record, 0, sizeof(record)); record[0] = 1; record[1] = enabled;
+    memset(record, 0, sizeof(record)); record[0] = 2; record[1] = enabled;
     for (unsigned b = 0; b < 4; ++b) record[4+b] = generation >> (8*b);
     for (size_t i = 0; i < SLOTS; ++i)
-        for (unsigned b = 0; b < 4; ++b) record[8+4*i+b] = ids[i] >> (8*b);
+        for (unsigned b = 0; b < 8; ++b) record[8+8*i+b] = ids[i] >> (8*b);
     esp_err_t mode_error = device_mode_prepare_write();
     if (mode_error != ESP_OK) return mode_error;
     nvs_handle_t h; esp_err_t err = nvs_open("cleverbox", NVS_READWRITE, &h);
@@ -63,12 +63,16 @@ void mqtt_discovery_init(const char *identity) {
     esp_err_t err = nvs_open("cleverbox", NVS_READONLY, &h);
     if (err == ESP_OK) { err = nvs_get_blob(h, "ha_discovery", record, &size); nvs_close(h); }
     if (err == ESP_ERR_NVS_NOT_FOUND) return;
-    if (err == ESP_OK && (size != sizeof(record) || record[0] != 1 || record[1] > 1 || record[2] || record[3])) err = ESP_ERR_INVALID_STATE;
+    if (err == ESP_OK && (!((record[0] == 2 && size == sizeof(record)) ||
+        (record[0] == 1 && size == 8 + 4 * (2 * CLEVERBOX_RADIATOR_CAPACITY))) || record[1] > 1 || record[2] || record[3])) err = ESP_ERR_INVALID_STATE;
     if (err == ESP_OK) {
         enabled = record[1];
         for (unsigned b = 0; b < 4; ++b) generation |= (uint32_t)record[4+b] << (8*b);
-        for (size_t i = 0; i < SLOTS; ++i) {
-            for (unsigned b = 0; b < 4; ++b) ids[i] |= (uint32_t)record[8+4*i+b] << (8*b);
+        size_t stride=record[0]==1 ? 4 : 8;
+        size_t count=(size-8)/stride;
+        for (size_t i = 0; i < count; ++i) {
+            for (unsigned b = 0; b < stride; ++b) ids[i] |= (uint64_t)record[8+stride*i+b] << (8*b);
+            if ((ids[i] >> 32) > 1) err=ESP_ERR_INVALID_STATE;
             for (size_t j = 0; ids[i] && j < i; ++j) if (ids[j] == ids[i]) err = ESP_ERR_INVALID_STATE;
         }
     }
@@ -86,16 +90,45 @@ esp_err_t mqtt_discovery_set(bool value) {
     if (err != ESP_OK) enabled = old;
     error = err; mqtt_discovery_replay(); return err;
 }
+// High word tags the separate passive identity space. All 32 RF bits remain
+// intact, including leading zeros; paired IDs retain their existing topics.
+static uint64_t monitor_key(const uint8_t a[4]) {
+    return (1ULL<<32) | (uint64_t)a[0]<<24 | (uint64_t)a[1]<<16 | (uint64_t)a[2]<<8 | a[3];
+}
+static bool lookup(uint64_t key, radiator_record *d) {
+    if (!(key>>32)) return radio_device_status((uint32_t)key,d)==ESP_OK;
+    uint8_t a[4]; for (unsigned i=0;i<4;++i) a[i]=key>>(8*(3-i));
+    radio_monitor m;
+    if (radio_monitor_get(a,&m)!=ESP_OK) return false;
+    memset(d,0,sizeof(*d)); d->id=(uint32_t)key; strcpy(d->name,m.selection.name); return true;
+}
+static void register_key(uint64_t key) {
+    bool found=false; size_t empty=SLOTS;
+    for (size_t k=0;k<SLOTS;++k) { if (ids[k]==key) found=true; if (!ids[k]) empty=k; }
+    if (!found && empty<SLOTS) {
+        ids[empty]=key; error=save();
+        if (error) ids[empty]=0;
+        else advertised[empty]=false;
+    }
+}
 void mqtt_discovery_status(mqtt_bridge_status *out) {
     out->discovery_enabled = enabled; out->discovery_error = error ? error : publish_failed ? MQTT_ERR_DISCOVERY_PUBLISH : 0;
     unsigned count = pending_mid ? 1 : 0;
     radiator_record d;
     for (size_t i = 0; i < SLOTS; ++i)
-        if (ids[i] && (!enabled || radio_device_status(ids[i], &d) != ESP_OK)) ++count;
+        if (ids[i] && (!enabled || !lookup(ids[i], &d))) ++count;
     if (enabled) for (size_t i = 0; radio_device_at(i, &d) == ESP_OK; ++i) {
         bool found = false;
         for (size_t k = 0; k < SLOTS; ++k) if (ids[k] == d.id) found = true;
         if (!found) ++count;
+    }
+    if (enabled) {
+        radio_monitor m;
+        for (size_t i=0;radio_monitor_at(i,&m)==ESP_OK;++i) {
+            bool found=false; uint64_t key=monitor_key(m.selection.address);
+            for (size_t k=0;k<SLOTS;++k) if (ids[k]==key) found=true;
+            if (!found) ++count;
+        }
     }
     out->discovery_pending = count;
 }
@@ -111,10 +144,14 @@ void mqtt_bridge_puback(int mid) {
     if (pending_mid && (pending_mid == -1 || pending_mid == mid)) ack_mid = mid;
     mqtt_platform_unlock();
 }
-static bool build(const radiator_record *d, bool removal) {
+static bool build(const radiator_record *d, bool removal, bool passive) {
     char identity[64], topic[128], uid[96], entity[96];
-    snprintf(identity, sizeof(identity), "cleverbox_%s_%u", bridge, (unsigned)d->id);
-    snprintf(topic, sizeof(topic), "cleverbox/v1/%s/radiators/%u/state", bridge, (unsigned)d->id);
+    char endpoint[24];
+    if (passive) snprintf(endpoint,sizeof(endpoint),"passive_%08X",(unsigned)d->id);
+    else snprintf(endpoint,sizeof(endpoint),"%u",(unsigned)d->id);
+    snprintf(identity, sizeof(identity), "cleverbox_%s_%s", bridge, endpoint);
+    if (passive) snprintf(topic,sizeof(topic),"cleverbox/v1/%s/passive/%08X/state",bridge,(unsigned)d->id);
+    else snprintf(topic, sizeof(topic), "cleverbox/v1/%s/radiators/%u/state", bridge, (unsigned)d->id);
     cJSON *root = cJSON_CreateObject(), *dev = cJSON_AddObjectToObject(root, "device");
     cJSON_AddStringToObject(dev, "identifiers", identity);
     char fallback[48]; snprintf(fallback, sizeof(fallback), "Radiator %u", (unsigned)d->id);
@@ -126,11 +163,14 @@ static bool build(const radiator_record *d, bool removal) {
     cJSON_AddStringToObject(origin, "support_url", "https://github.com/hemphen/cleverbox");
     if (!removal) cJSON_AddStringToObject(root, "state_topic", topic);
     char avail[96]; snprintf(avail, sizeof(avail), "cleverbox/v1/%s/availability", bridge);
+    // HA entity IDs are lowercase slugs; device/unique IDs and RF topics keep
+    // the documented uppercase address representation.
+    if (passive) snprintf(endpoint,sizeof(endpoint),"passive_%08x",(unsigned)d->id);
     cJSON *components = cJSON_AddObjectToObject(root, "components");
     static const char *keys[] = {"temperature_centi_c", "target_centi_c", "mode", "fresh", "age", "admission", "delivery"};
     static const char *names[] = {"Temperature", "Observed target", "Observed mode", "Observation fresh", "Report age", "Last admission", "Last delivery"};
     static const char *entity_keys[] = {"temperature", "observed_target", "observed_mode", "observation_fresh", "report_age", "last_admission", "last_delivery"};
-    for (size_t i = 0; i < 7; ++i) {
+    for (size_t i = 0; i < (passive ? 5U : 7U); ++i) {
         cJSON *c = cJSON_AddObjectToObject(components, keys[i]);
         cJSON_AddStringToObject(c, "platform", i == 3 ? "binary_sensor" : "sensor");
         // HA's documented per-component removal shape. Retain it so an HA
@@ -138,7 +178,7 @@ static bool build(const radiator_record *d, bool removal) {
         // A zero-length retained write would erase that recovery information.
         if (removal) continue;
         snprintf(uid, sizeof(uid), "%s_%s", identity, keys[i]);
-        snprintf(entity, sizeof(entity), "%s.cleverbox_%s_%u_%s", i == 3 ? "binary_sensor" : "sensor", bridge, (unsigned)d->id, entity_keys[i]);
+        snprintf(entity, sizeof(entity), "%s.cleverbox_%s_%s_%s", i == 3 ? "binary_sensor" : "sensor", bridge, endpoint, entity_keys[i]);
         cJSON_AddStringToObject(c, "unique_id", uid);
         cJSON_AddStringToObject(c, "default_entity_id", entity);
         cJSON_AddStringToObject(c, "name", names[i]);
@@ -170,6 +210,10 @@ static bool build(const radiator_record *d, bool removal) {
                 char attrs[160]; snprintf(attrs, sizeof(attrs), "{{ dict(result=value_json.%s | default({})) | to_json }}", keys[i]);
                 cJSON_AddStringToObject(c, "json_attributes_template", attrs);
             }
+        }
+        if (passive && i==4) {
+            cJSON_AddStringToObject(c,"json_attributes_topic",topic);
+            cJSON_AddStringToObject(c,"json_attributes_template","{{ dict(radiator=value_json.radiator, controller=value_json.get('controller')) | to_json }}");
         }
         cJSON_AddStringToObject(c, "value_template", templ);
     }
@@ -203,24 +247,19 @@ void mqtt_discovery_tick(mqtt_client_ops *client) {
     // Register new topics durably before sending any configuration.
     if (enabled) {
         radiator_record d;
-        for (size_t i = 0; radio_device_at(i, &d) == ESP_OK; ++i) {
-            bool found = false; size_t empty = SLOTS;
-            for (size_t k = 0; k < SLOTS; ++k) { if (ids[k] == d.id) found = true; if (!ids[k]) empty = k; }
-            if (!found && empty < SLOTS) {
-                ids[empty] = d.id; error = save();
-                if (error) { ids[empty] = 0; return; }
-                advertised[empty] = false;
-            }
-            // Full journal leaves the new radiator undiscovered until cleanup.
-        }
+        for (size_t i=0;radio_device_at(i,&d)==ESP_OK;++i) { register_key(d.id); if (error) return; }
+        radio_monitor m;
+        for (size_t i=0;radio_monitor_at(i,&m)==ESP_OK;++i) { register_key(monitor_key(m.selection.address)); if (error) return; }
     }
     for (unsigned slot = cursor; slot < SLOTS; ++slot) {
         if (!ids[slot]) continue;
-        radiator_record d; bool remove = !enabled || radio_device_status(ids[slot], &d) != ESP_OK;
+        radiator_record d; bool remove = !enabled || !lookup(ids[slot], &d);
         if (!remove && advertised[slot] && !strcmp(names[slot], d.name)) continue;
-        if (remove) { memset(&d, 0, sizeof(d)); d.id = ids[slot]; }
-        if (!build(&d, remove)) { error = MQTT_ERR_DISCOVERY_PAYLOAD; return; }
-        char topic[128]; snprintf(topic, sizeof(topic), "homeassistant/device/cleverbox_%s_%u/config", bridge, (unsigned)ids[slot]);
+        if (remove) { memset(&d, 0, sizeof(d)); d.id = (uint32_t)ids[slot]; }
+        if (!build(&d, remove, (ids[slot]>>32)!=0)) { error = MQTT_ERR_DISCOVERY_PAYLOAD; return; }
+        char topic[128];
+        if (ids[slot]>>32) snprintf(topic,sizeof(topic),"homeassistant/device/cleverbox_%s_passive_%08X/config",bridge,(unsigned)ids[slot]);
+        else snprintf(topic, sizeof(topic), "homeassistant/device/cleverbox_%s_%u/config", bridge, (unsigned)ids[slot]);
         pending_id = ids[slot]; pending_delete = remove;
         if (!remove) strcpy(pending_name, d.name);
         mqtt_platform_lock(); pending_mid = -1; ack_mid = 0; mqtt_platform_unlock();

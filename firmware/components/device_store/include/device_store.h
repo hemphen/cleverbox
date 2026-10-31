@@ -50,6 +50,12 @@ typedef struct {
     size_t count;
     radiator_record records[CLEVERBOX_RADIATOR_CAPACITY];
 } radiator_registry;
+#define RADIO_MONITOR_CAPACITY CLEVERBOX_RADIATOR_CAPACITY
+#define MONITOR_STORAGE_BYTES (7 + RADIO_MONITOR_CAPACITY * (4 + RADIATOR_NAME_BYTES + 1))
+typedef struct { uint8_t address[4]; char name[RADIATOR_NAME_BYTES + 1]; } monitor_selection;
+typedef struct { size_t count; monitor_selection records[RADIO_MONITOR_CAPACITY]; } monitor_registry;
+esp_err_t device_monitors_load(monitor_registry *out);
+esp_err_t device_monitors_save(const monitor_registry *value);
 // A present registry (even empty) is authoritative; legacy keys are never erased.
 // Capacity/version/validation failures block mutation, never truncate records.
 esp_err_t device_registry_load(radiator_registry *registry);

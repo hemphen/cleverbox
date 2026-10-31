@@ -286,6 +286,25 @@ async function main() {
   await vm.runInContext('refreshNetwork()',context);
   await vm.runInContext('refreshCommissioning()',context);
   assert.equal(fields.enableControl.disabled,true); assert.equal(fields.adoptCandidate.disabled,true);
+  network={...network,http_interface:'sta',http_control_allowed:true};
+  await vm.runInContext('refreshNetwork()',context);
+  commissioning={...commissioning,monitor_capacity:8,monitor_save_status:'succeeded',monitor_storage_error:0,
+    monitors:[{radiator:'F1040506',name:'Observed room',available:false}],discovery_enabled:false};
+  await vm.runInContext('refreshCommissioning()',context);
+  assert.match(fields.monitorStatus.textContent,/Global discovery: disabled/);
+  assert.match(fields.monitorStatus.textContent,/F1040506 · Observed room · No report this boot/);
+  fields.monitorAddress.value='F1040506'; fields.monitorName.value='Renamed';
+  await fields.monitorSelect.handlers.click();
+  assert.deepEqual(lastRequest,{url:'/api/commissioning',body:{action:'select',radiator:'F1040506',name:'Renamed'}});
+  await fields.monitorRename.handlers.click(); assert.equal(lastRequest.body.action,'rename');
+  await fields.monitorRemove.handlers.click();
+  assert.deepEqual(lastRequest,{url:'/api/commissioning',body:{action:'remove',radiator:'F1040506'}});
+  commissioning.monitor_storage_error=1; commissioning.monitor_persistence_uncertain=true; commissioning.monitor_save_status='failed';
+  await vm.runInContext('refreshCommissioning()',context);
+  assert.match(fields.monitorStatus.textContent,/Persistence uncertain/);
+  for(const id of ['monitorSelect','monitorRename','monitorRemove']) assert(fields[id].disabled,id);
+  network={...network,http_interface:'ap',http_control_allowed:false}; await vm.runInContext('refreshNetwork()',context);
+  const beforeMonitor=lastRequest; await fields.monitorSelect.handlers.click(); assert.equal(lastRequest,beforeMonitor);
   console.log('UI passive mode/candidate selection/errors plus learned/missing state, optional import, preview, admission and error rendering: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

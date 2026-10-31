@@ -34,6 +34,10 @@ test:
 	./$(BUILD_DIR)/test_mode_bootstrap race
 	./$(BUILD_DIR)/test_mode_bootstrap enable-first
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ihost/include -Ifirmware/components/device_store/include -Ifirmware/components/radiator_protocol/include \
+	  firmware/components/device_store/monitor_store.c firmware/components/device_store/test/test_monitors.c -o $(BUILD_DIR)/test_monitors
+	./$(BUILD_DIR)/test_monitors
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
 	  -Ifirmware/components/radiator_protocol/include \
 	  firmware/components/radiator_protocol/radiator_protocol.c \
 	  firmware/components/radiator_protocol/radiator_control.c \
@@ -106,7 +110,7 @@ HOST_CFLAGS = -std=c11 -Wall -Wextra -Werror -pedantic -g -fPIC -MMD -MP -DCLEVE
   -Ifirmware/components/mqtt_bridge/include -Ifirmware/components/device_time/include -Ifirmware/components/network_setup/include -Ihost/include -Ifirmware/main -Ifirmware/components/radio_transport \
   -Ifirmware/components/radio_transport/include -Ifirmware/components/device_store/include \
   -Ifirmware/components/radiator_protocol/include $(shell pkg-config --cflags libcjson)
-HOST_CSOURCES = firmware/components/mqtt_bridge/mqtt_discovery.c firmware/components/mqtt_bridge/mqtt_bridge.c firmware/components/mqtt_bridge/mqtt_store.c host/mqtt.c \
+HOST_CSOURCES = firmware/components/device_store/monitor_store.c firmware/components/mqtt_bridge/mqtt_discovery.c firmware/components/mqtt_bridge/mqtt_bridge.c firmware/components/mqtt_bridge/mqtt_store.c host/mqtt.c \
   firmware/components/device_time/device_time.c \
   firmware/components/device_time/time_store.c host/time.c \
   firmware/components/radiator_protocol/radiator_protocol.c \
@@ -134,6 +138,7 @@ simulate: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/serve.py
 
 test-http: host test-http-physical
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_passive_ha.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_passive.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_http.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_registry.py
@@ -166,6 +171,7 @@ test-home-assistant: host
 test-discovery-limit:
 	$(MAKE) BUILD_DIR=build/discovery-limit CPPFLAGS=-DMQTT_DISCOVERY_PAYLOAD_BYTES=128 host
 	CLEVERBOX_DISCOVERY_LIMIT_TEST=1 CLEVERBOX_SIM_LIBRARY=$(abspath build/discovery-limit/host/libcleverbox.so) python3 host/test_mqtt_discovery.py
+	CLEVERBOX_DISCOVERY_LIMIT_TEST=1 CLEVERBOX_SIM_LIBRARY=$(abspath build/discovery-limit/host/libcleverbox.so) python3 host/test_passive_ha.py
 
 # Optional real-library register/HAL probes; no ESP-IDF or physical radio.
 .PHONY: test-radiolib

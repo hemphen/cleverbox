@@ -33,6 +33,8 @@ static void lock_status() { if (status_lock) xSemaphoreTake(status_lock, portMAX
 static void unlock_status() { if (status_lock) xSemaphoreGive(status_lock); }
 static bool tx_in_progress;
 static radio_observation observations[RADIO_PASSIVE_CAPACITY];
+static monitor_registry monitors;
+static radio_monitor monitored[RADIO_MONITOR_CAPACITY];
 static radio_candidate candidates[RADIO_PASSIVE_CAPACITY];
 static uint64_t capture_sequence, capture_boot;
 
@@ -70,7 +72,7 @@ extern "C" esp_err_t radio_device_at(size_t index, radiator_record *out) {
     unlock_status();
     return found ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
-enum radio_action { PAIR_START, PAIR_CANCEL, PAIR_SAVE, CONTROL_START, STATE_SAVE, STATE_CLEAR, RENAME, REMOVE, MODE_SET };
+enum radio_action { PAIR_START, PAIR_CANCEL, PAIR_SAVE, CONTROL_START, STATE_SAVE, STATE_CLEAR, RENAME, REMOVE, MODE_SET, MONITOR_SET, MONITOR_REMOVE };
 struct radio_request {
     radio_action action; uint32_t id;
     bool enabled; char adoption_version[33];
@@ -111,10 +113,46 @@ extern "C" esp_err_t radio_candidate_at(size_t index, radio_candidate *out) {
     if (found) *out = candidates[index];
     unlock_status(); return found ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
+extern "C" esp_err_t radio_monitor_at(size_t i, radio_monitor *out) {
+    lock_status(); bool found=i<monitors.count;
+    if (found) *out=monitored[i];
+    unlock_status(); return found ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+extern "C" esp_err_t radio_monitor_get(const uint8_t a[4], radio_monitor *out) {
+    lock_status(); bool found=false;
+    for (size_t i=0;i<monitors.count;++i) if (!memcmp(a,monitors.records[i].address,4)) { *out=monitored[i]; found=true; break; }
+    unlock_status(); return found ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+extern "C" esp_err_t radio_monitor_change(const char *action, const uint8_t a[4], const char *name) {
+    bool remove=!strcmp(action,"remove"), select=!strcmp(action,"select"), rename=!strcmp(action,"rename");
+    if ((!remove && !select && !rename) || (!remove && (!name || !*name || strlen(name)>RADIATOR_NAME_BYTES))) return ESP_ERR_INVALID_ARG;
+    if (!remove) for (const char *c=name;*c;++c) if ((unsigned char)*c<32 || *c==127) return ESP_ERR_INVALID_ARG;
+    radio_request r={}; r.action=remove ? MONITOR_REMOVE : MONITOR_SET; memcpy(r.candidate,a,4);
+    if (!remove) strcpy(r.name,name);
+    lock_status();
+    bool found=false, observed=false, paired=false;
+    for (size_t i=0;i<monitors.count;++i) found|=!memcmp(a,monitors.records[i].address,4);
+    for (size_t i=0;i<status.observation_count;++i) observed|=!memcmp(a,observations[i].report.source,4);
+    for (size_t i=0;i<registry.count;++i) paired|=!memcmp(a,registry.records[i].pair.radiator,4);
+    esp_err_t e=paired ? RADIO_ERR_MONITOR_PAIRED :
+        !found && select && monitors.count==RADIO_MONITOR_CAPACITY ? RADIO_ERR_MONITOR_CAPACITY :
+        !found && select && !observed ? RADIO_ERR_MONITOR_UNOBSERVED : ESP_ERR_INVALID_STATE;
+    if (radio_requests && status.ready && !mutation_pending && !status.mode_pending && !pair_reserved &&
+        !status.monitor_error && !status.registry_error && !paired &&
+        (found || (select && observed && monitors.count<RADIO_MONITOR_CAPACITY))) {
+        mutation_pending=status.monitor_pending=true; e=queue_request(r);
+        if (e!=ESP_OK) mutation_pending=status.monitor_pending=false;
+        else status.monitor_result=RADIO_STORE_PENDING;
+    }
+    unlock_status(); return e;
+}
 // Owner calls under task mutex. Lowest timestamp wins; ties use the lowest
 // slot. Reports and controller candidates have independent replacement bounds.
 static void capture_passive(const rf_frame &f, const rf_report *report, bool state, int64_t now) {
     if (report) {
+        for (size_t i=0;i<monitors.count;++i) if (!memcmp(monitors.records[i].address,report->source,4)) {
+            monitored[i].available=true; monitored[i].observation={*report,now};
+        }
         size_t slot = status.observation_count;
         for (size_t i = 0; i < status.observation_count; ++i)
             if (!memcmp(observations[i].report.source, report->source, 4)) { slot = i; break; }
@@ -150,7 +188,7 @@ extern "C" esp_err_t radio_pair_start(const uint8_t controller[4], const uint8_t
     memcpy(r.controller, controller, 4); memcpy(r.candidate, candidate, 4);
     lock_status();
     esp_err_t result = rf_allowed() ? ESP_ERR_INVALID_STATE : RADIO_ERR_LISTEN_ONLY;
-    if (rf_allowed() && status.ready && radio_requests && !status.registry_error && !exchange_id && !mutation_pending &&
+    if (rf_allowed() && status.ready && radio_requests && !status.registry_error && !status.monitor_error && !exchange_id && !mutation_pending &&
         registry.count < CLEVERBOX_RADIATOR_CAPACITY && registry.next_id != UINT32_MAX) {
         bool commands_outstanding = false;
         for (size_t i = 0; i < registry.count; ++i) commands_outstanding |= registry.records[i].command_reserved;
@@ -324,6 +362,9 @@ static int transmit_frame(const rf_frame &frame, int &rx_result)
 }
 
 static void save_pair(const rf_pairing &pair, bool &saved, int &error) {
+    // Defense in depth: never persist paired control over a monitored address.
+    for (size_t i=0;i<monitors.count;++i)
+        if (!memcmp(monitors.records[i].address,pair.radiator,4)) { error=ESP_ERR_INVALID_STATE; return; }
     for (size_t i = 0; i < registry.count; ++i)
         if (!memcmp(registry.records[i].pair.radiator, pair.radiator, 4)) { error = ESP_ERR_INVALID_STATE; return; }
     if (registry.count >= CLEVERBOX_RADIATOR_CAPACITY) { error = ESP_ERR_INVALID_STATE; return; }
@@ -410,6 +451,10 @@ struct radio_worker {
             status.mode_pending = false; status.control_enabled = false;
             status.mode_error = error; status.mode_save_result = RADIO_STORE_FAILED;
         }
+        if (status.monitor_pending) {
+            status.monitor_pending=false; status.monitor_result=RADIO_STORE_FAILED;
+            status.monitor_error=error; // Queued action never reached persistence.
+        }
         if (status.adoption_result == RADIO_STORE_PENDING) {
             status.adoption_result = RADIO_STORE_FAILED; status.adoption_error = error;
         }
@@ -432,6 +477,43 @@ struct radio_worker {
                 status.mode_persistence_uncertain = result != ESP_OK;
                 status.mode_save_result = result == ESP_OK ? RADIO_STORE_OK : RADIO_STORE_FAILED;
                 status.mode_pending = false;
+                unlock_status();
+            } else if (request.action == MONITOR_SET || request.action == MONITOR_REMOVE) {
+                // Prospective list is bounded BSS, never copied onto task stack.
+                static monitor_registry changed;
+                changed=monitors; size_t i=0;
+                while (i<changed.count && memcmp(changed.records[i].address,request.candidate,4)) ++i;
+                bool remove=request.action==MONITOR_REMOVE;
+                if (remove) {
+                    for (size_t j=i+1;j<changed.count;++j) changed.records[j-1]=changed.records[j];
+                    --changed.count;
+                } else {
+                    if (i==changed.count) ++changed.count;
+                    memcpy(changed.records[i].address,request.candidate,4); strcpy(changed.records[i].name,request.name);
+                }
+                int e=device_monitors_save(&changed);
+                lock_status();
+                if (e==ESP_OK) {
+                    if (remove) {
+                        for (size_t j=i+1;j<monitors.count;++j) monitored[j-1]=monitored[j];
+                        monitored[changed.count]={};
+                    } else {
+                        if (i==monitors.count) {
+                            monitored[i]={};
+                            for (size_t j=0;j<status.observation_count;++j)
+                                if (!memcmp(observations[j].report.source,request.candidate,4)) {
+                                    monitored[i].available=true; monitored[i].observation=observations[j]; break;
+                                }
+                        }
+                        monitored[i].selection=changed.records[i];
+                    }
+                    monitors=changed;
+                }
+                status.monitor_result=e==ESP_OK ? RADIO_STORE_OK : RADIO_STORE_FAILED;
+                status.monitor_uncertain=e!=ESP_OK;
+                // An uncertain list freezes mutations until reboot. The old
+                // RAM list is authoritative this boot; journal retains its topics.
+                status.monitor_error=e; mutation_pending=status.monitor_pending=false;
                 unlock_status();
             } else if (request.action >= STATE_SAVE) {
                 radiator_record *d = find_device(request.id);
@@ -615,6 +697,12 @@ struct radio_worker {
                                 lock_status(); status.pairing_duplicate = true; unlock_status();
                             }
                     }
+                    if (before == RF_PAIR_WAIT_REPLY && pair.phase == RF_PAIR_BIND) {
+                        for (size_t i=0;i<monitors.count;++i)
+                            if (!memcmp(monitors.records[i].address,pair.radiator,4)) {
+                                pair.phase=RF_PAIR_ERROR; pair_error=RADIO_ERR_MONITORED;
+                            }
+                    }
                     if (before != RF_PAIR_COMPLETE && pair.phase == RF_PAIR_COMPLETE)
                         save_pair(pair, saved, pair_error);
                     // Receive ownership is determined by both addresses, never UI selection.
@@ -707,6 +795,9 @@ extern "C" void radio_transport_start(void)
     status.mode_persistence_uncertain = mode_result != ESP_OK;
     status.mode_save_result = mode_result == ESP_OK ? RADIO_STORE_OK : RADIO_STORE_FAILED;
     int load_result = device_registry_load(&registry);
+    status.monitor_error=device_monitors_load(&monitors);
+    if (status.monitor_error) { monitors.count=0; status.monitor_uncertain=true; }
+    for (size_t i=0;i<monitors.count;++i) { monitored[i]={}; monitored[i].selection=monitors.records[i]; }
     status.registry_error = load_result;
     status.device_count = registry.count;
     if (registry.count == 1) {

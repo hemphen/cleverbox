@@ -97,6 +97,14 @@ this does not establish capture-free setup. No heating or RF compatibility is te
 <small>No step runs automatically. Captures and observations clear on reboot; saved templates and operating mode persist.
 Enabling control sends nothing. Listen-only is refused while pairing or RF commands are outstanding; let bounded work finish and retry.</small>
 <pre id="passiveObservations">No reports heard this boot.</pre>
+<h3>Read-only Home Assistant monitoring</h3>
+<p>Select a full radiator RF address from the reports above. Selections and names survive restart; readings do not.
+Enable global HA discovery under MQTT to publish selected devices. Disable it to stop passive publishing and remove their HA entities.
+Already paired addresses use their existing HA device. Remove monitoring before pairing an address; no action here enables RF.</p>
+<label>Radiator RF address <input id="monitorAddress" maxlength="8" placeholder="F1040506"></label>
+<label>Monitoring name <input id="monitorName" maxlength="32"></label>
+<button id="monitorSelect">Select for monitoring</button><button id="monitorRename">Rename monitor</button><button id="monitorRemove">Remove monitor</button>
+<p id="monitorAction" role="status"></p><pre id="monitorStatus"></pre>
 <label>Captured controller-state candidate <select id="candidateSelect"></select></label>
 <button id="refreshCandidates">Refresh candidate choices</button>
 <p id="candidateDetails"></p>
@@ -164,7 +172,7 @@ The radiator supplies its actual address in the reply. Capacity is shown below; 
 <script>
 const field=id=>document.getElementById(id);
 let networkTimer, httpControlAllowed=false, rfControlAllowed=false;
-const controlButtons=['renameRadiator','removeRadiator','pairStart','pairCancel','pairSave','sendTarget','saveState','importState','clearState','saveTimezone','setManualTime','mqttSave','mqttEnable','mqttDisable','mqttForget','mqttDiscoveryEnable','mqttDiscoveryDisable','listenOnly','enableControl','adoptCandidate'];
+const controlButtons=['renameRadiator','removeRadiator','pairStart','pairCancel','pairSave','sendTarget','saveState','importState','clearState','saveTimezone','setManualTime','mqttSave','mqttEnable','mqttDisable','mqttForget','mqttDiscoveryEnable','mqttDiscoveryDisable','listenOnly','enableControl','adoptCandidate','monitorSelect','monitorRename','monitorRemove'];
 function restrictControls(){
   if(!rfControlAllowed) for(const id of ['pairStart','sendTarget']) field(id).disabled=true;
   if(!httpControlAllowed){
@@ -337,6 +345,11 @@ async function refreshCommissioning(refreshChoices=false){
       ' · Cache capacity: '+s.capacity+(s.observations_full?' · Observation bound reached':'')+(s.candidates_full?' · Candidate bound reached':'')+
       ' · Evictions: reports '+s.observation_evictions+', candidates '+s.candidate_evictions;
     field('listenOnly').disabled=field('enableControl').disabled=s.pending||!httpControlAllowed;
+    field('monitorStatus').textContent='Global discovery: '+(s.discovery_enabled?'enabled':'disabled')+' · Monitor capacity: '+s.monitor_capacity+
+      ' · Save: '+s.monitor_save_status+(s.monitor_pending?' · pending':'')+(s.monitor_storage_error?' · Storage error '+s.monitor_storage_error:'')+
+      (s.monitor_persistence_uncertain?' · Persistence uncertain; reboot to inspect saved selections.':'')+'\n'+
+      (s.monitors??[]).map(m=>m.radiator+' · '+m.name+' · '+(!m.available?'No report this boot':(m.stale?'STALE · ':'')+(m.age_ms/1000).toFixed(1)+' s ago')).join('\n');
+    for(const id of ['monitorSelect','monitorRename','monitorRemove']) field(id).disabled=!httpControlAllowed||s.monitor_pending||!!s.monitor_storage_error;
     liveCandidates=s.candidates;
     field('passiveObservations').textContent=s.observations.map(o=>{
       const c=s.candidates.find(c=>c.radiator===o.radiator);
@@ -357,7 +370,7 @@ async function refreshCommissioning(refreshChoices=false){
     candidateDetails();
     const a=s.adoption;
     field('adoptionStatus').textContent='Latest adoption: '+a.status+(a.id?' · ID '+a.id+' · '+a.version:'')+(a.error?' · Storage error '+a.error+'; previous template retained. Retry explicitly.':'');
-  }catch(error){rfControlAllowed=false;field('commissioningStatus').textContent=error.message;field('adoptCandidate').disabled=true;}
+  }catch(error){rfControlAllowed=false;field('commissioningStatus').textContent=error.message;for(const id of ['adoptCandidate','monitorSelect','monitorRename','monitorRemove']) field(id).disabled=true;}
   finally{restrictControls();commissioningTimer=setTimeout(refreshCommissioning,2000);}
 }
 async function changeMode(mode){
@@ -369,6 +382,18 @@ async function changeMode(mode){
     await refreshCommissioning(); await refreshRadio();
   }catch(error){field('modeAction').textContent=error.message;}
 }
+for(const [id,action] of [['monitorSelect','select'],['monitorRename','rename'],['monitorRemove','remove']])
+  field(id).addEventListener('click',async()=>{
+    if(!requireControl('monitorAction')) return;
+    const body={action,radiator:field('monitorAddress').value.trim()};
+    if(action!=='remove') body.name=field('monitorName').value.trim();
+    try{
+      const response=await fetch('/api/commissioning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(!response.ok) throw new Error(await response.text());
+      field('monitorAction').textContent='Monitoring change queued. Check save outcome below. No RF requested.';
+      await refreshCommissioning();
+    }catch(error){field('monitorAction').textContent=error.message;}
+  });
 field('listenOnly').addEventListener('click',()=>changeMode('listen-only'));
 field('enableControl').addEventListener('click',()=>changeMode('control-enabled'));
 field('refreshCandidates').addEventListener('click',()=>refreshCommissioning(true));

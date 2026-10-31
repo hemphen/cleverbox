@@ -192,6 +192,14 @@ stops while a frame is being sent.
 - [ ] Apply from Home Assistant reaches `matched`.
 - [ ] An admitted command completes while the broker or Wi-Fi is down.
 
+Passive monitoring checks (software/HA success is not physical heating evidence):
+
+- [ ] With Touch E3 active and Cleverbox listen-only, select several full RF addresses and verify their HA devices without pairing, including different/changing destination controllers.
+- [ ] Independently capture RF during select, rename, removal, discovery enable/disable, HA birth, broker reconnect and bridge restart: zero transmissions.
+- [ ] Compare measured temperature, observed target/mode, unavailable markers and freshness with genuine reports and radiator/Touch E3 displays. Verify five-minute expiry and 15-second publication-loss expiry separately.
+- [ ] Power-cycle: names/selections persist, observations start unavailable, reports restore the same HA identities. Pending removal finishes without ghost entities.
+- [ ] Under sustained traffic beyond general cache capacity, selected devices continue updating and HTTP/MQTT remain responsive. Measure heap and task stack high-water marks.
+
 ### 8. Endurance
 
 - [ ] Run for several days with all radiators. Record task stack and heap high-water marks.

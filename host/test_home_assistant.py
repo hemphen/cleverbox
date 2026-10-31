@@ -21,6 +21,7 @@ import time
 import paho.mqtt.client as mqtt
 from test_http import App, ROOT, STATE, REPORT, changed_frame
 from test_registry import REPORT_B
+from test_passive import seal
 from test_mqtt import BASE
 
 
@@ -349,6 +350,87 @@ http:
         pump(lambda:not discovered())
         assert app.http()['simulation_tx']==[]
         print('HA stable discovery IDs/grouping, rename/addition, offline removal/disable and durable cleanup markers: passed',flush=True)
+        # Dedicated passive milestone: real MQTT discovery and actual HA entity
+        # runtime, with independent report/bridge-publication expiry clocks.
+        app.http('/api/commissioning',dict(mode='listen-only'),202); advance(10)
+        tx=app.http()['simulation_tx']; assert tx==[]
+        address='F1445566'; prefix='cleverbox_020000000001_passive_'+address
+        entity_prefix=prefix.lower()
+        sensor='sensor.'+entity_prefix+'_temperature'
+        fresh='binary_sensor.'+entity_prefix+'_observation_fresh'
+        def passive_entries(): return [e for e in registry()['entities'] if e['unique_id'].startswith(prefix+'_')]
+        def report(controller='D0123456',missing=False):
+            f=bytearray.fromhex(REPORT); f[1:5]=bytes.fromhex(address); f[6:10]=bytes.fromhex(controller)
+            if missing: f[16:18]=bytes.fromhex('084C'); f[19:21]=bytes.fromhex('084C')
+            app.sim('inject',frame=seal(f)); advance(10)
+        def monitor(action,name='Observed room'):
+            body=dict(action=action,radiator=address)
+            if action!='remove': body['name']=name
+            app.http('/api/commissioning',body,202); advance(10)
+            assert app.http('/api/commissioning')['monitor_save_status']=='succeeded'
+        report(); monitor('select')
+        assert not passive_entries() # Global discovery is still disabled.
+        app.http('/api/mqtt',dict(action='discovery_enable'),202); advance(100)
+        pump(lambda:len(passive_entries())==5,timeout=20)
+        pump(lambda:state_is(sensor,'20.0'))
+        passive_ids={e['unique_id'] for e in passive_entries()}
+        assert len({e['device_id'] for e in passive_entries()})==1
+        assert all(e['entity_id'].startswith(('sensor.','binary_sensor.')) for e in passive_entries())
+        monitor('rename','Renamed observation')
+        pump(lambda:any(d['name']=='Renamed observation' for d in registry()['devices']))
+        assert {e['unique_id'] for e in passive_entries()}==passive_ids
+        report('F1998877'); advance(5100)
+        pump(lambda:ha.states().get('sensor.'+entity_prefix+'_report_age',{}).get('attributes',{}).get('controller')=='F1998877')
+        report(missing=True); advance(5100)
+        pump(lambda:state_is(sensor,'unavailable'))
+        assert state_is('sensor.'+entity_prefix+'_observed_target','unavailable') and state_is(fresh,'on')
+        report(); advance(5100); pump(lambda:state_is(sensor,'20.0'))
+        advance(300000); pump(lambda:state_is(sensor,'unavailable') and state_is(fresh,'off'))
+        report(); advance(5100); pump(lambda:state_is(sensor,'20.0'))
+        # No simulation advance or bridge publications while HA wall time runs.
+        until=time.monotonic()+20
+        while time.monotonic()<until and not state_is(sensor,'unavailable'):
+            observer.loop(timeout=.05); time.sleep(.1)
+        assert state_is(sensor,'unavailable') and state_is(fresh,'unavailable')
+        advance(5100); pump(lambda:state_is(sensor,'20.0'))
+        assert app.http()['simulation_tx']==tx
+        # HA restart retains identity and gets fresh RAM observations on birth.
+        ha.stop(); ha=HomeAssistant(config,port)
+        pump(lambda:state_is(sensor,'20.0'),timeout=30)
+        assert {e['unique_id'] for e in passive_entries()}==passive_ids
+        # Bridge restart retains the selection, publishes no persisted reading.
+        app.stop(); app=App(storage,real_mqtt=True,operating_mode=None)
+        app.sim('network_event',name='started'); app.sim('network_event',name='got_ip')
+        pump(lambda:app.http('/api/mqtt')['connected'],timeout=20)
+        pump(lambda:state_is(sensor,'unavailable') and state_is(fresh,'off'))
+        assert app.http('/api/commissioning')['mode']=='listen-only'
+        assert {e['unique_id'] for e in passive_entries()}==passive_ids
+        report(); advance(5100); pump(lambda:state_is(sensor,'20.0'))
+        # Broker/HA reconnect can use the HA client's reconnect backoff. Wait for
+        # actual observed state, not merely the bridge's earlier SUBACK.
+        old_session=session(); broker.terminate(); broker.wait(timeout=5); advance(6000)
+        broker=start_broker(); observer.reconnect()
+        pump(lambda:app.http('/api/mqtt')['connected'] and session()!=old_session,timeout=30)
+        report(); advance(5100); pump(lambda:state_is(sensor,'20.0'),timeout=30)
+        app.http('/api/mqtt',dict(action='discovery_disable'),202); advance(100)
+        pump(lambda:not passive_entries(),timeout=20)
+        assert len(app.http('/api/commissioning')['monitors'])==1
+        app.http('/api/mqtt',dict(action='discovery_enable'),202); advance(100)
+        pump(lambda:len(passive_entries())==5,timeout=20)
+        assert {e['unique_id'] for e in passive_entries()}==passive_ids
+        # Remove while offline, restart bridge before cleanup, then restart HA
+        # after retained component-removal markers have been acknowledged.
+        broker.terminate(); broker.wait(timeout=5); advance(6000); monitor('remove')
+        app.stop(); app=App(storage,real_mqtt=True,operating_mode=None)
+        app.sim('network_event',name='started'); app.sim('network_event',name='got_ip')
+        broker=start_broker(); observer.reconnect()
+        pump(lambda:app.http('/api/mqtt')['connected'],timeout=30)
+        pump(lambda:not passive_entries(),timeout=30)
+        pump(lambda:app.http('/api/mqtt')['discovery_pending']==0)
+        ha.stop(); ha=HomeAssistant(config,port); pump(lambda:not passive_entries())
+        assert not app.http('/api/commissioning')['monitors'] and app.http()['simulation_tx']==[]
+        print('HA passive entities: selection/rename/identity, controller changes, missing readings, monotonic freshness, actual wall-time expiry, HA/bridge/broker restarts, disable/re-enable, durable offline cleanup and zero RF: passed',flush=True)
+
     finally:
         if ha: ha.stop()
         app.stop(); observer.disconnect()

@@ -375,9 +375,18 @@ int main() {
     test_bounded_rx_recovery(); test_deferred_state_and_results();
     test_expired_handoffs_and_rx_failure(); test_sustained_input_deadlines();
     test_passive_mode(); test_passive_capture();
+    reset(); registry.count=0; monitors={}; radio_worker monitoring;
+    status.control_enabled=false; hear(monitoring,report_b(false));
+    assert(radio_monitor_change("select",report_b(false).bytes+1,"Observed")==ESP_OK);
+    monitoring.fail(ESP_ERR_TIMEOUT);
+    assert(!status.monitor_pending && status.monitor_result==RADIO_STORE_FAILED && status.monitor_error==ESP_ERR_TIMEOUT);
+    assert(!monitors.count && !transmit_count);
     puts("RX-before-TX arbitration, FIFO errata, late guard, bounded recovery/deadlines and deferred work: passed");
     printf("Memory: capacity=%u record=%zu registry=%zu worker=%zu request=%zu\n", (unsigned)CLEVERBOX_RADIATOR_CAPACITY, sizeof(radiator_record), sizeof(registry), sizeof(radio_worker), sizeof(radio_request));
     puts("Independent reservations, fair turns, compaction, fatal radio failure, handoff and queue capacity: passed");
 }
 
 extern "C" bool device_time_command_clock(unsigned *, int64_t *) { return false; }
+
+extern "C" esp_err_t device_monitors_load(monitor_registry *r) { *r={}; return ESP_OK; }
+extern "C" esp_err_t device_monitors_save(const monitor_registry *) { return ESP_OK; }

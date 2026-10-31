@@ -88,14 +88,14 @@ def run(directory):
         # Full journal backpressure: no untracked publish until old cleanup ACKs.
         capacity=app.http()['capacity']; app.stop()
         journal=Path(str(storage)+'.ha_discovery')
-        journal.write_bytes(bytes([1,1,0,0])+bytes.fromhex('01000000')+
-                            b''.join(i.to_bytes(4,'little') for i in range(100,100+2*capacity)))
+        journal.write_bytes(bytes([2,1,0,0])+bytes.fromhex('01000000')+
+                            b''.join(i.to_bytes(8,'little') for i in range(100,100+4*capacity)))
         Path(str(storage)+'.registry').write_bytes(registry_blob(1))
         app=App(storage)
         app.sim('network_event',name='started'); app.sim('network_event',name='got_ip'); app.advance(100)
         app.sim('mqtt_confirmed_mode',mode=2); connect(app)
         rows=configs(2000); assert rows and all(all(set(c)=={'platform'} for c in r['payload']['components'].values()) for r in rows)
-        assert app.http('/api/mqtt')['discovery_pending']>=2*capacity
+        assert app.http('/api/mqtt')['discovery_pending']>=4*capacity
         restart(); rows=configs(20000)
         assert any(r['topic'].endswith('_1/config') and 'unique_id' in r['payload']['components']['mode'] for r in rows)
         assert app.http()['simulation_tx']==[]
