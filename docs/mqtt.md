@@ -32,10 +32,12 @@ later.
 | `B/availability` | out | yes | `online` or `offline` |
 | `B/bridge` | out | no | Bridge snapshot, every 5 s |
 | `B/radiators/<id>/state` | out | no | Radiator snapshot, every 5 s |
+| `B/passive/<8-hex-address>/state` | out | no | Selected read-only observation, every 5 s while global discovery is enabled |
 | `B/radiators/<id>/set` | in | must not be | Command |
 | `B/radiators/<id>/result` | out | no | Admission and delivery results |
 | `B/errors` | out | no | Admission rejections for an invalid topic |
 | `homeassistant/status` | in | – | `online` triggers a discovery and snapshot replay |
+| `homeassistant/device/cleverbox_<bridge_id>_passive_<8-hex-address>/config` | out | yes, QoS 1 | Selected passive device discovery |
 | `homeassistant/device/cleverbox_<bridge_id>_<id>/config` | out | yes, QoS 1 | [Discovery](home-assistant.md#discovery) |
 
 All other publications are QoS 0.
@@ -134,6 +136,16 @@ Radiator snapshot (`B/radiators/<id>/state`):
 Snapshots are not retained. Consumers should treat a snapshot older than 15 s,
 or availability `offline`, as unknown.
 
+Passive snapshots use uppercase, zero-padded RF addresses and include
+`session`, `radiator`, `name`, `available` and `fresh`. After a report this boot
+they add `controller` (the latest destination), `age_ms`, `stale`, `mode` and
+available `temperature_centi_c` / `target_centi_c` only. Freshness uses the same
+monotonic five-minute threshold and 15-second headroom as paired snapshots.
+Selected addresses have independent bounded receive storage, so cache churn
+cannot redirect or prevent updates. Reboot publishes unavailable until a new
+valid report arrives. There is no passive command topic, token, requested state
+or delivery result. Global discovery disable stops passive snapshots.
+
 ## Limits
 
 - Incoming payloads up to 512 bytes, topics under 128 bytes, one message being
@@ -147,6 +159,6 @@ or availability `offline`, as unknown.
 
 Cleverbox needs to read `B/radiators/+/set` and `homeassistant/status`, and to
 write `B/#` and its own `homeassistant/device/cleverbox_<bridge_id>_<id>/config`
-topics. Clients that send commands need to read `B/#` and write
+topics, including the `cleverbox_<bridge_id>_passive_<address>` namespace. Clients that send commands need to read `B/#` and write
 `B/radiators/+/set`. Keep retain disabled for commands. Credentials and
 payloads are not encrypted on the network.

@@ -15,8 +15,16 @@ extern "C" {
 #define RADIO_ERR_MODE_BUSY 0x7303
 #define RADIO_ERR_CANDIDATE_CHANGED 0x7304
 #define RADIO_ERR_REPLACE_REQUIRED 0x7305
+#define RADIO_ERR_MONITORED 0x7306
+#define RADIO_ERR_MONITOR_CAPACITY 0x7307
+#define RADIO_ERR_MONITOR_PAIRED 0x7308
+#define RADIO_ERR_MONITOR_UNOBSERVED 0x7309
 // Independent caches: reports can never evict captured templates.
 typedef struct { rf_report report; int64_t time_us; } radio_observation;
+typedef struct { monitor_selection selection; bool available; radio_observation observation; } radio_monitor;
+esp_err_t radio_monitor_at(size_t index, radio_monitor *out);
+esp_err_t radio_monitor_get(const uint8_t address[4], radio_monitor *out);
+esp_err_t radio_monitor_change(const char *action, const uint8_t address[4], const char *name);
 typedef struct {
     uint8_t state[CONTROLLER_STATE_BYTES];
     int64_t time_us;
@@ -32,6 +40,9 @@ typedef struct {
     char adoption_version[33];
     radio_store_result adoption_result;
     int adoption_error;
+    int monitor_error;
+    bool monitor_pending, monitor_uncertain;
+    radio_store_result monitor_result;
     bool ready;
     int error;
     int chip_version;

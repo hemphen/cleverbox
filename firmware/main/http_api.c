@@ -338,6 +338,25 @@ static esp_err_t commissioning_status(httpd_req_t *r) {
     cJSON_AddBoolToObject(j, "candidates_full", s.candidate_count == RADIO_PASSIVE_CAPACITY);
     cJSON_AddNumberToObject(j, "observation_evictions", s.observation_evictions);
     cJSON_AddNumberToObject(j, "candidate_evictions", s.candidate_evictions);
+    cJSON_AddNumberToObject(j,"monitor_capacity",RADIO_MONITOR_CAPACITY);
+    cJSON_AddBoolToObject(j,"monitor_pending",s.monitor_pending);
+    cJSON_AddStringToObject(j,"monitor_save_status",store_result(s.monitor_result));
+    cJSON_AddNumberToObject(j,"monitor_storage_error",s.monitor_error);
+    cJSON_AddBoolToObject(j,"monitor_persistence_uncertain",s.monitor_uncertain);
+    mqtt_bridge_status ms; mqtt_bridge_get(&ms);
+    cJSON_AddBoolToObject(j,"discovery_enabled",ms.discovery_enabled);
+    cJSON *selected=cJSON_AddArrayToObject(j,"monitors"); radio_monitor m;
+    for (size_t i=0;radio_monitor_at(i,&m)==ESP_OK;++i) {
+        cJSON *row=cJSON_CreateObject(); char a[9]; address_text(m.selection.address,a);
+        cJSON_AddStringToObject(row,"radiator",a); cJSON_AddStringToObject(row,"name",m.selection.name);
+        cJSON_AddBoolToObject(row,"available",m.available);
+        if (m.available) {
+            int64_t age=now>m.observation.time_us ? (now-m.observation.time_us)/1000 : 0;
+            cJSON_AddNumberToObject(row,"age_ms",(double)age);
+            cJSON_AddBoolToObject(row,"stale",age>=RF_REPORT_STALE_MS);
+        }
+        cJSON_AddItemToArray(selected,row);
+    }
     cJSON *observed = cJSON_AddArrayToObject(j, "observations");
     radio_observation o;
     for (size_t i = 0; radio_observation_at(i, &o) == ESP_OK; ++i) {
@@ -372,7 +391,7 @@ static esp_err_t commissioning_status(httpd_req_t *r) {
     return json_response(r, j);
 }
 static esp_err_t commissioning_action(httpd_req_t *r) {
-    char body[128], type[40];
+    char body[256], type[40];
     if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
         strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
         return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
@@ -389,12 +408,21 @@ static esp_err_t commissioning_action(httpd_req_t *r) {
     if (cJSON_IsObject(j) && cJSON_GetArraySize(j) == 1 && mode &&
         (!strcmp(mode, "listen-only") || !strcmp(mode, "control-enabled")))
         e = radio_mode_set(!strcmp(mode, "control-enabled"));
+    const char *action=string(j,"action"); uint8_t a[4];
+    if (action && address(j,"radiator",a) && cJSON_GetArraySize(j)==(!strcmp(action,"remove") ? 2 : 3))
+        e=radio_monitor_change(action,a,string(j,"name"));
     cJSON_Delete(j);
     if (e == ESP_ERR_INVALID_ARG) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST,
-        "Use mode: listen-only or control-enabled");
+        "Use mode or monitor action select/rename/remove with radiator address and name");
+    if (e == RADIO_ERR_MONITOR_CAPACITY || e == RADIO_ERR_MONITOR_PAIRED || e == RADIO_ERR_MONITOR_UNOBSERVED) {
+        httpd_resp_set_status(r,"409 Conflict");
+        return httpd_resp_sendstr(r,e==RADIO_ERR_MONITOR_CAPACITY ? "Monitor capacity exhausted; remove a selection first." :
+            e==RADIO_ERR_MONITOR_PAIRED ? "Address already paired; use its existing Home Assistant device." :
+            "Address not observed; wait for a valid radiator report and select its full RF address.");
+    }
     if (e != ESP_OK) {
         httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, "Mode transition busy: finish pairing, outstanding RF commands or local persistence first; then retry explicitly.");
+        return httpd_resp_sendstr(r, "Mode transition busy, monitoring full, address not observed/already paired, or persistence blocked. Check commissioning status; remove monitoring before pairing.");
     }
     httpd_resp_set_status(r, "202 Accepted"); httpd_resp_set_type(r, "application/json");
     return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");

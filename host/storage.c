@@ -30,10 +30,10 @@ esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *h) {
 }
 esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *n) {
     (void)h;
-    if (strcmp(key, "pairing") && strcmp(key, "control_state") && strcmp(key, "registry") && strcmp(key, "wifi") && strcmp(key, "timezone") && strcmp(key, "mqtt") && strcmp(key, "ha_discovery") && strcmp(key, "rf_mode")) return ESP_FAIL;
+    if (strcmp(key, "ha_monitors") && strcmp(key, "pairing") && strcmp(key, "control_state") && strcmp(key, "registry") && strcmp(key, "wifi") && strcmp(key, "timezone") && strcmp(key, "mqtt") && strcmp(key, "ha_discovery") && strcmp(key, "rf_mode")) return ESP_FAIL;
     if (!strcmp(key, "rf_mode") && mode_fault == 3) return ESP_FAIL;
     char filename[4096];
-    if (snprintf(filename, sizeof(filename), "%s%s", path(), !strcmp(key, "rf_mode") ? ".rf_mode" : !strcmp(key, "ha_discovery") ? ".ha_discovery" : !strcmp(key, "mqtt") ? ".mqtt" : !strcmp(key, "timezone") ? ".timezone" : !strcmp(key, "wifi") ? ".wifi" : !strcmp(key, "pairing") ? "" : !strcmp(key, "registry") ? ".registry" : ".state") >= (int)sizeof(filename)) return ESP_FAIL;
+    if (snprintf(filename, sizeof(filename), "%s%s", path(), !strcmp(key, "ha_monitors") ? ".ha_monitors" : !strcmp(key, "rf_mode") ? ".rf_mode" : !strcmp(key, "ha_discovery") ? ".ha_discovery" : !strcmp(key, "mqtt") ? ".mqtt" : !strcmp(key, "timezone") ? ".timezone" : !strcmp(key, "wifi") ? ".wifi" : !strcmp(key, "pairing") ? "" : !strcmp(key, "registry") ? ".registry" : ".state") >= (int)sizeof(filename)) return ESP_FAIL;
     FILE *f = fopen(filename, "rb");
     if (!f) return errno == ENOENT ? ESP_ERR_NVS_NOT_FOUND : ESP_FAIL;
     if (!out) {
@@ -49,8 +49,8 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *n) {
 }
 esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *in, size_t n) {
     (void)h;
-    if ((strcmp(key, "pairing") && strcmp(key, "control_state") && strcmp(key, "registry") && strcmp(key, "wifi") && strcmp(key, "timezone") && strcmp(key, "mqtt") && strcmp(key, "ha_discovery") && strcmp(key, "rf_mode")) || n > sizeof(staged)) return ESP_FAIL;
-    if (snprintf(selected_path, sizeof(selected_path), "%s%s", path(), !strcmp(key, "rf_mode") ? ".rf_mode" : !strcmp(key, "ha_discovery") ? ".ha_discovery" : !strcmp(key, "mqtt") ? ".mqtt" : !strcmp(key, "timezone") ? ".timezone" : !strcmp(key, "wifi") ? ".wifi" : !strcmp(key, "pairing") ? "" : !strcmp(key, "registry") ? ".registry" : ".state") >= (int)sizeof(selected_path)) return ESP_FAIL;
+    if ((strcmp(key, "ha_monitors") && strcmp(key, "pairing") && strcmp(key, "control_state") && strcmp(key, "registry") && strcmp(key, "wifi") && strcmp(key, "timezone") && strcmp(key, "mqtt") && strcmp(key, "ha_discovery") && strcmp(key, "rf_mode")) || n > sizeof(staged)) return ESP_FAIL;
+    if (snprintf(selected_path, sizeof(selected_path), "%s%s", path(), !strcmp(key, "ha_monitors") ? ".ha_monitors" : !strcmp(key, "rf_mode") ? ".rf_mode" : !strcmp(key, "ha_discovery") ? ".ha_discovery" : !strcmp(key, "mqtt") ? ".mqtt" : !strcmp(key, "timezone") ? ".timezone" : !strcmp(key, "wifi") ? ".wifi" : !strcmp(key, "pairing") ? "" : !strcmp(key, "registry") ? ".registry" : ".state") >= (int)sizeof(selected_path)) return ESP_FAIL;
     if (!strcmp(key, "wifi") && wifi_fault == 2 && wifi_fault_used) return ESP_FAIL;
     if (!strcmp(key, "rf_mode") && mode_fault == 2) return ESP_FAIL;
     memcpy(staged, in, n); staged_size = n; staged_valid = 1;
@@ -90,7 +90,7 @@ void nvs_close(nvs_handle_t h) { (void)h; staged_valid = 0; }
 esp_err_t nvs_erase_key(nvs_handle_t h, const char *key) {
     (void)h;
     if (strcmp(key, "registry") && strcmp(key, "wifi") && strcmp(key, "timezone") && strcmp(key, "mqtt") && strcmp(key, "ha_discovery") && strcmp(key, "rf_mode")) return ESP_FAIL;
-    if (snprintf(selected_path, sizeof(selected_path), "%s%s", path(), !strcmp(key, "rf_mode") ? ".rf_mode" : !strcmp(key, "ha_discovery") ? ".ha_discovery" : !strcmp(key, "mqtt") ? ".mqtt" : !strcmp(key, "timezone") ? ".timezone" : !strcmp(key, "wifi") ? ".wifi" : ".registry") >= (int)sizeof(selected_path)) return ESP_FAIL;
+    if (snprintf(selected_path, sizeof(selected_path), "%s%s", path(), !strcmp(key, "ha_monitors") ? ".ha_monitors" : !strcmp(key, "rf_mode") ? ".rf_mode" : !strcmp(key, "ha_discovery") ? ".ha_discovery" : !strcmp(key, "mqtt") ? ".mqtt" : !strcmp(key, "timezone") ? ".timezone" : !strcmp(key, "wifi") ? ".wifi" : ".registry") >= (int)sizeof(selected_path)) return ESP_FAIL;
     if (!strcmp(key, "wifi") && wifi_fault == 2 && wifi_fault_used) return ESP_FAIL;
     staged_valid = 2;
     if (!strcmp(key, "wifi") && wifi_fault && !wifi_fault_used) {

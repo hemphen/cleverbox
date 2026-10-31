@@ -326,6 +326,26 @@ static void observations(void) {
         }
         snprintf(suffix, sizeof(suffix), "radiators/%u/state", (unsigned)d.id); json_publish(suffix, j);
     }
+    // Read-only address snapshots have no token, request state or command topic.
+    // No retained readings; reboot starts unavailable until receive validates a report.
+    radio_monitor m;
+    for (size_t i=0;status.discovery_enabled && radio_monitor_at(i,&m)==ESP_OK;++i) {
+        cJSON *j=envelope(session,0); char a[9], b[9], suffix[64];
+        snprintf(a,sizeof(a),"%02X%02X%02X%02X",m.selection.address[0],m.selection.address[1],m.selection.address[2],m.selection.address[3]);
+        cJSON_AddStringToObject(j,"radiator",a); cJSON_AddStringToObject(j,"name",m.selection.name);
+        cJSON_AddBoolToObject(j,"available",m.available);
+        int64_t age=time-m.observation.time_us/1000; if (age<0) age=0;
+        cJSON_AddBoolToObject(j,"fresh",m.available && age+15000<RF_REPORT_STALE_MS);
+        if (m.available) {
+            const rf_report *r=&m.observation.report;
+            snprintf(b,sizeof(b),"%02X%02X%02X%02X",r->destination[0],r->destination[1],r->destination[2],r->destination[3]);
+            cJSON_AddStringToObject(j,"controller",b); cJSON_AddNumberToObject(j,"age_ms",(double)age);
+            cJSON_AddBoolToObject(j,"stale",age>=RF_REPORT_STALE_MS); cJSON_AddNumberToObject(j,"mode",r->mode);
+            if (r->temperature_available) cJSON_AddNumberToObject(j,"temperature_centi_c",r->temperature_centi_c);
+            if (r->target_available) cJSON_AddNumberToObject(j,"target_centi_c",r->target_centi_c);
+        }
+        snprintf(suffix,sizeof(suffix),"passive/%s/state",a); json_publish(suffix,j);
+    }
 }
 static void stop(void) {
     if (running) client.stop(availability);

@@ -21,6 +21,7 @@ tested on the board.
 | Wi-Fi setup, setup access point and button recovery | Tested | Not tested |
 | Device time (SNTP, POSIX time zone) | Tested | Not tested |
 | MQTT commands and state | Tested | Not tested |
+| Selected passive radiator monitoring in Home Assistant | Tested | Not tested |
 | Home Assistant discovery | Tested | Not tested |
 | OTA firmware updates | Not started | |
 
@@ -29,7 +30,8 @@ tested on the board.
 Fresh installations start listen-only. Upgrades without a saved mode preserve
 control behavior. The local passive view identifies reports from any controller
 and retains genuine template candidates without pairing or transmitting.
-Follow the [commissioning workflow](docs/http-api.md#passive-commissioning).
+Select observed RF addresses for read-only Home Assistant monitoring without pairing,
+then enable global discovery. Follow the [commissioning workflow](docs/http-api.md#passive-commissioning).
 Disconnect Touch E3 before explicitly enabling control and pairing.
 
 Cleverbox pairs with each radiator as its RF controller and listens for the

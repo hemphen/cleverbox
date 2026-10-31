@@ -58,7 +58,7 @@ is neither HTTP authentication nor a network firewall.
 
 | Method and path | Body limit | Purpose |
 | --- | --- | --- |
-| `GET /api/commissioning`, `POST /api/commissioning` | 127 B | Passive diagnostics and explicit operating mode |
+| `GET /api/commissioning`, `POST /api/commissioning` | 255 B | Passive diagnostics, monitoring selections and explicit operating mode |
 | `GET /api/radio[?id=N]` | – | Radio diagnostics, all radiators, one selected radiator |
 | `GET /api/radiators` | – | Same response as `/api/radio` |
 | `POST /api/radiators` | 255 B | Select, rename, remove |
@@ -74,7 +74,7 @@ is neither HTTP authentication nor a network firewall.
 
 `GET /api/commissioning` is read-only diagnostic exposure on STA, AP and unknown
 interfaces, just like existing RF diagnostics. It returns no candidate frame
-bytes. Both mode changes and template adoption require STA through the central
+bytes. Mode changes, monitoring mutations and template adoption require STA through the central
 admission table. Unknown classification never authorizes either mutation.
 
 | Field | Meaning |
@@ -89,7 +89,7 @@ admission table. Unknown classification never authorizes either mutation.
 | `candidates[]` | Radiator destination address, source `controller`, capture `age_ms`, opaque `version`, `paired`, optional `paired_id`, `saved_template` |
 | `adoption` | Latest explicit adoption: paired `id`, exact candidate `version`, persistence `status`, storage `error` |
 
-`POST /api/commissioning` accepts exactly one field:
+`POST /api/commissioning` accepts a mode request with exactly one field:
 
 ```json
 {"mode":"listen-only"}
@@ -105,6 +105,31 @@ If the initial mode save failed, other settings saves first retry that same boot
 choice; they report failure without changing their own keys if mode persistence
 still fails. Diagnostics and RAM Wi-Fi trials remain available. The initial RF
 error stays latched until an explicit STA mode save or reboot.
+
+Monitoring actions use the same STA-only endpoint:
+
+```json
+{"action":"select","radiator":"F1040506","name":"Living room"}
+{"action":"rename","radiator":"F1040506","name":"Living room north"}
+{"action":"remove","radiator":"F1040506"}
+```
+
+Use exactly these fields. Names contain 1–32 UTF-8 bytes, no control characters.
+Select requires that full address to have been observed or already selected.
+It can update an existing selection's name. Rename/remove require an existing
+selection. An already paired address, capacity exhaustion, storage error or
+pending mutation returns `409`. Pairing is exclusive with monitor changes.
+No action sends RF or changes mode, pairing or templates.
+
+`202` means queued. The GET response adds `monitor_capacity` (default 8),
+`monitors[]` (`radiator`, `name`, `available`, optional monotonic `age_ms` and
+`stale`), `monitor_pending`, `monitor_save_status`, `monitor_storage_error` and
+`monitor_persistence_uncertain`. Only `succeeded` confirms the write.
+On failure, old RAM selections continue and monitor mutations block until
+reboot; inspect the loaded selections then. `discovery_enabled` is the separate
+global switch: selection persists while disabled, but passive snapshots/configs
+publish only while enabled. Removing or disabling discovery schedules durable
+cleanup. Use [MQTT status](#mqtt) to track completion/errors.
 
 The page shows reports and candidate metadata, including matching pair/template
 status. Candidate choices are explicit snapshots: refresh choices after capture

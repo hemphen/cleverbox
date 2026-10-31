@@ -31,6 +31,48 @@ Discovery configs are published retained at QoS 1 to
 entity IDs use the bridge ID and registry ID, never the name, so renaming only
 changes the label.
 
+## Passive monitoring
+
+Leave Touch E3 operating and keep Cleverbox listen-only. In **Passive
+commissioning**, copy an observed radiator's full RF address into **Read-only
+Home Assistant monitoring**, give it a name and select it. Configure MQTT and
+**Enable HA discovery** globally. Hearing a radiator alone never selects it.
+Default monitoring capacity is 8, independent of the paired registry; a full
+list rejects additions until an explicit removal.
+
+Each selection gets the first five entities in the table above (temperature,
+observed target, observed mode, freshness and report age). Report age includes
+`radiator` and latest destination `controller` diagnostic attributes. There is
+no climate entity, Apply button, writable number/select or command topic.
+Do not copy the control package for passive devices.
+
+Device/config identity is `cleverbox_<bridge_id>_passive_<RF-address>` and entity
+IDs use the same prefix. The full address uses eight uppercase hex digits,
+including leading zeros; HA entity IDs lowercase the address for valid entity
+slugs. Name, destination controller and cache position never
+change identity. Separate topics prevent collisions with paired IDs. A removed
+identity can only represent that same RF address if explicitly selected again.
+
+All five entities expire after 15 seconds without snapshots, even if retained
+bridge availability remains online. Bridge offline also makes them unavailable.
+The three reading sensors additionally require a fresh report and a supported
+value. Report freshness expires monotonically after five minutes; publications
+use 15-second headroom. After bridge reboot the selection persists but readings
+are unavailable until a new valid report. Nothing restores saved measurements.
+
+Rename republishes the same identity. Removal cleans up its retained discovery
+config. Global disable cleans up passive and paired discovery and stops passive
+snapshots, while keeping selections; re-enable restores the same identities.
+Broker reconnect and HA birth replay current configs and RAM-only snapshots.
+Interrupted cleanup follows the journal rules below and cannot replay RF work.
+
+An already paired address cannot be selected. If explicitly pairing later
+reveals a selected address, the attempt stops before bind (`0x7306`); remove its
+monitor selection and explicitly restart pairing after disconnecting Touch E3.
+The initial inclusion offer may already have been sent. Removing either kind
+of record never creates/removes the other or changes templates. Selection is
+never converted into control automatically.
+
 ## Setup
 
 1. Pair and name the radiators on the Cleverbox web page.
@@ -128,7 +170,7 @@ message.
   configs are not republished otherwise.
 - One config is in flight at a time. A missing PUBACK after 5 s or a failed send
   closes the MQTT client, so an old config cannot overtake a newer removal.
-- The NVS journal holds `2 × capacity` radiator IDs. When full, new radiators
+- The NVS journal holds `2 × (paired capacity + monitor capacity)` tagged identities. When full, new radiators
   wait until removals complete.
 
 Discovery error codes in `GET /api/mqtt`:
@@ -153,7 +195,7 @@ the bridge ID: `sensor.cleverbox_1_temperature` becomes
 
 `make test-home-assistant` runs Home Assistant Core 2026.10.4 with Mosquitto
 and the simulator. It validates the package with Home Assistant's config check,
-then exercises discovery, rename, removal, restarts, Apply, rejections, timeouts
+then exercises passive/paired discovery, rename, removal, restarts, Apply, rejections, timeouts
 and expiry through real service calls:
 
 ```sh

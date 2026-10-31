@@ -119,7 +119,7 @@ A RAM observation cache uses the radiator's source RF address as identity and
 retains the latest decoded readings, destination controller and monotonic
 receipt time. Five minutes marks an observation stale. No heating or energy
 fields are added. Observations do not create pairing, authorize commands or
-produce MQTT/HA discovery. Paired command machines still require both their
+produce MQTT/HA discovery automatically. Explicit selections are described below. Paired command machines still require both their
 saved source and destination addresses to match.
 
 A separate RAM cache retains CRC-valid, structurally valid 59-byte controller
@@ -151,24 +151,56 @@ Adoption works in listen-only and sends nothing. Command construction still
 rewrites the source to the paired controller; captured sources grant no control.
 Manual hex import remains available.
 
-Default-capacity host layout measurements: observations 32 B each, candidates
-112 B each, 2304 B for both cache arrays. Requests grow from 136 to 176 B
-(+360 B for the default nine-entry queue). Registry records and the worker's
-state machines do not grow. Mode/status metadata, two 64-bit version counters
-and two startup-allocated task mutexes (radio state and mode storage) add a small
-fixed overhead. These are layout/bounded-allocation measurements, not runtime heap or stack high-water
-measurements; verify the ESP build and sustained receive on hardware.
+## Passive Home Assistant monitoring
 
-The [local workflow](http-api.md#passive-commissioning) supports capture alongside
-Touch E3. Disconnect it before explicit control enable and pairing; pairing can
-reset radiator settings. Genuine reception, independent no-TX proof and
-new-controller template acceptance remain [hardware checks](hardware.md).
+A separate selection list holds `RADIO_MONITOR_CAPACITY` addresses and names
+(equal to `CLEVERBOX_RADIATOR_CAPACITY`, default 8). The radio worker persists
+explicit select, rename and remove actions in `ha_monitors`, separately from
+pairings/templates. Selection requires a decoded report in the general passive
+cache or an existing selection. All actions use the full four-byte RF address;
+cache slots and destination controllers never identify a device.
 
-The next separate milestone is opt-in HA read-only discovery of selected RF
-addresses, persistent selections, stable bridge/address device identity and
-freshness/availability. Cache replacement must not change a selected identity.
-Transition from observation to control remains explicit. This milestone adds
-none of that discovery or selection persistence.
+Each selection has a dedicated RAM observation updated directly by production
+receive code, regardless of destination controller. General cache eviction
+cannot stop it updating. These readings clear at reboot. There is no packet
+allocation, packet history or per-report flash write. When capacity is full,
+selection returns `409`; remove a selection explicitly to free space.
+
+Global HA discovery enables publishing of selected observations and their
+read-only discovery entities. Disable stops passive snapshots and cleans up
+entities but preserves selections. See [entities and lifecycle](home-assistant.md#passive-monitoring).
+
+An already paired address cannot be selected. An explicit inclusion reply from
+a monitored address ends that pairing attempt before bind with `0x7306`.
+Remove monitoring, disconnect Touch E3, then start pairing again explicitly.
+The discovery address is not necessarily the final radiator address, so an
+explicit pairing attempt can already have sent its offer. Passive operations
+never send RF. Pairing removal never creates a passive selection; selection
+removal never changes pairings or saved templates. No automatic conversion,
+mode enable, template adoption or command replay occurs.
+
+The shared mode-persistence gate runs before every selection write. Save uses
+a versioned blob with generation, commit and independent handle readback. RAM
+changes only after verified success. A failed write reports `failed`, storage
+error and uncertainty; old RAM selections continue this boot. Further monitor
+mutations stop until reboot, which loads whichever record is durable. Corrupt,
+unknown or oversized records are reported, not truncated or overwritten.
+
+Default-capacity host layout compared with main `4c5861d`: static BSS grows by
+2960 B (GNU `size`, includes alignment), with a further 48 B in data. This
+includes two 304 B selection lists (live and prospective), eight 72 B monitored
+observations, two 303 B selection wire buffers, and the expanded discovery
+journal/labels. General caches remain 2304 B, the nine-entry queue remains
+176 B per request, and command machines do not grow. These are host layout
+measurements, not ESP heap/stack high-water measurements. Serialized selection
+storage is at most 303 B; the journal grows from 72 B to 264 B, a combined
+495 B increase before NVS overhead. Firmware size is reported in the PR build
+evidence. No new tasks, timers, queues or dynamic persistent collections exist.
+
+Genuine reception alongside Touch E3, independent RF silence, real report
+interpretation/freshness, power-cycle retention and sustained receive
+responsiveness remain [hardware checks](hardware.md). Simulator/HA success does
+not establish physical heating behavior.
 
 ## Radiator registry
 
@@ -397,7 +429,8 @@ automatically.
 | `wifi` | v1: version (1), SSID (33), password (64) | Wi-Fi saved or forgotten |
 | `timezone` | v1: version (1), NUL-terminated POSIX rule | Time zone saved |
 | `mqtt` | v1: version, flags, port (LE16), host (97), username (65), password (129); 295 bytes | Broker configured, enabled, disabled or forgotten |
-| `ha_discovery` | v1: version, enabled, 2 zero bytes, generation (LE32), then `2 × capacity` radiator IDs (LE32) | Discovery enabled or disabled; a radiator added to or removed from discovery |
+| `ha_monitors` | v1: version, count (LE16), generation (LE32), then address (4) and name (33) per selection. `7 + 37 × count` bytes. | Explicit monitor select, rename or remove |
+| `ha_discovery` | v2: version, enabled, 2 zero bytes, generation (LE32), then `4 × capacity` tagged identities (LE64). High word 0: paired ID; 1: passive full RF address in low word. Existing v1 paired journal remains readable and upgrades on its next write. | Discovery enabled/disabled; topic ownership added or acknowledged cleanup removed |
 
 Write policy:
 
@@ -459,7 +492,7 @@ observability outside the physical API.
 `--test-clock`, `--test-interfaces` (extra loopback destinations for AP/unknown
 classification). Storage defaults to `local/simulation-pairing.bin`; each NVS key
 gets its own file next to it (`.registry`, `.wifi`, `.mqtt`, `.timezone`,
-`.ha_discovery`, `.rf_mode`). Stop the simulator and delete these files to reset.
+`.ha_discovery`, `.ha_monitors`, `.rf_mode`). Stop the simulator and delete these files to reset.
 
 ## Constants
 
