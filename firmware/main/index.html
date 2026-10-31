@@ -450,7 +450,7 @@ async function refreshRadio(){
       ? 'Listening · '+data.valid_frames+' valid frames'
       : 'Radio '+data.health+' · '+data.failure_stage+' error '+data.failure_code+
         ' · attempt '+data.recovery_attempt+'/'+data.recovery_attempt_limit+
-        (data.retry_in_ms===null?' · automatic retries exhausted':' · retry in '+data.retry_in_ms+' ms');
+        (data.health==='faulted'?' · automatic retries exhausted':data.retry_in_ms===null?' · setup attempt in progress':' · retry in '+data.retry_in_ms+' ms');
     field('retryRadio').disabled=!httpControlAllowed||!data.retry_allowed;
     field('radioStatus').textContent+=' · recoveries '+(data.recovery_successes??0);
     field('simulationPanel').hidden=data.simulation!==true;

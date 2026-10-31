@@ -53,6 +53,17 @@ async function main() {
   vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
   await new Promise(setImmediate);
   assert.match(fields.templateStatus.textContent, /No controller state learned/);
+  data.ready=false; data.health='initializing'; data.retry_in_ms=null; data.retry_allowed=false;
+  await vm.runInContext('refreshRadio()',context);
+  assert.match(fields.radioStatus.textContent,/setup attempt in progress/);
+  assert.doesNotMatch(fields.radioStatus.textContent,/exhausted/);
+  assert.equal(fields.retryRadio.disabled,true);
+  data.health='faulted'; data.retry_allowed=true;
+  await vm.runInContext('refreshRadio()',context);
+  assert.match(fields.radioStatus.textContent,/retries exhausted/);
+  assert.equal(fields.retryRadio.disabled,false);
+  data.ready=true; data.health='ready'; data.retry_allowed=false;
+
   assert.equal(fields.simulationPanel.hidden, true);
   fields.mode.value = '3'; fields.temperature.value = '15.5';
   await fields.sendTarget.handlers.click();

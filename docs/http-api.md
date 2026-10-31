@@ -188,7 +188,7 @@ observation.
 | `failure_stage`, `failure_code` | Last failure, retained after success: `none`, `initialize`, `receive`, `transmit`, `rx_restore`, `resources` and underlying code |
 | `recovery_attempt`, `recovery_attempt_limit` | Current/last batch attempt and fixed limit 4 |
 | `recovery_attempts`, `recovery_successes` | Saturating lifetime setup-attempt and successful-recovery counters; initial success is not a recovery |
-| `retry_in_ms` | Monotonic delay until next attempt, or null when ready/exhausted |
+| `retry_in_ms` | Monotonic delay until next attempt, or null when ready, exhausted or initial setup is in progress |
 | `retry_pending`, `retry_allowed` | Explicit retry queued; exhausted radio with a running worker may accept a retry |
 
 `POST /api/radio` requires exactly `{"action":"retry"}`. STA admission is
