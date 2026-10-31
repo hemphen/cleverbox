@@ -105,6 +105,12 @@ static void test_fault_persistence_and_pairing() {
     reset(); radio_worker pre_tx; command.state=state_frame();
     assert(radio_control_start(1,&command)==ESP_OK); standby_result=-83; pre_tx.step();
     assert(!transmit_count && registry.records[0].control_error==-83 && !status.ready);
+    reset(); radio_worker pre_state; start_control(pre_state,1); pre_state.step();
+    rf_frame report=report_b(false);
+    rf_control_receive(&pre_state.controls[1],test_now_us/1000,&report);
+    standby_result=-86; pre_state.step();
+    assert(transmit_count==1 && registry.records[1].control_error==-86 && !status.ready);
+    assert(registry.records[1].control.attempts==0 && registry.records[1].control.phase==RF_CONTROL_ERROR);
 }
 static void test_hal_containment() {
     IdfHal adapter; adapter.begin_operation(1200); adapter.spiBegin();

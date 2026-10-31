@@ -724,7 +724,11 @@ struct radio_worker {
             } else {
                 next_device = (chosen + 1) % registry.count;
                 control_errors[chosen] = outcome;
-                rf_control_sent(&controls[chosen], esp_timer_get_time() / 1000, tx_result == 0);
+                if (tx_result && !uncertain) {
+                    // Preparation failed before entering transmit(). Do not count
+                    // a state-frame attempt that could not have gone on air.
+                    controls[chosen].status.phase = RF_CONTROL_ERROR;
+                } else rf_control_sent(&controls[chosen], esp_timer_get_time() / 1000, tx_result == 0);
             }
             if (tx_result == RADIO_ERR_LISTEN_ONLY || tx_result == ESP_ERR_INVALID_ARG) {
                 publish(); return; // Admission/construction refusal is not a hardware fault.
