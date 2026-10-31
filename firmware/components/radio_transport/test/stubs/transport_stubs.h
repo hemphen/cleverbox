@@ -45,6 +45,7 @@ inline int xQueueSend(QueueHandle_t, const void *item, int) {
     memcpy(queued_bytes + ((queue_head + queue_count) % queue_capacity) * queue_item_size, item, queue_item_size);
     ++queue_count; return pdPASS;
 }
+inline unsigned uxQueueMessagesWaiting(QueueHandle_t) { return queue_count; }
 inline int xQueueReceive(QueueHandle_t, void *item, int) {
     if (!queue_count) return 0;
     memcpy(item, queued_bytes + queue_head * queue_item_size, queue_item_size);
@@ -61,7 +62,8 @@ constexpr int RADIOLIB_CC1101_REG_PKTCTRL0 = 0, RADIOLIB_CC1101_REG_RXBYTES = 1,
               RADIOLIB_CC1101_REG_PKTCTRL1 = 4;
 inline void (*transmit_hook)() = nullptr;
 inline int transmit_result;
-inline int receive_result;
+inline int receive_result, begin_result, standby_result;
+inline unsigned begin_count;
 inline uint8_t transmitted_bytes[64];
 inline size_t transmitted_size;
 inline unsigned transmit_count;
@@ -77,6 +79,7 @@ public:
     RadioLibHal(int, int, int, int, int, int) {}
     virtual ~RadioLibHal() = default;
     int GpioModeInput = 0;
+    virtual void yield() {}
     virtual void init() = 0;
     virtual void term() = 0;
     virtual void pinMode(uint32_t, uint32_t) = 0;
@@ -121,7 +124,7 @@ public:
 class CC1101 {
 public:
     explicit CC1101(Module *) {}
-    int standby() { receiving = false; return 0; }
+    int standby() { receiving = false; return standby_result; }
     int fixedPacketLengthMode(size_t size) { packet_mode = 0; fixed_length = size; return 0; }
     int transmit(const uint8_t *bytes, size_t size) {
         assert(size <= sizeof(transmitted_bytes) && packet_mode == 0 && size == fixed_length);
@@ -134,7 +137,7 @@ public:
         ++receive_starts; incoming_size = incoming_used = 0;
         receiving = receive_result == 0; return receive_result;
     }
-    int begin(double, double, double, double, int, int) { return 0; }
+    int begin(double, double, double, double, int, int) { ++begin_count; return begin_result; }
     int getChipVersion() { return 1; }
     int setPreambleLength(int, int) { return 0; }
     int setEncoding(int) { return 0; }
@@ -155,8 +158,13 @@ inline void gpio_set_level(int, uint32_t) {}
 inline uint32_t gpio_get_level(int) { return 0; }
 inline void esp_rom_delay_us(RadioLibTime_t) {}
 inline int spi_bus_initialize(int, const spi_bus_config_t *, int) { return 0; }
-inline int spi_bus_add_device(int, const spi_device_interface_config_t *, void **) { return 0; }
-inline int spi_device_polling_transmit(void *, spi_transaction_t *) { return 0; }
+inline int spi_bus_add_device(int, const spi_device_interface_config_t *, void **p) { *p=(void *)1; return 0; }
+inline int spi_acquire_result, spi_start_result, spi_end_result;
+inline unsigned spi_starts;
+inline int spi_device_acquire_bus(void *, int wait) { assert(wait==portMAX_DELAY); return spi_acquire_result; }
+inline void spi_device_release_bus(void *) {}
+inline int spi_device_polling_start(void *, spi_transaction_t *, int wait) { assert(wait==portMAX_DELAY); ++spi_starts; return spi_start_result; }
+inline int spi_device_polling_end(void *, int) { return spi_end_result; }
 inline void spi_bus_remove_device(void *) {}
 inline void spi_bus_free(int) {}
 

@@ -117,6 +117,7 @@ Candidate choices name a specific capture. If it changes or is evicted, refresh 
 <section>
 <h2>Radio receiver</h2>
 <p id="radioStatus" role="status">Checking radio…</p>
+<button id="retryRadio" disabled>Retry radio</button><p id="radioAction" role="status"></p>
 <details><summary>Global receive diagnostics (all addresses)</summary><pre id="radioReport">No radiator report received.</pre><pre id="radioDiagnostics"></pre></details>
 </section>
 <section>
@@ -447,7 +448,11 @@ async function refreshRadio(){
     pairingId=data.inclusion?.id??pairingId;
     field('radioStatus').textContent=data.ready
       ? 'Listening · '+data.valid_frames+' valid frames'
-      : 'Radio unavailable · error '+data.error;
+      : 'Radio '+data.health+' · '+data.failure_stage+' error '+data.failure_code+
+        ' · attempt '+data.recovery_attempt+'/'+data.recovery_attempt_limit+
+        (data.retry_in_ms===null?' · automatic retries exhausted':' · retry in '+data.retry_in_ms+' ms');
+    field('retryRadio').disabled=!httpControlAllowed||!data.retry_allowed;
+    field('radioStatus').textContent+=' · recoveries '+(data.recovery_successes??0);
     field('simulationPanel').hidden=data.simulation!==true;
     if(data.simulation===true){
       field('trafficNotice').textContent='SIMULATION ONLY · all transmitted and received bytes stay on this computer. Clock runs at real speed.';
@@ -494,7 +499,7 @@ async function refreshRadio(){
     }
     const observed=data.observed;
     field('pairedReport').textContent=observed
-      ? 'Paired radiator · '+(observed.stale?'STALE · ':'')+'last report '+(observed.age_ms/1000).toFixed(1)+' s ago'
+      ? (data.ready?'Paired radiator · ':'Radio unavailable · retained observation · ')+(observed.stale?'STALE · ':'')+'last report '+(observed.age_ms/1000).toFixed(1)+' s ago'
         +'\nMeasured: '+(observed.temperature_c===null?'unavailable':observed.temperature_c+' °C')
         +'\nReported target: '+(observed.target_c===null?'unavailable':observed.target_c+' °C')
         +'\nReported mode: '+(modes[observed.mode]??'Unknown')+' ('+observed.mode+')'
@@ -583,6 +588,15 @@ document.querySelectorAll('button[data-pair-action]').forEach(button=>button.add
   } catch(error){field('pairAction').textContent=error.message;}
   finally {button.disabled=false; restrictControls();}
 }));
+field('retryRadio').addEventListener('click',async()=>{
+  if(!requireControl('radioAction')) return;
+  try {
+    const r=await fetch('/api/radio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'retry'})});
+    if(!r.ok) throw new Error(await r.text());
+    field('radioAction').textContent='Radio retry accepted. Failed commands and pairing will not resume.';
+    refreshRadio();
+  }catch(error){field('radioAction').textContent=error.message;}
+});
 document.querySelectorAll('button[data-command]').forEach(button=>button.addEventListener('click',async()=>{
   if(!requireControl('result')) return;
   const command=button.dataset.command;

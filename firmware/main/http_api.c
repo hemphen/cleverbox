@@ -315,6 +315,46 @@ static esp_err_t json_response(httpd_req_t *r, cJSON *j) {
     httpd_resp_set_type(r, "application/json"); httpd_resp_set_hdr(r, "Cache-Control", "no-store");
     esp_err_t result = httpd_resp_sendstr(r, body); cJSON_free(body); return result;
 }
+static void health_json(cJSON *j, const radio_status *s) {
+    unsigned clock; int64_t sampled;
+    bool time_ready=device_time_command_clock(&clock,&sampled);
+    cJSON_AddStringToObject(j,"health",radio_health_name(s->health));
+    cJSON_AddBoolToObject(j,"control_ready",s->ready && s->control_enabled && !s->mode_pending && !s->mode_error && !s->registry_error && !s->exchange_id && !s->mutation_pending && time_ready);
+    cJSON_AddStringToObject(j,"failure_stage",radio_failure_name(s->failure_stage));
+    cJSON_AddNumberToObject(j,"failure_code",s->failure_code);
+    cJSON_AddNumberToObject(j,"recovery_attempt",s->recovery_attempt);
+    cJSON_AddNumberToObject(j,"recovery_attempt_limit",RADIO_RECOVERY_ATTEMPTS);
+    cJSON_AddNumberToObject(j,"recovery_attempts",s->recovery_attempts);
+    cJSON_AddNumberToObject(j,"recovery_successes",s->recovery_successes);
+    cJSON_AddBoolToObject(j,"retry_pending",s->retry_pending);
+    cJSON_AddBoolToObject(j,"retry_allowed",s->health==RADIO_FAULTED && s->worker_running && !s->retry_pending);
+    if (s->retry_at_ms) {
+        int64_t delay=s->retry_at_ms-esp_timer_get_time()/1000;
+        cJSON_AddNumberToObject(j,"retry_in_ms",(double)(delay>0?delay:0));
+    } else cJSON_AddNullToObject(j,"retry_in_ms");
+}
+static esp_err_t radio_action(httpd_req_t *r) {
+    char body[64],type[40];
+    if (httpd_req_get_hdr_value_str(r,"Content-Type",type,sizeof(type))!=ESP_OK || strcmp(type,"application/json") ||
+        !r->content_len || r->content_len>=sizeof(body))
+        return httpd_resp_send_err(r,HTTPD_400_BAD_REQUEST,"Use a small JSON retry action");
+    size_t used=0;
+    while (used<r->content_len) {
+        int n=httpd_req_recv(r,body+used,r->content_len-used); if (n<=0) return ESP_FAIL; used+=(size_t)n;
+    }
+    body[used]=0;
+    cJSON *j=mqtt_json_flat(body)?cJSON_ParseWithOpts(body,NULL,true):NULL;
+    const char *a=string(j,"action");
+    bool valid=cJSON_IsObject(j) && cJSON_GetArraySize(j)==1 && a && !strcmp(a,"retry");
+    cJSON_Delete(j);
+    if (!valid) return httpd_resp_send_err(r,HTTPD_400_BAD_REQUEST,"Use exactly action: retry");
+    if (radio_retry()!=ESP_OK) {
+        httpd_resp_set_status(r,"409 Conflict");
+        return httpd_resp_sendstr(r,"Retry requires an exhausted radio and a running worker; inspect radio status.");
+    }
+    httpd_resp_set_status(r,"202 Accepted");
+    return json_response(r,cJSON_Parse("{\"accepted\":true,\"transmitted\":false}"));
+}
 // Passive diagnostics deliberately have the same AP/unknown read exposure as
 // existing RF diagnostics. Candidate bytes remain internal; mutations need STA.
 static void matching_pair(cJSON *j, const uint8_t radiator[4]) {
@@ -445,6 +485,7 @@ static esp_err_t radio_status_page(httpd_req_t *r) {
 #ifdef CLEVERBOX_HOST
     simulation_status(j);
 #endif
+    health_json(j,&s);
     cJSON_AddBoolToObject(j, "ready", s.ready); cJSON_AddNumberToObject(j, "error", s.error);
     cJSON_AddNumberToObject(j, "chip_version", s.chip_version);
     cJSON_AddNumberToObject(j, "valid_frames", s.valid_frames); cJSON_AddNumberToObject(j, "invalid_frames", s.invalid_frames);
@@ -741,6 +782,7 @@ static const api_route routes[] = {
     {"/api/radiators", HTTP_POST, registry_action, false},
     {"/api/preview", HTTP_POST, preview, false},
     {"/api/radio", HTTP_GET, radio_status_page, true},
+    {"/api/radio", HTTP_POST, radio_action, false},
     {"/api/pairing", HTTP_POST, pairing_action, false},
     {"/api/command", HTTP_POST, live_command, false},
     {"/api/controller-state", HTTP_POST, controller_state_action, false},

@@ -10,6 +10,17 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+// One finite batch: initial attempt, then 1/2/4 s delays. Runtime faults
+// wait 1 s before the first attempt. A new fault starts a new batch.
+#define RADIO_RECOVERY_ATTEMPTS 4
+#define RADIO_ERR_DELIVERY_UNCERTAIN 0x730A
+#define RADIO_ERR_UNAVAILABLE 0x730B
+typedef enum { RADIO_INITIALIZING, RADIO_RECOVERING, RADIO_READY, RADIO_FAULTED } radio_health;
+typedef enum { RADIO_FAILURE_NONE, RADIO_FAILURE_INITIALIZE, RADIO_FAILURE_RECEIVE,
+               RADIO_FAILURE_TX, RADIO_FAILURE_RX_RESTORE, RADIO_FAILURE_RESOURCES } radio_failure_stage;
+const char *radio_health_name(radio_health health);
+const char *radio_failure_name(radio_failure_stage stage);
+esp_err_t radio_retry(void);
 #define RADIO_PASSIVE_CAPACITY (2 * CLEVERBOX_RADIATOR_CAPACITY)
 #define RADIO_ERR_LISTEN_ONLY 0x7302
 #define RADIO_ERR_MODE_BUSY 0x7303
@@ -43,7 +54,14 @@ typedef struct {
     int monitor_error;
     bool monitor_pending, monitor_uncertain;
     radio_store_result monitor_result;
-    bool ready;
+    bool ready, worker_running, retry_pending;
+    radio_health health;
+    radio_failure_stage failure_stage;
+    int failure_code;
+    unsigned recovery_attempt;
+    uint32_t recovery_attempts, recovery_successes;
+    int64_t retry_at_ms; // monotonic; zero when ready/exhausted
+
     int error;
     int chip_version;
     uint32_t valid_frames, invalid_frames, receive_errors;

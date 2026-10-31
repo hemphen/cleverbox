@@ -275,6 +275,26 @@ http:
         apply(1,20,'Off'); pump(lambda:phase(1,'matched') and app.http('/api/radio?id=1')['observed']['mode']==1)
         pump(lambda: ha.states()['sensor.cleverbox_020000000001_1_last_admission']['attributes']['result']['session'] == changed_session)
         assert ha.states()['sensor.cleverbox_020000000001_1_last_admission']['attributes']['result']['request_id'] == 1
+        # Real HA observes radio loss separately from quiet radiators. Retain
+        # diagnostic ages/results; disable readings and Apply without deleting IDs.
+        snapshots(); tx=app.http()['simulation_tx']
+        age_before=app.http('/api/radio?id=1')['observed']['age_ms']
+        app.sim('radio_fault',stage='initialize',code=-42)
+        app.sim('radio_fault',stage='spi',code=-61); advance(1)
+        app.sim('radio_fault',stage='spi',code=0); advance(10000)
+        assert app.http()['health']=='faulted'
+        pump(lambda:state_is('sensor.cleverbox_020000000001_1_temperature','unavailable') and
+             state_is('binary_sensor.cleverbox_020000000001_1_observation_fresh','off') and
+             state_is('binary_sensor.cleverbox_ready','off'))
+        pump(lambda:ha.states()['binary_sensor.cleverbox_020000000001_1_observation_fresh']['attributes'].get('radio_ready') is False)
+        assert ha.states()['sensor.cleverbox_020000000001_1_report_age']['state']!='unavailable'
+        assert state_is('button.cleverbox_1_apply','unavailable')
+        app.sim('radio_fault',stage='initialize',code=0)
+        app.http('/api/radio',dict(action='retry'),202); advance(100)
+        pump(lambda:state_is('binary_sensor.cleverbox_ready','on') and
+             not state_is('sensor.cleverbox_020000000001_1_temperature','unavailable'))
+        assert app.http('/api/radio?id=1')['observed']['age_ms']>=age_before+10000
+        assert app.http()['simulation_tx']==tx
         # Restart actual bridge process with a pending command. Boot cannot resume it.
         snapshots(); app.sim('scenario',name='silence'); apply(2,19,'Eco')
         pump(lambda:app.http()['radiators'][1]['command']['pending'])
@@ -381,6 +401,20 @@ http:
         assert {e['unique_id'] for e in passive_entries()}==passive_ids
         report('F1998877'); advance(5100)
         pump(lambda:ha.states().get('sensor.'+entity_prefix+'_report_age',{}).get('attributes',{}).get('controller')=='F1998877')
+        # Selected address and original age survive exhausted radio recovery.
+        original_age=app.http('/api/commissioning')['monitors'][0]['age_ms']
+        app.sim('radio_fault',stage='initialize',code=-42)
+        app.sim('radio_fault',stage='spi',code=-61); advance(1)
+        app.sim('radio_fault',stage='spi',code=0); advance(10000)
+        pump(lambda:state_is(sensor,'unavailable') and state_is(fresh,'off'))
+        pump(lambda:ha.states()[fresh]['attributes'].get('radio_health')=='faulted')
+        assert {e['unique_id'] for e in passive_entries()}==passive_ids
+        assert ha.states()['sensor.'+entity_prefix+'_report_age']['state']!='unavailable'
+        app.sim('radio_fault',stage='initialize',code=0)
+        app.http('/api/radio',dict(action='retry'),202); advance(100)
+        pump(lambda:state_is(sensor,'20.0') and state_is(fresh,'on'))
+        assert app.http('/api/commissioning')['monitors'][0]['age_ms']>=original_age+10000
+        assert app.http()['simulation_tx']==tx
         report(missing=True); advance(5100)
         pump(lambda:state_is(sensor,'unavailable'))
         assert state_is('sensor.'+entity_prefix+'_observed_target','unavailable') and state_is(fresh,'on')

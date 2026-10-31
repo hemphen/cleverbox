@@ -34,6 +34,7 @@ def run(directory):
     lib.host_request.argtypes=[C.c_int,C.c_char_p,C.c_char_p,C.c_char_p]; lib.host_response.restype=C.c_char_p
     lib.simulation_advance.argtypes=[C.c_int]; lib.host_network_event.argtypes=[C.c_char_p]
     lib.simulation_scenario.argtypes=[C.c_char_p]
+    lib.simulation_radio_fault.argtypes=[C.c_char_p,C.c_int]
     lib.host_init(); adapter=BrokerClient(lib)
     # Direct handler calls still need a real trusted local socket context.
     # Keep both TCP ends open; netif addresses are the host loopback fixtures.
@@ -123,6 +124,18 @@ def run(directory):
         # The production owner recreates either adapter with a fresh outbox.
         pump(lambda:http('/api/mqtt')['connected'] and http('/api/mqtt')['session']!=new_session,timeout=10)
         assert http()['simulation_tx']==tx
+        # Actual broker remains connected throughout the radio-only outage.
+        tx=http()['simulation_tx']; messages.clear()
+        lib.simulation_radio_fault(b'initialize',-42); lib.simulation_radio_fault(b'spi',-61)
+        lib.simulation_advance(1); lib.simulation_radio_fault(b'spi',0)
+        lib.simulation_advance(10000)
+        pump(lambda:any(t==BASE+'/bridge' and p.get('radio_health')=='faulted' for t,p,r in messages))
+        assert http('/api/mqtt')['connected'] and http()['health']=='faulted'
+        assert any(t.endswith('/state') and not p['fresh'] and not p['radio_ready'] for t,p,r in messages)
+        http('/api/radio',dict(action='retry'),202); lib.simulation_radio_fault(b'initialize',0)
+        messages.clear()
+        pump(lambda:any(t==BASE+'/bridge' and p.get('radio_ready') for t,p,r in messages))
+        assert http()['simulation_tx']==tx and http()['recovery_successes']==1
         http('/api/mqtt',dict(action='forget'),202); pump(lambda:not http('/api/mqtt')['configured'])
         assert http()['pairing']['saved'] and http('/api/time')['usable']
         print('Real Mosquitto 2.x / Paho 2.1.0 smoke: TCP publications, command acceptance/readback, duplicates, retained rejection, offline, broker restart and RF independence: passed')

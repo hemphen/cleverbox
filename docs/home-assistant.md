@@ -205,3 +205,25 @@ PATH="$PWD/build/ha-venv/bin:$PATH" make test-home-assistant
 ```
 
 Set `CLEVERBOX_HA_TEST_DIR` to keep logs.
+
+## Radio outages
+
+Paired and passive temperature/target/mode sensors become unavailable when the
+radio is initializing, recovering or faulted. Their existing freshness entity
+shows off, with `radio_ready` and `radio_health` attributes. Report age remains
+visible and increases from the original receipt time; admission/delivery
+entities retain useful results. Quiet traffic instead expires by the normal
+five-minute age rule with the radio still ready.
+
+Successful recovery does not synthesize a report. A retained observation can
+become available again only if its original age still meets the freshness bound.
+Expired readings need a new received report. The 15-second publication-loss
+expiry applies independently. Device and entity IDs do not change, and no new
+health entity is added.
+
+The optional package's existing `Cleverbox ready` now follows the bridge
+snapshot's `control_ready`, with 15-second expiry and broker availability.
+Apply becomes unavailable during an outage and the shared command admission
+still rejects unavailable RF. Deploy the updated package for this UI behavior.
+Retry through the local STA page; recovery, HA birth, broker reconnect and reboot
+never initiate pairing or replay heating commands.
