@@ -116,16 +116,23 @@ is opportunistic.
 
 ### 3. Network and recovery
 
-- [ ] The `Cleverbox` access point is up at boot; http://192.168.4.1/ loads on a phone.
-- [ ] Home Wi-Fi setup succeeds; the access point closes 60 s after the station gets an IP.
-- [ ] A wrong password reports `setup_result: failed` and keeps the previous setup.
-- [ ] Router off: the access point reopens. Router on: the station reconnects.
-- [ ] GPIO9 reads high when released and low when pressed.
-- [ ] BOOT held 5 s and released opens the access point; a short press does nothing; the station stays connected.
-- [ ] **Finish recovery** closes the access point 60 s later.
-- [ ] EN and a power cycle keep all settings and send no RF.
-- [ ] **Forget home Wi-Fi only** keeps radiators, templates, MQTT and time zone.
-- [ ] Check whether BOOT is reachable through the enclosure.
+Software tests exercise the production policy, ESP adapter at a fake driver
+boundary, and HTTP admission using real loopback sockets and fake netifs. None
+proves actual Wi-Fi or ESP/lwIP interface routing. All checks below remain pending.
+
+- [ ] Fresh device with absent Wi-Fi key: `Cleverbox` AP (password `cleverbox`) loads http://192.168.4.1/ on a phone, without serial.
+- [ ] Home Wi-Fi setup succeeds; the AP closes 60 s after successful save. Move the phone to the home LAN and open the station IP.
+- [ ] Configured power-on and EN reset: STA reconnects and the AP is never advertised, including during startup.
+- [ ] Router off, IP loss, failed reconnect batches and router return: AP remains absent; STA reconnects at the documented bounded pace.
+- [ ] Corrupt/unreadable Wi-Fi record: no automatic AP or erasure; BOOT still opens diagnostics and Wi-Fi recovery. Whole-partition NVS failure must not erase flash or prevent BOOT access; writes can remain unavailable.
+- [ ] Wrong replacement password and storage failures keep an already authorised AP open, including after the old STA reconnects. No new AP opens for a failed station-only configuration attempt.
+- [ ] GPIO9 reads high released and low pressed. Hold BOOT 5 s and release while connected and while offline: AP opens, station/admitted commands remain intact. Short press and bounce do nothing.
+- [ ] **Finish recovery** warns before submission and closes AP after 60 s both with and without STA, also while persistence is uncertain. BOOT can reopen it without serial.
+- [ ] AP and STA active together: AP permits diagnostics and Wi-Fi setup only; pairing, commands, templates, removal, time and MQTT changes return `403`. Those changes work on STA. Check an AP client targeting the station IP, changed DHCP addresses, overlapping subnets, IPv6 and spoofed Host/Origin/forwarding headers. No denied request queues work or transmits RF.
+- [ ] Physical `clock_seconds` presence returns `400`; normal commands require SNTP or manual device time on STA.
+- [ ] **Forget home Wi-Fi only** retains AP access and all radiators, identities, names, templates, MQTT credentials, timezone and discovery cleanup, including across power cycles.
+- [ ] EN and power cycles retain settings and send no RF. BOOT/recovery and reconnection neither initiate pairing nor replay commands; an already admitted command continues once only.
+- [ ] Check BOOT accessibility through the supplied enclosure. EN is reset only. Do not hold BOOT during reset or power-on: verify GPIO9 strapping behaviour before proposing an access hole.
 
 ### 4. Time
 

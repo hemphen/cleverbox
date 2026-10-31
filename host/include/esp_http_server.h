@@ -5,12 +5,14 @@
 #include "esp_err.h"
 typedef struct {
     size_t content_len, consumed;
+    void *user_ctx;
+    int socket_fd;
     const char *body, *content_type, *uri;
     char *response;
     const char *status, *response_type;
 } httpd_req_t;
 typedef void *httpd_handle_t;
-typedef struct { const char *uri; int method; esp_err_t (*handler)(httpd_req_t *); } httpd_uri_t;
+typedef struct { const char *uri; int method; esp_err_t (*handler)(httpd_req_t *); void *user_ctx; } httpd_uri_t;
 #define HTTP_GET 0
 #define HTTP_POST 1
 #define HTTPD_400_BAD_REQUEST 400
@@ -25,3 +27,5 @@ esp_err_t httpd_register_uri_handler(httpd_handle_t, const httpd_uri_t *);
 
 size_t httpd_req_get_url_query_len(httpd_req_t *r);
 esp_err_t httpd_req_get_url_query_str(httpd_req_t *r, char *out, size_t n);
+
+int httpd_req_to_sockfd(httpd_req_t *);

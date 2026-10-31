@@ -24,7 +24,9 @@ static esp_err_t home(httpd_req_t *r)
 void app_main(void)
 {
     // Never erase NVS automatically: it contains saved pairing data.
-    ESP_ERROR_CHECK(nvs_flash_init());
+    esp_err_t storage_error = nvs_flash_init();
+    if (storage_error != ESP_OK)
+        ESP_LOGE("storage", "NVS unavailable (%d); preserving flash, BOOT recovery remains available", storage_error);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(device_time_start());

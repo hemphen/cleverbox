@@ -220,8 +220,9 @@ with `error` and the radio task stops until reboot.
 
 Commands carry the local time of day (`B2`). Time is usable only after an SNTP
 sync or a manual UTC set during the current boot; no RTC or stored time is
-trusted. Without usable time, UI and MQTT commands are refused. The only
-bypass is the `clock_seconds` field of `POST /api/command`, intended for tests.
+trusted. Without usable time, all physical HTTP and MQTT commands are refused.
+Physical HTTP rejects `clock_seconds` explicitly. Only the host simulator
+accepts that override for tests.
 
 - SNTP (`pool.ntp.org`) starts on each station IP event and resyncs hourly.
 - Manual UTC (`/api/time`, action `manual`) is valid until reboot or the next
@@ -240,19 +241,35 @@ The offset sign follows POSIX, so `CET-1` means UTC+1. Sweden:
 
 ## Network
 
-The setup access point (SSID `Cleverbox`, WPA2 password `cleverbox`, channel 1,
-2 clients, http://192.168.4.1/) starts at boot. The same HTTP server answers on
-the access point and the station interface.
+The setup access point uses SSID `Cleverbox`, WPA2 password `cleverbox`,
+channel 1, 2 clients and http://192.168.4.1/. The password is public and fixed.
+It grants Wi-Fi setup and diagnostics only ([HTTP boundary](http-api.md#interface-policy)).
 
 | Event | Behaviour |
 | --- | --- |
-| Boot with saved credentials | Access point on; connect |
-| Connection attempt | 15 s deadline; 5 s between attempts; 3 attempts per batch, then 60 s pause |
-| Station gets IP | New credentials saved; access point closes after 60 s |
-| Station loses connection or IP | Access point reopens at once; reconnect after 5 s |
-| BOOT held ≥ 5 s then released | Access point opens and stays open; station unaffected |
-| **Finish recovery** | Release the button latch; access point closes 60 s later if the station is connected |
-| **Forget home Wi-Fi only** | Erase the Wi-Fi key only; access point stays open |
+| Boot with absent Wi-Fi key | Setup access point on |
+| Boot with valid saved credentials | Connect using STA only; no AP window |
+| Wi-Fi key corrupt or unreadable | Report `storage_invalid`; no automatic AP, erase or overwrite; BOOT still opens recovery |
+| Connection attempt | 15 s deadline; 5 s between attempts; 3 attempts per batch, then 60 s pause; no new AP access |
+| Station loses connection or IP | Clear station IP; reconnect after 5 s; do not open AP |
+| BOOT held ≥ 5 s then released | Open recovery and keep it open; station and admitted commands unaffected |
+| Successful explicit Wi-Fi save | End recovery; close an already open AP after 60 s, even if STA disconnects during that grace period |
+| **Finish recovery** | Close AP after 60 s regardless of STA or storage state; UI confirms that the current access path may disappear |
+| **Forget home Wi-Fi only** | Erase only the Wi-Fi key and retain recovery access, including after a failed erase |
+
+Starting a replacement trial keeps an already authorised AP session open.
+Failed credentials or a failed save, including uncertain persistence, retain
+that access through fallback reconnects. Errors do not open a new AP for a
+station-only session. A new trial or BOOT cancels a pending AP closure; ordinary
+reconnects do not. AP opening retries at one-second intervals after a platform
+failure. Reboot clears deliberate access; the saved key decides startup policy.
+
+The adapter loads credentials before starting Wi-Fi. It resets STA through
+`NULL`/`STA` when AP is closed, or `AP`/`APSTA` while recovery is authorised.
+Retry and stop paths never enable AP as a side effect. Wi-Fi driver NVS is
+disabled: the application owns the Wi-Fi key. If NVS partition initialisation
+fails, startup logs the error and continues to diagnostics and BOOT recovery
+without erasing flash; persistent changes may remain unavailable.
 
 New credentials are tried from RAM and written only after DHCP succeeds. A
 failed trial keeps the previous credentials. Only WPA2-personal 2.4 GHz networks
@@ -294,10 +311,16 @@ Write policy:
 
 ## Security
 
-- HTTP has no authentication and no HTTPS. Anyone who can reach the device,
-  through the home network or the setup access point, can pair, send commands
-  and change Wi-Fi and MQTT settings.
-- The access point password is fixed and published.
+- HTTP has no authentication and no HTTPS. Station-interface control assumes
+  a trusted LAN: every host able to reach that interface can change settings
+  and control radiators. Do not forward the port or expose it to an untrusted LAN.
+- AP access is deliberate after configuration and restricted to Wi-Fi setup
+  and diagnostics by the central [endpoint allowlist](http-api.md#interface-policy).
+  A joined AP client can replace/forget Wi-Fi and inspect household diagnostics.
+  BOOT authorises a recovery session, not an individual user.
+- These boundaries address issue #20's automatic AP exposure and physical clock
+  bypass. They do not provide HTTP authentication or complete its broader
+  authorisation item. OTA and its authorisation remain separate decisions.
 - MQTT uses TCP without TLS; credentials cross the network in clear text.
 - NVS encryption, flash encryption and secure boot are off.
 - Passwords are never returned by the API and Wi-Fi driver logging is
@@ -320,10 +343,18 @@ replies and reports. Their report writer uses its own CRC code. The synthetic
 fixture and its template values exist only in the simulator and tests.
 
 Because the simulation is single-threaded, it does not exercise task
-scheduling, lock contention, stack depth or RF timing.
+scheduling, lock contention, stack depth or RF timing. Loopback tests exercise
+real `getsockname`/`getpeername` (including IPv4-mapped IPv6 sockets),
+production dispatch and handlers, but substitute
+netif addresses and Wi-Fi events. They cannot prove ESP/lwIP ingress routing,
+AP/STA isolation, DHCP event timing, phone access or GPIO behaviour.
+`make test-http` also compiles `http_api.c` without `CLEVERBOX_HOST`, tests clock
+override rejection and device-time admission, and retains host-only RF
+observability outside the physical API.
 
 `serve.py` options: `--port` (default 8080), `--storage`, `--real-mqtt`,
-`--test-clock`. Storage defaults to `local/simulation-pairing.bin`; each NVS key
+`--test-clock`, `--test-interfaces` (extra loopback destinations for AP/unknown
+classification). Storage defaults to `local/simulation-pairing.bin`; each NVS key
 gets its own file next to it (`.registry`, `.wifi`, `.mqtt`, `.timezone`,
 `.ha_discovery`). Stop the simulator and delete these files to reset.
 

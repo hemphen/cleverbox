@@ -10,6 +10,7 @@
 #include "radiator_protocol.h"
 #include "radio_transport.h"
 #include "http_api.h"
+#include "http_access.h"
 #include "network_setup.h"
 #include "device_time.h"
 #include "mqtt_bridge.h"
@@ -153,6 +154,13 @@ static esp_err_t live_command(httpd_req_t *r)
     rf_control_request command = {0};
     int mode, target, clock = 0; uint32_t id = 0;
     bool override = cJSON_GetObjectItemCaseSensitive(j, "clock_seconds") != NULL;
+#ifndef CLEVERBOX_HOST
+    if (override) {
+        cJSON_Delete(j);
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST,
+            "clock_seconds is host-only; physical commands require device time");
+    }
+#endif
     bool valid = identity(j, &id) && integer(j, "mode", 0, 3, &mode) && integer(j, "centi_c", 0, 3000, &target) &&
                  (!override || integer(j, "clock_seconds", 0, 86399, &clock));
     // Omission selects learned RAM state, then saved state. Explicit invalid imports must
@@ -164,8 +172,14 @@ static esp_err_t live_command(httpd_req_t *r)
         command.mode = (rf_mode)mode; command.centi_c = target; command.clock_seconds = clock;
     }
     cJSON_Delete(j);
-    esp_err_t result = !valid ? ESP_ERR_INVALID_ARG : override ?
-        radio_control_start(id, &command) : radio_control_start_device(id, &command);
+    esp_err_t result = ESP_ERR_INVALID_ARG;
+    if (valid) {
+#ifdef CLEVERBOX_HOST
+        result = override ? radio_control_start(id, &command) : radio_control_start_device(id, &command);
+#else
+        result = radio_control_start_device(id, &command);
+#endif
+    }
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
     if (result == RADIO_ERR_TIME_UNAVAILABLE) {
         httpd_resp_set_status(r, "409 Conflict");
@@ -388,6 +402,10 @@ static esp_err_t network_status_page(httpd_req_t *r) {
         return httpd_resp_sendstr(r, "Network status unavailable");
     }
     cJSON *j = cJSON_CreateObject();
+    http_interface interface = http_request_interface(r);
+    cJSON_AddStringToObject(j, "http_interface", http_interface_name(interface));
+    cJSON_AddBoolToObject(j, "http_control_allowed", interface == HTTP_INTERFACE_STA);
+    cJSON_AddBoolToObject(j, "ap_closing", s.ap_closing);
     cJSON_AddStringToObject(j, "state", network_state_name(s.state));
     cJSON_AddStringToObject(j, "setup_result", network_setup_name(s.setup));
     cJSON_AddBoolToObject(j, "configured", s.configured);
@@ -571,32 +589,51 @@ static esp_err_t mqtt_action(httpd_req_t *r) {
     return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");
 }
 
-void http_api_register(httpd_handle_t server)
-{
-    httpd_uri_t mqtt_status = {.uri = "/api/mqtt", .method = HTTP_GET, .handler = mqtt_status_page};
-    httpd_uri_t mqtt_set = {.uri = "/api/mqtt", .method = HTTP_POST, .handler = mqtt_action};
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &mqtt_status));
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &mqtt_set));
-    httpd_uri_t time_status = {.uri = "/api/time", .method = HTTP_GET, .handler = time_status_page};
-    httpd_uri_t time_set = {.uri = "/api/time", .method = HTTP_POST, .handler = time_action};
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &time_status));
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &time_set));
-    httpd_uri_t net_status = {.uri = "/api/network", .method = HTTP_GET, .handler = network_status_page};
-    httpd_uri_t net_action = {.uri = "/api/network", .method = HTTP_POST, .handler = network_action};
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &net_status));
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &net_action));
-    httpd_uri_t registry = {.uri = "/api/radiators", .method = HTTP_POST, .handler = registry_action};
-    httpd_uri_t list = {.uri = "/api/radiators", .method = HTTP_GET, .handler = radio_status_page};
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &registry));
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &list));
-    httpd_uri_t command = {.uri = "/api/preview", .method = HTTP_POST, .handler = preview};
-    httpd_uri_t radio_info = {.uri = "/api/radio", .method = HTTP_GET, .handler = radio_status_page};
-    httpd_uri_t pair = {.uri = "/api/pairing", .method = HTTP_POST, .handler = pairing_action};
-    httpd_uri_t live = {.uri = "/api/command", .method = HTTP_POST, .handler = live_command};
-    httpd_uri_t state = {.uri = "/api/controller-state", .method = HTTP_POST, .handler = controller_state_action};
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &state));
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &live));
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &pair));
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &radio_info));
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &command));
+// Single endpoint admission table. New routes must deliberately choose their
+// recovery exposure. All POSTs except Wi-Fi setup require the trusted LAN.
+typedef struct {
+    const char *uri;
+    int method;
+    esp_err_t (*handler)(httpd_req_t *);
+    bool recovery;
+} api_route;
+static const api_route routes[] = {
+    {"/api/mqtt", HTTP_GET, mqtt_status_page, true},
+    {"/api/mqtt", HTTP_POST, mqtt_action, false},
+    {"/api/time", HTTP_GET, time_status_page, true},
+    {"/api/time", HTTP_POST, time_action, false},
+    {"/api/network", HTTP_GET, network_status_page, true},
+    {"/api/network", HTTP_POST, network_action, true},
+    {"/api/radiators", HTTP_GET, radio_status_page, true},
+    {"/api/radiators", HTTP_POST, registry_action, false},
+    {"/api/preview", HTTP_POST, preview, false},
+    {"/api/radio", HTTP_GET, radio_status_page, true},
+    {"/api/pairing", HTTP_POST, pairing_action, false},
+    {"/api/command", HTTP_POST, live_command, false},
+    {"/api/controller-state", HTTP_POST, controller_state_action, false},
+};
+static esp_err_t dispatch(httpd_req_t *r) {
+    const api_route *route = r->user_ctx;
+    http_interface interface = http_request_interface(r);
+    if (interface == HTTP_INTERFACE_STA ||
+        (interface == HTTP_INTERFACE_AP && route->recovery) ||
+        (interface == HTTP_INTERFACE_UNKNOWN && route->method == HTTP_GET))
+        return route->handler(r);
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    // Close denied POST connections: their unread bodies must not become the
+    // next request on a persistent socket. Nothing has reached a handler yet.
+    httpd_resp_set_hdr(r, "Connection", "close");
+    httpd_resp_set_status(r, "403 Forbidden");
+    esp_err_t result = httpd_resp_sendstr(r,
+        "This operation requires the station interface on your trusted home LAN. "
+        "Recovery access permits Wi-Fi setup and diagnostics only.");
+    // IDF closes the session immediately when a URI handler returns ESP_FAIL.
+    return result == ESP_OK ? ESP_FAIL : result;
+}
+void http_api_register(httpd_handle_t server) {
+    for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {
+        httpd_uri_t uri = {.uri = routes[i].uri, .method = routes[i].method,
+            .handler = dispatch, .user_ctx = (void *)&routes[i]};
+        ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri));
+    }
 }

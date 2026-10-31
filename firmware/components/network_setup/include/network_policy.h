@@ -15,7 +15,7 @@ typedef enum { NET_SETUP_NONE, NET_SETUP_PENDING, NET_SETUP_SAVED, NET_SETUP_FAI
 typedef struct {
     network_state state;
     network_setup_result setup;
-    bool configured, recovery_ap, persistence_uncertain, manual_recovery;
+    bool configured, recovery_ap, persistence_uncertain, manual_recovery, ap_closing;
     const char *recovery_error;
     unsigned attempts;
     unsigned event_queue_overflows;
@@ -36,7 +36,7 @@ typedef struct {
     network_status status;
     network_credentials saved, candidate;
     network_platform platform;
-    bool candidate_active, ready, attempting;
+    bool candidate_active, ready, attempting, ap_requested;
     int64_t deadline_ms, next_ms, close_ap_ms, recovery_retry_ms;
 } network_policy;
 #define NETWORK_ATTEMPT_MS 15000

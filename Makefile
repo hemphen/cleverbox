@@ -84,6 +84,9 @@ test:
 	  -Ihost/include -Ifirmware/components/mqtt_bridge/include \
 	  firmware/components/mqtt_bridge/mqtt_store.c firmware/components/mqtt_bridge/test/test_store.c -o $(BUILD_DIR)/test_mqtt_store
 	./$(BUILD_DIR)/test_mqtt_store
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ihost/include -Ifirmware/main firmware/main/http_access.c firmware/main/test_http_access.c -o $(BUILD_DIR)/test_http_access
+	./$(BUILD_DIR)/test_http_access
 	node firmware/main/test_ui.js
 
 # Host simulation needs cJSON development headers/library (e.g. libcjson-dev).
@@ -97,7 +100,7 @@ HOST_CSOURCES = firmware/components/mqtt_bridge/mqtt_discovery.c firmware/compon
   firmware/components/radiator_protocol/radiator_protocol.c \
   firmware/components/radiator_protocol/radiator_pairing.c \
   firmware/components/radiator_protocol/radiator_control.c \
-  firmware/components/device_store/device_store.c firmware/main/http_api.c host/http.c host/storage.c \
+  firmware/components/device_store/device_store.c firmware/main/http_api.c firmware/main/http_access.c host/netif.c host/http.c host/storage.c \
   firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_button.c firmware/components/network_setup/network_store.c host/network.c
 HOST_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/host/%.o,$(HOST_CSOURCES))
 
@@ -118,7 +121,7 @@ host: $(BUILD_DIR)/host/libcleverbox.so
 simulate: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/serve.py
 
-test-http: host
+test-http: host test-http-physical
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_http.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_registry.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_network.py
@@ -158,3 +161,11 @@ test-radiolib:
 	cmake -S test/radiolib -B $(BUILD_DIR)/radiolib -DRADIOLIB_SOURCE=$(abspath $(RADIOLIB_SOURCE))
 	cmake --build $(BUILD_DIR)/radiolib --parallel 4
 	./$(BUILD_DIR)/radiolib/test_cc1101
+
+# Compile the production HTTP branch without CLEVERBOX_HOST; only hardware/RF
+# adapters remain simulated. This catches physical clock admission regressions.
+.PHONY: test-http-physical
+test-http-physical: host
+	$(CC) $(CPPFLAGS) $(filter-out -DCLEVERBOX_HOST,$(HOST_CFLAGS)) -c firmware/main/http_api.c -o $(BUILD_DIR)/host/http_api_physical.o
+	$(CXX) -shared $(filter-out $(BUILD_DIR)/host/firmware/main/http_api.o,$(HOST_OBJECTS)) $(BUILD_DIR)/host/http_api_physical.o $(BUILD_DIR)/host/simulation.o $(shell pkg-config --libs libcjson) -o $(BUILD_DIR)/host/libcleverbox-physical-http.so
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox-physical-http.so) python3 host/test_http_boundary.py

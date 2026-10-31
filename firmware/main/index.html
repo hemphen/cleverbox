@@ -12,6 +12,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685
 </style>
 <h1>Cleverbox</h1>
 <p>Local setup · Radio receiver</p>
+<p id="httpAccess" role="status">Checking interface permissions…</p>
 <p id="trafficNotice">Pairing and the live command button transmit RF frames. Preview buttons prepare frames only.</p>
 <section>
 <h2>Home Wi-Fi</h2>
@@ -20,6 +21,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685
 <label>SSID <input id="wifiSsid" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
 <label>Password <input id="wifiPassword" type="password" maxlength="63" autocomplete="new-password"></label>
 <small>2.4 GHz WPA2 personal network. SSID: 1–32 bytes; password: 8–63 printable ASCII characters.
+A successful save closes the AP after 60 seconds; move to the home LAN and station IP.
 Credentials are saved only after an IP address is acquired. Connection failures keep the previous setup; storage failures report whether restoration was verified or persistence is uncertain.</small>
 <button id="wifiSave">Connect and save</button>
 <button id="wifiForget">Forget home Wi-Fi only</button>
@@ -27,9 +29,9 @@ Credentials are saved only after an IP address is acquired. Connection failures 
 <p id="networkAction" role="status"></p>
 <small>Setup/recovery: join <strong>Cleverbox</strong>, WPA2 password <strong>cleverbox</strong>, then open http://192.168.4.1/ manually.
 After normal startup, hold BOOT/IO9 for at least five seconds, then release: recovery stays open until Finish recovery or a successful Wi-Fi save.
-EN restarts without erasing setup; its startup AP window uses the same password. Do not hold BOOT during reset: this can enter download mode.
+EN restarts without erasing setup. Configured boots and router outages never open the AP. Do not hold BOOT during reset: this can enter download mode.
 BOOT access through the supplied enclosure is unverified; opening it or a verified access hole may be necessary.
-The AP also stays available while connecting or persistence is uncertain and reopens on network loss.
+Failed Wi-Fi trials keep an already open session. Finish recovery closes it after 60 seconds, even offline; BOOT opens it again.
 Forgetting Wi-Fi preserves radiators, templates, MQTT, timezone, discovery cleanup and admitted commands. Local HTTP has no login; use a trusted network.</small>
 </section>
 <section>
@@ -137,27 +139,49 @@ The radiator supplies its actual address in the reply. Capacity is shown below; 
 <section><h2>Result</h2><pre id="result" role="status" aria-live="polite">No command prepared.</pre></section>
 <script>
 const field=id=>document.getElementById(id);
-let networkTimer;
+let networkTimer, httpControlAllowed=false;
+const controlButtons=['renameRadiator','removeRadiator','pairStart','pairCancel','pairSave','sendTarget','saveState','importState','clearState','saveTimezone','setManualTime','mqttSave','mqttEnable','mqttDisable','mqttForget','mqttDiscoveryEnable','mqttDiscoveryDisable'];
+function restrictControls(){
+  if(!httpControlAllowed){
+    for(const id of controlButtons) field(id).disabled=true;
+    document.querySelectorAll('button[data-command]').forEach(button=>button.disabled=true);
+  }
+}
+function requireControl(id){
+  if(httpControlAllowed) return true;
+  field(id).textContent='Unavailable here. Join the trusted home LAN and open the station IP for radiator, time and MQTT changes.';
+  return false;
+}
 async function refreshNetwork(){
   clearTimeout(networkTimer);
   try {
     const response=await fetch('/api/network',{cache:'no-store'});
     if(!response.ok) throw new Error('Network status unavailable.');
     const s=await response.json();
+    httpControlAllowed=s.http_control_allowed===true;
+    field('httpAccess').textContent=httpControlAllowed
+      ? 'Station interface: local control assumes a trusted LAN. HTTP has no login.'
+      : 'Recovery / unknown interface: diagnostics only; Wi-Fi setup is available on the AP. Join the home LAN for radiator, time and MQTT changes.';
+    restrictControls();
+    field('saveTimezone').disabled=field('setManualTime').disabled=!httpControlAllowed;
+    document.querySelectorAll('button[data-command]').forEach(button=>button.disabled=!httpControlAllowed);
+    field('wifiForget').disabled=field('wifiFinishRecovery').disabled=s.http_interface==='unknown';
     field('networkStatus').textContent='Wi-Fi: '+s.state+'. Saved setup: '+(s.persistence_uncertain?'unknown after restart (RAM fallback: '+(s.configured?'yes':'no')+')':s.configured?'yes':'no')+
       '. Attempts: '+s.attempts+'. Setup result: '+s.setup_result+'.'+(s.error!=='none'?' Error: '+s.error+'.':'')+
       ' Manual recovery: '+(s.manual_recovery?'active':'off')+'.'+(s.recovery_error && s.recovery_error!=='none'?' Recovery error: '+s.recovery_error+'.':'')+
       (s.event_queue_overflows?' Network event queue overflows: '+s.event_queue_overflows+'.':'');
     field('networkAccess').textContent=(s.ip?'Application: http://'+s.ip+'. ':'')+
-      (s.recovery_ap?'Protected Cleverbox AP available at http://192.168.4.1/. '+(s.persistence_uncertain?'Persistence uncertain: AP stays open; retry save or forget.':s.manual_recovery?'Manual recovery keeps AP open. Finish recovery resumes automatic policy.':s.state==='connected'?'It closes after the 60-second connection/recovery grace period.':'AP stays open without usable home Wi-Fi.'):'Setup AP closed.');
-    field('wifiSave').disabled=s.state==='connecting'||s.setup_result==='pending';
+      (s.recovery_ap?'Protected Cleverbox AP available at http://192.168.4.1/. '+(s.ap_closing?'It will close after the 60-second grace period, even offline.':s.manual_recovery?'Manual recovery keeps AP open. Finish recovery closes it after 60 seconds, even offline.':'Setup access stays open until successful save or Finish recovery.'):'Setup AP closed.');
+    field('wifiSave').disabled=s.http_interface==='unknown'||s.state==='connecting'||s.setup_result==='pending';
   } catch(error){
-    field('networkStatus').textContent='Network status unavailable. If the setup AP closed, join the home network and open the station IP shown above or check router leases. Otherwise hold BOOT for five seconds after startup and release, or press EN and use the startup AP.';
-    field('wifiSave').disabled=false;
+    httpControlAllowed=false; restrictControls();
+    field('networkStatus').textContent='Network status unavailable. If the setup AP closed, join the home network and open the station IP shown above or check router leases. For recovery hold BOOT for five seconds after startup and release.';
+    field('wifiSave').disabled=field('wifiForget').disabled=field('wifiFinishRecovery').disabled=true;
   } finally {networkTimer=setTimeout(refreshNetwork,2000);}
 }
 async function networkAction(action){
   const body={action};
+  if(action==='finish_recovery' && !confirm('Close setup/recovery access in 60 seconds? If you are using the AP, this page will disconnect even if home Wi-Fi is unavailable. Hold BOOT for five seconds and release to reopen it.')) return;
   if(action==='forget'){
     if(!confirm('Forget home Wi-Fi only? This disconnects home Wi-Fi and erases only its saved credentials. Radiators, templates, MQTT, timezone and discovery cleanup are preserved.')) return;
     body.confirm=true;
@@ -178,7 +202,7 @@ async function networkAction(action){
     if(!response.ok) throw new Error('Request failed');
     field('networkAction').textContent=action==='forget'
       ? 'Network-only forget queued. Check status; radiator setup is preserved.'
-      : action==='finish_recovery'?'Finish recovery queued. AP stays open without usable home Wi-Fi or while persistence is uncertain; otherwise a 60-second grace period starts.'
+      : action==='finish_recovery'?'Finish recovery queued. AP closes after 60 seconds, even offline. This page may disconnect. BOOT can reopen recovery.'
       : 'Connection queued. Check setup result and station IP before leaving the recovery AP.';
   } catch(error){field('networkAction').textContent='Network request failed or is busy. Check status before retrying.';}
   finally {body.password=''; field('wifiForget').disabled=false; field('wifiFinishRecovery').disabled=false; await refreshNetwork();}
@@ -186,6 +210,7 @@ async function networkAction(action){
 field('wifiSave').addEventListener('click',()=>networkAction('configure'));
 field('wifiForget').addEventListener('click',()=>networkAction('forget'));
 field('wifiFinishRecovery').addEventListener('click',()=>networkAction('finish_recovery'));
+restrictControls();
 refreshNetwork();
 let timeTimer;
 async function refreshTime(){
@@ -205,6 +230,7 @@ async function refreshTime(){
   finally{timeTimer=setTimeout(refreshTime,2000);}
 }
 async function timeAction(action){
+  if(!requireControl('timeAction')) return;
   const body={action};
   if(action==='timezone') body.timezone=field('timezone').value.trim();
   else {
@@ -243,9 +269,10 @@ async function refreshMqtt(){
     field('mqttEnable').disabled=!!s.pending||!s.configured||s.enabled;
     field('mqttDisable').disabled=!!s.pending||!s.configured||!s.enabled;
   }catch(error){field('mqttStatus').textContent=error.message;}
-  finally{mqttTimer=setTimeout(refreshMqtt,2000);}
+  finally{restrictControls(); mqttTimer=setTimeout(refreshMqtt,2000);}
 }
 async function mqttAction(action){
+  if(!requireControl('mqttAction')) return;
   const body={action};
   if(action==='configure'){
     Object.assign(body,{host:field('mqttHost').value,port:Number(field('mqttPort').value),
@@ -360,6 +387,7 @@ async function refreshRadio(){
       : 'No radiator report received.';
     field('radioDiagnostics').textContent=JSON.stringify(data,null,2);
   } catch(error){field('radioStatus').textContent=error.message;field('sendTarget').disabled=true;field('pairedReport').textContent='Status unavailable; the last observation cannot be refreshed.';}
+  restrictControls();
   clearTimeout(refreshTimer); refreshTimer=setTimeout(refreshRadio,2000);
 }
 refreshRadio();
@@ -376,6 +404,7 @@ field('simulationChoose').addEventListener('click',()=>simulationAction({action:
 field('simulationFixture').addEventListener('click',()=>simulationAction({action:'fixture'}));
 field('simulationApply').addEventListener('click',()=>simulationAction({action:'scenario',name:field('simulationScenario').value}));
 async function registryAction(action){
+  if(!requireControl('registryAction')) return;
   const body={action,id:selectedId};
   if(action==='rename') body.name=field('radiatorName').value.trim();
   try{
@@ -388,6 +417,7 @@ async function registryAction(action){
 field('renameRadiator').addEventListener('click',()=>registryAction('rename'));
 field('removeRadiator').addEventListener('click',()=>registryAction('remove'));
 async function controllerStateAction(action){
+  if(!requireControl('stateAction')) return;
   const body={action,id:selectedId};
   if(action==='import') body.state=field('state').value.trim();
   try {
@@ -400,6 +430,7 @@ field('saveState').addEventListener('click',()=>controllerStateAction('save'));
 field('importState').addEventListener('click',()=>controllerStateAction('import'));
 field('clearState').addEventListener('click',()=>controllerStateAction('clear'));
 field('sendTarget').addEventListener('click',async()=>{
+  if(!requireControl('commandAction')) return;
   const button=field('sendTarget'); button.disabled=true;
   const body={id:selectedId,mode:Number(field('mode').value),
     centi_c:Math.round(Number(field('temperature').value)*100)};
@@ -412,6 +443,7 @@ field('sendTarget').addEventListener('click',async()=>{
   } catch(error){field('commandAction').textContent=error.message;}
 });
 document.querySelectorAll('button[data-pair-action]').forEach(button=>button.addEventListener('click',async()=>{
+  if(!requireControl('pairAction')) return;
   const action=button.dataset.pairAction;
   const body={action};
   if(action!=='start') body.id=pairingId;
@@ -426,9 +458,10 @@ document.querySelectorAll('button[data-pair-action]').forEach(button=>button.add
     const result=await response.json(); pairingId=result.id;
     field('pairAction').textContent='Action accepted for identity '+pairingId+'. Status updates shortly.';
   } catch(error){field('pairAction').textContent=error.message;}
-  finally {button.disabled=false;}
+  finally {button.disabled=false; restrictControls();}
 }));
 document.querySelectorAll('button[data-command]').forEach(button=>button.addEventListener('click',async()=>{
+  if(!requireControl('result')) return;
   const command=button.dataset.command;
   const body=command==='target'
     ? {command,state:field('state').value.trim(),mode:Number(field('mode').value),centi_c:Math.round(Number(field('temperature').value)*100)}
@@ -440,7 +473,7 @@ document.querySelectorAll('button[data-command]').forEach(button=>button.addEven
     const result=await response.json();
     field('result').textContent='Prepared only — not transmitted.\n'+result.frame;
   } catch(error) {field('result').textContent=error.message;}
-  finally {button.disabled=false;}
+  finally {button.disabled=false; restrictControls();}
 }));
 </script>
 </html>

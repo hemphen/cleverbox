@@ -14,7 +14,7 @@ enum { WIFI_EVENT = 1, IP_EVENT, WIFI_EVENT_STA_START, WIFI_EVENT_STA_DISCONNECT
        IP_EVENT_STA_GOT_IP, IP_EVENT_STA_LOST_IP, ESP_EVENT_ANY_ID, WIFI_IF_AP, WIFI_IF_STA,
        WIFI_AUTH_WPA2_PSK, WIFI_STORAGE_RAM, ESP_LOG_NONE, GPIO_MODE_INPUT,
        GPIO_PULLUP_ENABLE, GPIO_PULLDOWN_DISABLE, GPIO_INTR_DISABLE };
-typedef enum { WIFI_MODE_AP, WIFI_MODE_STA, WIFI_MODE_APSTA } wifi_mode_t;
+typedef enum { WIFI_MODE_NULL, WIFI_MODE_AP, WIFI_MODE_STA, WIFI_MODE_APSTA } wifi_mode_t;
 typedef struct { uint8_t a,b,c,d; } stub_ip;
 typedef struct { struct { stub_ip ip; } ip_info; } ip_event_got_ip_t;
 #define IPSTR "%u.%u.%u.%u"
@@ -24,7 +24,7 @@ typedef struct { struct { stub_ip ip; } ip_info; } ip_event_got_ip_t;
 #define pdPASS 1
 #define pdMS_TO_TICKS(n) (n)
 #define portMAX_DELAY (-1)
-typedef struct { int unused; } wifi_init_config_t;
+typedef struct { bool nvs_enable; } wifi_init_config_t;
 #define WIFI_INIT_CONFIG_DEFAULT() ((wifi_init_config_t){0})
 typedef union {
     struct { uint8_t ssid[32],password[64]; int channel,max_connection,authmode; } ap;
@@ -65,7 +65,7 @@ static inline esp_err_t esp_wifi_get_mode(wifi_mode_t *m) { *m=wifi_mode;return 
 static inline esp_err_t esp_wifi_set_mode(wifi_mode_t m) { ++mode_calls;if(!mode_error)wifi_mode=m;return mode_error; }
 static inline esp_err_t esp_wifi_connect(void) { ++associate_calls;return ESP_OK; }
 static inline esp_err_t esp_wifi_set_config(int iface, const wifi_config_t *c) { ++config_calls;if(iface==WIFI_IF_AP)ap_config=*c;return ESP_OK; }
-static inline esp_err_t esp_wifi_init(const wifi_init_config_t *c) { (void)c;return ESP_OK; }
+static inline esp_err_t esp_wifi_init(const wifi_init_config_t *c) { assert(!c->nvs_enable);return ESP_OK; }
 static inline esp_err_t esp_wifi_set_storage(int storage) { assert(storage==WIFI_STORAGE_RAM);return ESP_OK; }
 static inline esp_err_t esp_wifi_start(void) { return ESP_OK; }
 static inline void esp_netif_create_default_wifi_ap(void) {}
