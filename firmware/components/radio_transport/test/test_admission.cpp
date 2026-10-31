@@ -14,6 +14,7 @@ static rf_frame state_frame() {
     assert(rf_parse_hex("38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0078B20C0000A20F60D9", f.bytes, sizeof(f.bytes), &f.size)); return f;
 }
 extern "C" esp_err_t device_mode_load(bool *enabled, bool *stored) { *enabled = true; *stored = true; return ESP_OK; }
+extern "C" esp_err_t device_mode_start(bool *enabled) { *enabled = true; return ESP_OK; }
 static int mode_store_result;
 extern "C" esp_err_t device_mode_save(bool) { return mode_store_result; }
 static void reset() {

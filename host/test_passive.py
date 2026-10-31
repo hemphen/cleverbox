@@ -93,6 +93,64 @@ def defaults_and_storage(directory):
     finally: app.stop()
 
 
+def initial_failure_wifi_reboot(directory):
+    # No boot mode record, no settings, initial rf_mode write refused before mutation.
+    storage = directory / 'initial-mode-failure'
+    app = App(storage, operating_mode=None, mode_storage_fault=2, interfaces=True)
+    try:
+        s = status(app)
+        assert s['mode'] == 'listen-only' and s['storage_error'] and not Path(str(storage)+'.rf_mode').exists()
+        # All settings writers must stop before touching their own keys while
+        # the initial decision cannot be stored. Read-only AP recovery survives.
+        app.http('/api/time', dict(action='timezone',timezone='UTC0'),409)
+        app.http('/api/mqtt',dict(action='configure',host='broker.test',port=1883,username='',password='',enabled=True),202)
+        app.advance(100); assert app.http('/api/mqtt')['config_error']
+        app.http('/api/mqtt',dict(action='discovery_enable'),202)
+        app.advance(100); assert app.http('/api/mqtt')['discovery_error']
+        request(app, '127.0.0.2', '/api/network', dict(action='configure',ssid='synthetic',password='testonly123'),202)
+        app.sim('network_event',name='started'); app.sim('network_event',name='got_ip'); app.advance(100)
+        assert app.http('/api/network')['setup_result'] == 'failed'
+        for suffix in ('.rf_mode','.wifi','.timezone','.mqtt','.ha_discovery','.registry'):
+            assert not Path(str(storage)+suffix).exists(), suffix
+        assert request(app,'127.0.0.2','/api/commissioning')['mode'] == 'listen-only'
+        # A later Wi-Fi write succeeds once storage recovers, using AP setup.
+        app.sim('mode_storage_fault', mode=0)
+        request(app, '127.0.0.2', '/api/network', dict(action='configure',ssid='synthetic',password='testonly123'),202)
+        app.sim('network_event',name='started'); app.sim('network_event',name='got_ip'); app.advance(100)
+        assert app.http('/api/network')['setup_result'] == 'saved'
+        assert Path(str(storage)+'.wifi').exists()
+        assert Path(str(storage)+'.rf_mode').read_bytes() == b'\1\0'
+        assert status(app)['mode'] == 'listen-only' and status(app)['storage_error']
+        no_tx(app)
+    finally: app.stop()
+    app = App(storage, operating_mode=None)
+    try:
+        assert status(app)['mode'] == 'listen-only', 'Wi-Fi save must not turn first-boot failure into legacy control migration'
+        assert Path(str(storage)+'.rf_mode').read_bytes() == b'\1\0'
+        no_tx(app)
+    finally: app.stop()
+
+
+def corrupt_mode_recovery(directory):
+    storage = directory / 'corrupt-mode-recovery'
+    record = Path(str(storage)+'.rf_mode'); record.write_bytes(b'corrupt')
+    app = App(storage, operating_mode=None, interfaces=True)
+    try:
+        assert status(app)['mode'] == 'listen-only' and status(app)['storage_error']
+        request(app, '127.0.0.2', '/api/network', dict(action='configure',ssid='synthetic',password='testonly123'),202)
+        app.sim('network_event',name='started'); app.sim('network_event',name='got_ip'); app.advance(100)
+        assert app.http('/api/network')['setup_result'] == 'saved'
+        assert record.read_bytes() == b'corrupt'
+        no_tx(app)
+    finally: app.stop()
+    app = App(storage, operating_mode=None)
+    try:
+        assert app.http('/api/network')['configured']
+        assert status(app)['mode'] == 'listen-only' and status(app)['storage_error']
+        assert record.read_bytes() == b'corrupt'; no_tx(app)
+    finally: app.stop()
+
+
 def inventory_and_workflow(directory):
     storage = directory / 'workflow'
     app = App(storage, operating_mode=None, interfaces=True)
@@ -204,6 +262,8 @@ def inventory_and_workflow(directory):
 
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as directory:
+        initial_failure_wifi_reboot(Path(directory))
+        corrupt_mode_recovery(Path(directory))
         defaults_and_storage(Path(directory))
         inventory_and_workflow(Path(directory))
     print('Passive commissioning: defaults/migration/storage, reboot, HTTP/MQTT/AP guards, receive/caches, candidate adoption and exact end-to-end transmissions: passed')

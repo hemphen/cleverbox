@@ -6,6 +6,7 @@
 #include "network_setup.h"
 #include "device_time.h"
 #include "mqtt_bridge.h"
+#include "mode_store.h"
 #include "cJSON.h"
 #include <stdio.h>
 #include <string.h>
@@ -43,7 +44,7 @@ esp_err_t httpd_resp_sendstr(httpd_req_t *r, const char *s) {
 esp_err_t httpd_resp_send_err(httpd_req_t *r, int code, const char *s) {
     (void)code; r->status="400 Bad Request"; return httpd_resp_sendstr(r,s);
 }
-void host_init(void) { simulation_init(); device_time_start(); network_setup_start(); mqtt_bridge_start(); http_api_register(NULL); }
+void host_init(void) { bool enabled; device_mode_start(&enabled); simulation_init(); device_time_start(); network_setup_start(); mqtt_bridge_start(); http_api_register(NULL); }
 int host_request(int method, const char *path, const char *body, const char *type) {
     free(request.response);
     request=(httpd_req_t){.uri=path,.content_len=strlen(body),.body=body,.content_type=type,

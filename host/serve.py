@@ -21,7 +21,10 @@ def main():
     parser.add_argument('--storage', type=Path, default=ROOT / 'local/simulation-pairing.bin')
     parser.add_argument('--real-mqtt', action='store_true', help='Use real TCP MQTT I/O (paho-mqtt==2.1.0)')
     parser.add_argument('--test-clock', action='store_true', help='Freeze clock; enable test advance/inject API')
+    parser.add_argument('--mode-storage-fault', type=int, choices=range(4), default=0, help='Test-only NVS mode fault before application startup')
     args = parser.parse_args()
+    if args.mode_storage_fault and not args.test_clock:
+        parser.error('--mode-storage-fault requires --test-clock')
     args.storage.parent.mkdir(parents=True, exist_ok=True)
     os.environ['CLEVERBOX_SIM_STORAGE'] = str(args.storage.resolve())
     lib = ctypes.CDLL(os.environ.get('CLEVERBOX_SIM_LIBRARY', str(ROOT / 'build/host/libcleverbox.so')))
@@ -42,6 +45,7 @@ def main():
     lib.host_mqtt_pop.restype = ctypes.c_char_p
     lib.mqtt_bridge_input.argtypes = [ctypes.c_char_p,ctypes.c_size_t,ctypes.c_char_p,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_bool]
     lib.host_mode_storage_fault.argtypes = [ctypes.c_int]
+    lib.host_mode_storage_fault(args.mode_storage_fault)
     lib.host_init()
     adapter = None
     if args.real_mqtt:

@@ -101,6 +101,10 @@ admission table. Unknown classification never authorizes either mutation.
 outstanding, or the worker is unavailable. Allow bounded work to finish and
 retry explicitly. Failures close RF and report storage uncertainty. Control
 enable queues no pairing, polling, template adoption or command.
+If the initial mode save failed, other settings saves first retry that same boot
+choice; they report failure without changing their own keys if mode persistence
+still fails. Diagnostics and RAM Wi-Fi trials remain available. The initial RF
+error stays latched until an explicit STA mode save or reboot.
 
 The page shows reports and candidate metadata, including matching pair/template
 status. Candidate choices are explicit snapshots: refresh choices after capture

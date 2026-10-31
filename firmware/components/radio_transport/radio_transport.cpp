@@ -700,11 +700,8 @@ extern "C" void radio_transport_start(void)
     status.observation_count = status.candidate_count = 0;
     capture_sequence = 0;
     capture_boot = ((uint64_t)esp_random() << 32) | esp_random();
-    bool enabled = false, stored = false;
-    int mode_result = device_mode_load(&enabled, &stored);
-    // Commit the initial decision before registry migration or other setup
-    // creates keys that could make a fresh passive device look like an upgrade.
-    if (mode_result == ESP_OK && !stored) mode_result = device_mode_save(enabled);
+    bool enabled = false;
+    int mode_result = device_mode_start(&enabled);
     status.control_enabled = mode_result == ESP_OK && enabled;
     status.mode_error = mode_result;
     status.mode_persistence_uncertain = mode_result != ESP_OK;

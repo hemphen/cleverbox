@@ -40,13 +40,13 @@ def changed_frame(hex_frame, offset):
 
 
 class App:
-    def __init__(self, storage, test_clock=True, real_mqtt=False, interfaces=False, operating_mode="control-enabled"):
+    def __init__(self, storage, test_clock=True, real_mqtt=False, interfaces=False, operating_mode="control-enabled", mode_storage_fault=0):
         # Existing control suites explicitly provision their operating-mode fixture.
         # Passive/fresh/migration tests pass None and exercise production defaults.
         mode_file = Path(str(storage) + '.rf_mode')
         if operating_mode is not None and not mode_file.exists():
             mode_file.write_bytes(bytes([1, operating_mode == 'control-enabled']))
-        self.process = subprocess.Popen([sys.executable, str(ROOT / 'host/serve.py'), '--port', '0', '--storage', str(storage)] + (['--test-clock'] if test_clock else []) + (['--real-mqtt'] if real_mqtt else []) + (['--test-interfaces'] if interfaces else []), stdout=subprocess.PIPE, text=True)
+        self.process = subprocess.Popen([sys.executable, str(ROOT / 'host/serve.py'), '--port', '0', '--storage', str(storage)] + (['--test-clock'] if test_clock else []) + (['--real-mqtt'] if real_mqtt else []) + (['--test-interfaces'] if interfaces else []) + (['--mode-storage-fault', str(mode_storage_fault)] if mode_storage_fault else []), stdout=subprocess.PIPE, text=True)
         line = self.process.stdout.readline().strip()
         assert line.startswith('SIMULATION ONLY: http://127.0.0.1:'), line
         self.url = line.split(' ', 2)[2]

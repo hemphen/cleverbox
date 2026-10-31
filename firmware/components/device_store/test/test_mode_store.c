@@ -51,7 +51,7 @@ int main(void) {
         assert(device_mode_load(&enabled,&stored)==ESP_FAIL && !enabled && !stored);
     }
     read_key=-1;
-    assert(device_mode_save(false)==ESP_OK && writes==1);
+    assert(device_mode_start(&enabled)==ESP_OK && !enabled && writes==1);
     assert(device_mode_load(&enabled,&stored)==ESP_OK && !enabled && stored);
     sizes[1]=7; memset(disk[1],0xA5,7); // unrelated settings are never erased
     assert(device_mode_save(true)==ESP_OK);

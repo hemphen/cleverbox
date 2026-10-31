@@ -18,14 +18,21 @@ test:
 	  -Ifirmware/components/device_store/test/stubs \
 	  -Ifirmware/components/radiator_protocol/include \
 	  firmware/components/radiator_protocol/radiator_protocol.c \
-	  firmware/components/device_store/device_store.c \
+	  firmware/components/device_store/device_store.c host/test_mode_gate.c \
 	  firmware/components/device_store/test/test_store.c -o $(BUILD_DIR)/test_store
 	./$(BUILD_DIR)/test_store
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
 	  -Ihost/include -Ifirmware/components/device_store/include -Ifirmware/components/radiator_protocol/include \
-	  firmware/components/radiator_protocol/radiator_protocol.c firmware/components/device_store/device_store.c \
+	  firmware/components/device_store/mode_store.c \
 	  firmware/components/device_store/test/test_mode_store.c -o $(BUILD_DIR)/test_mode_store
 	./$(BUILD_DIR)/test_mode_store
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g -pthread \
+	  -Ihost/include -Ifirmware/components/device_store/include \
+	  firmware/components/device_store/mode_store.c \
+	  firmware/components/device_store/test/test_mode_bootstrap.c -o $(BUILD_DIR)/test_mode_bootstrap
+	./$(BUILD_DIR)/test_mode_bootstrap
+	./$(BUILD_DIR)/test_mode_bootstrap race
+	./$(BUILD_DIR)/test_mode_bootstrap enable-first
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
 	  -Ifirmware/components/radiator_protocol/include \
 	  firmware/components/radiator_protocol/radiator_protocol.c \
@@ -51,7 +58,7 @@ test:
 	  $(BUILD_DIR)/transport_protocol.o $(BUILD_DIR)/transport_pairing.o $(BUILD_DIR)/transport_control.o -o $(BUILD_DIR)/test_admission
 	./$(BUILD_DIR)/test_admission
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
-	  -Ihost/include -Ifirmware/components/network_setup/include \
+	  -Ihost/include -Ifirmware/components/network_setup/include -Ifirmware/components/device_store/include \
 	  firmware/components/network_setup/network_policy.c \
 	  firmware/components/network_setup/test/test_network.c -o $(BUILD_DIR)/test_network
 	./$(BUILD_DIR)/test_network
@@ -66,28 +73,28 @@ test:
 	  printf '#include "adapter_stubs.h"\n' > $(BUILD_DIR)/network_stubs/$$header; done
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
 	  -I$(BUILD_DIR)/network_stubs -Ifirmware/components/network_setup/test/stubs \
-	  -Ihost/include -Ifirmware/components/network_setup/include \
+	  -Ihost/include -Ifirmware/components/network_setup/include -Ifirmware/components/device_store/include \
 	  firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_button.c \
 	  firmware/components/network_setup/test/test_adapter.c -o $(BUILD_DIR)/test_network_adapter
 	./$(BUILD_DIR)/test_network_adapter
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
-	  -Ihost/include -Ifirmware/components/network_setup/include \
-	  firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_store.c \
+	  -Ihost/include -Ifirmware/components/network_setup/include -Ifirmware/components/device_store/include \
+	  firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_store.c host/test_mode_gate.c \
 	  firmware/components/network_setup/test/test_network_store.c -o $(BUILD_DIR)/test_network_store
 	./$(BUILD_DIR)/test_network_store
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
-	  -Ihost/include -Ifirmware/components/device_time/include \
-	  firmware/components/device_time/device_time.c firmware/components/device_time/time_store.c \
+	  -Ihost/include -Ifirmware/components/device_time/include -Ifirmware/components/device_store/include \
+	  firmware/components/device_time/device_time.c firmware/components/device_time/time_store.c host/test_mode_gate.c \
 	  firmware/components/device_time/test/test_time.c -o $(BUILD_DIR)/test_time
 	./$(BUILD_DIR)/test_time
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
-	  -Ihost/include -Ifirmware/components/device_time/include \
-	  firmware/components/device_time/device_time.c firmware/components/device_time/time_store.c \
+	  -Ihost/include -Ifirmware/components/device_time/include -Ifirmware/components/device_store/include \
+	  firmware/components/device_time/device_time.c firmware/components/device_time/time_store.c host/test_mode_gate.c \
 	  firmware/components/device_time/test/test_time_store.c -o $(BUILD_DIR)/test_time_store
 	./$(BUILD_DIR)/test_time_store
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
-	  -Ihost/include -Ifirmware/components/mqtt_bridge/include \
-	  firmware/components/mqtt_bridge/mqtt_store.c firmware/components/mqtt_bridge/test/test_store.c -o $(BUILD_DIR)/test_mqtt_store
+	  -Ihost/include -Ifirmware/components/mqtt_bridge/include -Ifirmware/components/device_store/include \
+	  firmware/components/mqtt_bridge/mqtt_store.c host/test_mode_gate.c firmware/components/mqtt_bridge/test/test_store.c -o $(BUILD_DIR)/test_mqtt_store
 	./$(BUILD_DIR)/test_mqtt_store
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
 	  -Ihost/include -Ifirmware/main firmware/main/http_access.c firmware/main/test_http_access.c -o $(BUILD_DIR)/test_http_access
@@ -105,7 +112,7 @@ HOST_CSOURCES = firmware/components/mqtt_bridge/mqtt_discovery.c firmware/compon
   firmware/components/radiator_protocol/radiator_protocol.c \
   firmware/components/radiator_protocol/radiator_pairing.c \
   firmware/components/radiator_protocol/radiator_control.c \
-  firmware/components/device_store/device_store.c firmware/main/http_api.c firmware/main/http_access.c host/netif.c host/http.c host/storage.c \
+  firmware/components/device_store/device_store.c firmware/components/device_store/mode_store.c firmware/main/http_api.c firmware/main/http_access.c host/netif.c host/http.c host/storage.c \
   firmware/components/network_setup/network_policy.c firmware/components/network_setup/network_button.c firmware/components/network_setup/network_store.c host/network.c
 HOST_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/host/%.o,$(HOST_CSOURCES))
 

@@ -42,9 +42,9 @@ machines and writes the radiator registry and operating mode.
 | --- | --- | --- |
 | `radiator_protocol` | Frame codec, CRCs, pairing and command state machines. Portable C, no RTOS or chip code. | – |
 | `radio_transport` | CC1101 setup through RadioLib, receive/transmit worker, registry in RAM, request admission | protocol, store, time |
-| `device_store` | Versioned registry record in NVS, legacy migration | protocol |
-| `network_setup` | Wi-Fi station and setup access point policy, BOOT button, Wi-Fi credentials store | – |
-| `device_time` | SNTP, manual UTC, POSIX time zone, command clock | – |
+| `device_store` | Registry and RF-mode NVS records, boot-time migration/persistence gate | protocol |
+| `network_setup` | Wi-Fi station and setup access point policy, BOOT button, Wi-Fi credentials store | store |
+| `device_time` | SNTP, manual UTC, POSIX time zone, command clock | store |
 | `mqtt_bridge` | Broker settings, command routing, results, state snapshots, Home Assistant discovery | transport, network |
 | `main` | Startup, HTTP handlers (`http_api.c`), embedded page (`index.html`) | all |
 
@@ -67,18 +67,34 @@ Shared radio state, passive caches, mode changes and admission are guarded by a
 task mutex. Template validation and nonblocking queue calls do not disable
 interrupts. The mutex is released before NVS or radio I/O. Requests pass to the worker through a FreeRTOS queue of
 `capacity + 1` entries. MQTT status and input use a second spinlock. Network
-and time status use mutexes. NVS, JSON and network I/O never run inside a lock.
+and time status use mutexes. NVS, JSON and network I/O never run inside the radio
+mutex. A separate mode-store mutex serializes bootstrap retries and explicit mode
+writes; only that small persistence boundary holds a task mutex during NVS I/O.
 
 ## Operating mode
 
 Fresh installations start **listen-only**. On first boot the decision is saved
-in `rf_mode` before registry migration or later setup can create settings.
+in `rf_mode`. Startup snapshots the migration decision before starting time,
+network or other settings owners. A shared gate runs before every registry,
+Wi-Fi, timezone, MQTT or discovery-journal mutation. If the first mode write
+fails, no settings write can proceed until a retry has durably established that
+same boot decision. A fresh registry load does not create an empty registry.
+Retries never re-scan settings created during the current boot as migration
+evidence. A forced initial retry also avoids trusting a failed write's cached
+same-value NVS result. It is serialized against explicit mode saves so it cannot
+overwrite a successfully enabled mode.
 An upgrade without that key retains **control-enabled** if any prior application
 key exists, including an empty registry. This preserves existing installations;
 select listen-only explicitly before passive commissioning on an upgraded unit.
 Corrupt or unreadable mode/settings detection fails closed for RF and reports a
 storage error without erasing or replacing the bad record. An explicit STA mode
-save can repair it. Wi-Fi forget never clears the operating mode.
+save can repair it. A known existing invalid mode record still permits Wi-Fi
+and other-key repair without replacing that record; its presence prevents
+absent-key migration. Unknown record presence blocks settings writes. Read-only
+diagnostics and RAM Wi-Fi trials remain available while persistence is gated.
+A failed initial mode error keeps RF closed for the current boot even after a later settings save establishes the initial record;
+clear that reported error through an explicit STA mode save or reboot. Wi-Fi
+forget never clears the operating mode.
 
 Mode changes are explicit STA-only requests, queued to the existing worker.
 They reserve admission under the task mutex and are refused while pairing,
@@ -139,8 +155,8 @@ Default-capacity host layout measurements: observations 32 B each, candidates
 112 B each, 2304 B for both cache arrays. Requests grow from 136 to 176 B
 (+360 B for the default nine-entry queue). Registry records and the worker's
 state machines do not grow. Mode/status metadata, two 64-bit version counters
-and one startup-allocated task mutex add a small fixed overhead. These are
-layout/bounded-allocation measurements, not runtime heap or stack high-water
+and two startup-allocated task mutexes (radio state and mode storage) add a small
+fixed overhead. These are layout/bounded-allocation measurements, not runtime heap or stack high-water
 measurements; verify the ESP build and sustained receive on hardware.
 
 The [local workflow](http-api.md#passive-commissioning) supports capture alongside

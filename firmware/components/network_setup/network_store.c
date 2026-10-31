@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "network_setup.h"
 #include "nvs.h"
+#include "mode_store.h"
 #include <string.h>
 // Byte arrays only: versioned and independent of compiler padding.
 typedef struct { unsigned char version; network_credentials credentials; } wifi_record;
@@ -61,6 +62,8 @@ static bool restore(const snapshot *previous) {
     return err == ESP_OK && (previous->present || erased) && matches(previous);
 }
 static esp_err_t replace(const snapshot *desired) {
+    esp_err_t mode_error = device_mode_prepare_write();
+    if (mode_error != ESP_OK) return mode_error;
     snapshot previous;
     esp_err_t err = read_snapshot(&previous);
     if (err != ESP_OK) {

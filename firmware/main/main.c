@@ -9,6 +9,7 @@
 #include "device_time.h"
 #include "mqtt_bridge.h"
 #include "nvs_flash.h"
+#include "mode_store.h"
 #include "radio_transport.h"
 
 extern const unsigned char page_start[] asm("_binary_index_html_start");
@@ -27,6 +28,13 @@ void app_main(void)
     esp_err_t storage_error = nvs_flash_init();
     if (storage_error != ESP_OK)
         ESP_LOGE("storage", "NVS unavailable (%d); preserving flash, BOOT recovery remains available", storage_error);
+    // Establish the immutable boot decision before starting any settings owner.
+    // Failure keeps diagnostics/recovery available, but their writes must first
+    // establish that same decision through the shared persistence gate.
+    bool control_enabled;
+    esp_err_t mode_error = device_mode_start(&control_enabled);
+    if (mode_error != ESP_OK)
+        ESP_LOGE("storage", "RF mode bootstrap failed (%d); RF disabled, settings persistence gated", mode_error);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(device_time_start());

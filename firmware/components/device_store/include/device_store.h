@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "esp_err.h"
+#include "mode_store.h"
 #include <stdint.h>
 #include "radiator_protocol.h"
 #include "radiator_control.h"
@@ -49,10 +50,6 @@ typedef struct {
     size_t count;
     radiator_record records[CLEVERBOX_RADIATOR_CAPACITY];
 } radiator_registry;
-// Mode v1 is independent of the registry. Absent mode migrates any existing
-// application key to control; a completely fresh namespace starts passive.
-esp_err_t device_mode_load(bool *control_enabled, bool *stored);
-esp_err_t device_mode_save(bool control_enabled);
 // A present registry (even empty) is authoritative; legacy keys are never erased.
 // Capacity/version/validation failures block mutation, never truncate records.
 esp_err_t device_registry_load(radiator_registry *registry);
