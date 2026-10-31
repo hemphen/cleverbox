@@ -40,10 +40,9 @@ copy fixes are unused (we do not copy it), and stream-status/debug/static-buffer
 changes do not alter our register-mode, debug-off, dynamic-buffer configuration.
 HAL additions (virtual destructor, optional pull control and AES pointer) do not
 require overrides. The bundled ESP-IDF HAL is now built, but Cleverbox still
-instantiates **IdfHal**, with the same SPI/GPIO/timing methods and empty inherited
-`yield()`. Its SPI failures still use `ESP_ERROR_CHECK`, not recoverable library
-error returns. The upgrade does not fix those limitations or our custom FIFO
-handling. New LR2021/ADS-B code is explicitly excluded alongside the existing
+instantiates **IdfHal**, with the same SPI/GPIO/timing boundary. The current HAL yields a tick in
+library waits and latches SPI errors for the worker recovery policy. These are
+application adapter changes, not dependency changes; see [bounds and limits](architecture.md#adapter-bounds-and-limits). New LR2021/ADS-B code is explicitly excluded alongside the existing
 unused drivers/protocols.
 
 ## Software validation
@@ -137,12 +136,11 @@ See the full [bring-up checklist](hardware.md#bring-up-checklist).
 
 Nonblocking **short-packet TX** is a candidate transport milestone. Deliberate
 setup/recovery access, practical template acquisition and bounded radio recovery
-have higher product priority before unattended installation (see [issue #20](https://github.com/hemphen/cleverbox/issues/20)).
-The current owner still busy-polls GDO2 through an empty HAL yield;
-the upgrade does not establish lower CPU use or responsiveness. Evaluate
+are implemented in software; hardware acceptance is required before unattended installation (see [issue #20](https://github.com/hemphen/cleverbox/issues/20)).
+The current owner still uses blocking short TX, with a yielding HAL in the
+GDO waits. Software checks do not establish physical CPU use or responsiveness. Evaluate
 `startTransmit()` plus owner-polled completion and a bounded deadline, keeping
 all SPI access in that owner and preserving receive-first arbitration. Note that
 `startTransmit()`, `standby()` and `finishTransmit()` still contain blocking
 waits, so merely renaming the transmit call is not sufficient. Measure scheduling
-and responsiveness on the board; receive interrupts, bounded radio recovery and
-OTA remain separate work.
+and responsiveness on the board; receive interrupts and OTA remain separate work.

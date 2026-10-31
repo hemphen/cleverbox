@@ -22,7 +22,10 @@ def main():
     parser.add_argument('--real-mqtt', action='store_true', help='Use real TCP MQTT I/O (paho-mqtt==2.1.0)')
     parser.add_argument('--test-clock', action='store_true', help='Freeze clock; enable test advance/inject API')
     parser.add_argument('--mode-storage-fault', type=int, choices=range(4), default=0, help='Test-only NVS mode fault before application startup')
+    parser.add_argument('--radio-init-fault', type=int, default=0, help='Test-only initial radio error')
     args = parser.parse_args()
+    if args.radio_init_fault and not args.test_clock:
+        parser.error('--radio-init-fault requires --test-clock')
     if args.mode_storage_fault and not args.test_clock:
         parser.error('--mode-storage-fault requires --test-clock')
     args.storage.parent.mkdir(parents=True, exist_ok=True)
@@ -37,6 +40,7 @@ def main():
     lib.host_time_sync.argtypes = [ctypes.c_int64]
     lib.host_network_event.argtypes = [ctypes.c_char_p]
     lib.host_network_button.argtypes = [ctypes.c_int]
+    lib.simulation_radio_fault.argtypes = [ctypes.c_char_p, ctypes.c_int]
     lib.simulation_advance.argtypes = [ctypes.c_int]
     lib.host_mqtt_storage_fault.argtypes = [ctypes.c_int]
     lib.host_mqtt_subscribe_mode.argtypes = [ctypes.c_int]
@@ -46,6 +50,7 @@ def main():
     lib.mqtt_bridge_input.argtypes = [ctypes.c_char_p,ctypes.c_size_t,ctypes.c_char_p,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_size_t,ctypes.c_bool]
     lib.host_mode_storage_fault.argtypes = [ctypes.c_int]
     lib.host_mode_storage_fault(args.mode_storage_fault)
+    lib.simulation_radio_fault(b'initialize', args.radio_init_fault)
     lib.host_init()
     adapter = None
     if args.real_mqtt:
@@ -151,6 +156,9 @@ def main():
                     lib.simulation_fixture()
                 elif action == 'device' and type(data.get('index')) is int:
                     if not lib.simulation_device(data['index']):
+                        raise ValueError()
+                elif args.test_clock and action == 'radio_fault' and type(data.get('code')) is int:
+                    if not lib.simulation_radio_fault(data.get('stage', '').encode(), data['code']):
                         raise ValueError()
                 elif action == 'scenario' and isinstance(data.get('name'), str):
                     if not lib.simulation_scenario(data['name'].encode()):

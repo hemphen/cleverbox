@@ -88,6 +88,24 @@ static esp_err_t queue_request(const radio_request &r) {
     // Caller still holds admission lock; undo only this request's reservation.
     return ESP_ERR_TIMEOUT;
 }
+static void increment(uint32_t &n) { if (n != UINT32_MAX) ++n; }
+extern "C" const char *radio_health_name(radio_health h) {
+    switch (h) { case RADIO_INITIALIZING: return "initializing"; case RADIO_RECOVERING: return "recovering";
+        case RADIO_READY: return "ready"; default: return "faulted"; }
+}
+extern "C" const char *radio_failure_name(radio_failure_stage s) {
+    switch (s) { case RADIO_FAILURE_INITIALIZE: return "initialize"; case RADIO_FAILURE_RECEIVE: return "receive";
+        case RADIO_FAILURE_TX: return "transmit"; case RADIO_FAILURE_RX_RESTORE: return "rx_restore";
+        case RADIO_FAILURE_RESOURCES: return "resources"; default: return "none"; }
+}
+extern "C" esp_err_t radio_retry(void) {
+    lock_status();
+    esp_err_t e = ESP_ERR_INVALID_STATE;
+    if (status.worker_running && status.health == RADIO_FAULTED && !status.retry_pending) {
+        status.retry_pending = true; e = ESP_OK;
+    }
+    unlock_status(); return e;
+}
 static bool rf_allowed() { return status.control_enabled && !status.mode_pending && !status.mode_error; }
 extern "C" esp_err_t radio_mode_set(bool enabled) {
     radio_request r = {}; r.action = MODE_SET; r.enabled = enabled;
@@ -95,7 +113,7 @@ extern "C" esp_err_t radio_mode_set(bool enabled) {
     bool busy = pair_reserved || mutation_pending || status.mode_pending || tx_in_progress;
     for (size_t i = 0; i < registry.count; ++i) busy |= registry.records[i].command_reserved;
     esp_err_t e = RADIO_ERR_MODE_BUSY;
-    if (!busy && status.ready && radio_requests) {
+    if (!busy && status.worker_running && radio_requests) {
         status.mode_pending = true;
         e = queue_request(r);
         if (e == ESP_OK) status.mode_save_result = RADIO_STORE_PENDING;
@@ -137,7 +155,7 @@ extern "C" esp_err_t radio_monitor_change(const char *action, const uint8_t a[4]
     esp_err_t e=paired ? RADIO_ERR_MONITOR_PAIRED :
         !found && select && monitors.count==RADIO_MONITOR_CAPACITY ? RADIO_ERR_MONITOR_CAPACITY :
         !found && select && !observed ? RADIO_ERR_MONITOR_UNOBSERVED : ESP_ERR_INVALID_STATE;
-    if (radio_requests && status.ready && !mutation_pending && !status.mode_pending && !pair_reserved &&
+    if (radio_requests && status.worker_running && !mutation_pending && !status.mode_pending && !pair_reserved &&
         !status.monitor_error && !status.registry_error && !paired &&
         (found || (select && observed && monitors.count<RADIO_MONITOR_CAPACITY))) {
         mutation_pending=status.monitor_pending=true; e=queue_request(r);
@@ -274,7 +292,7 @@ static esp_err_t enqueue_mutation(uint32_t id, radio_action action, const rf_fra
     lock_status();
     radiator_record *d = find_device(id);
     esp_err_t result = ESP_ERR_INVALID_STATE;
-    if (d && status.ready && radio_requests && !mutation_pending && !status.mode_pending &&
+    if (d && status.worker_running && radio_requests && !mutation_pending && !status.mode_pending &&
         (!status.registry_error || (d->state_load_error && (action == STATE_SAVE || action == STATE_CLEAR))) &&
         !(action == REMOVE && d->command_reserved)) {
         result = ESP_OK; r.id = d->id;
@@ -335,8 +353,9 @@ extern "C" esp_err_t radio_candidate_adopt(uint32_t id, const uint8_t radiator[4
     return enqueue_mutation(id, STATE_SAVE, nullptr, nullptr, radiator, version, replace);
 }
 
-static int transmit_frame(const rf_frame &frame, int &rx_result)
+static int transmit_frame(const rf_frame &frame, int &rx_result, bool &uncertain)
 {
+    uncertain = false;
     if (!rf_valid(&frame) || frame.size > 64) {
         rx_result = RADIOLIB_ERR_NONE;
         return ESP_ERR_INVALID_ARG;
@@ -349,14 +368,20 @@ static int transmit_frame(const rf_frame &frame, int &rx_result)
     unlock_status();
     // Poll, inclusion and 59-byte controller-state frames all fit in the FIFO. Fixed length sends our complete envelope
     // without RadioLib adding another length byte or a hardware CRC.
+    hal.begin_operation(1000);
     int result = radio.standby();
-    if (result == RADIOLIB_ERR_NONE) result = radio.fixedPacketLengthMode(frame.size);
-    if (result == RADIOLIB_ERR_NONE) result = radio.transmit(frame.bytes, frame.size);
+    if (result == RADIOLIB_ERR_NONE && !hal.error()) result = radio.fixedPacketLengthMode(frame.size);
+    if (result == RADIOLIB_ERR_NONE && !hal.error()) {
+        uncertain = true; // The blocking driver cannot prove that no bytes went on air.
+        result = radio.transmit(frame.bytes, frame.size);
+    }
+    if (hal.error()) result = hal.error();
     // Always leave TX and restore the receive profile, including after timeout.
     rx_result = radio.standby();
     if (rx_result == RADIOLIB_ERR_NONE)
         rx_result = module.SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL0, 2, 1, 0);
     if (rx_result == RADIOLIB_ERR_NONE) rx_result = radio.startReceive();
+    if (hal.error()) rx_result = hal.error();
     lock_status(); tx_in_progress = false; unlock_status();
     return result != RADIOLIB_ERR_NONE ? result : rx_result;
 }
@@ -392,6 +417,33 @@ static bool receive_count(uint8_t &count)
     return false;
 }
 
+// Reapply the exact established profile. No protocol machines or TX here.
+static int initialize_radio() {
+    hal.begin_operation(1200);
+    // Working receive assumptions from the RF spec, not a calibrated TX profile.
+    int result = radio.begin(868.3, 1000.0 / 27.0, 17.0, 101.6, 0, 32);
+    int version = result == RADIOLIB_ERR_NONE ? radio.getChipVersion() : -1;
+    lock_status(); status.chip_version = version; unlock_status();
+    // Preamble length is not established; do not require a 28-bit preamble.
+    if (result == RADIOLIB_ERR_NONE && !hal.error()) result = radio.setPreambleLength(32, 0);
+    if (result == RADIOLIB_ERR_NONE && !hal.error()) result = radio.setEncoding(RADIOLIB_ENCODING_NRZ);
+    if (result == RADIOLIB_ERR_NONE && !hal.error()) result = radio.setSyncWord(0xd3, 0x91);
+    // CC1101 30/32-bit sync detection for the repeated D391 D391 word.
+    if (result == RADIOLIB_ERR_NONE && !hal.error())
+        result = module.SPIsetRegValue(RADIOLIB_CC1101_REG_MDMCFG2, 3, 2, 0);
+    if (result == RADIOLIB_ERR_NONE && !hal.error()) result = radio.setCrcFiltering(false);
+    if (result == RADIOLIB_ERR_NONE && !hal.error()) result = radio.disableAddressFiltering();
+    // Infinite packet mode retains L and both software CRCs in the FIFO.
+    // Variable-length hardware mode would stop before the outer CRC.
+    if (result == RADIOLIB_ERR_NONE && !hal.error())
+        result = module.SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL0, 2, 1, 0);
+    if (result == RADIOLIB_ERR_NONE && !hal.error())
+        result = module.SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL1, 0, 2, 2);
+    if (result == RADIOLIB_ERR_NONE && !hal.error()) result = radio.startReceive();
+    hal.pinMode(RADIO_GDO2, hal.GpioModeInput);
+    return hal.error() ? hal.error() : result;
+}
+
 // One worker iteration is shared by FreeRTOS and the host's controllable clock.
 struct radio_worker {
     rf_frame frame = {};
@@ -424,45 +476,85 @@ struct radio_worker {
         status.exchange_id = exchange_id; status.device_count = registry.count;
         unlock_status();
     }
-    void fail(int error) {
-        // The worker is about to stop. Queued commands have not reached controls[]
-        // yet, so terminate reservations in the registry as well as active machines.
+    void fail(int error, radio_failure_stage stage = RADIO_FAILURE_RECEIVE) {
+        // Admission closes before reservations/queue entries are touched. Local
+        // writes remain queued: only their actual store result can complete them.
         lock_status();
+        status.ready = false; status.health = RADIO_RECOVERING;
+        status.error = status.failure_code = error; status.failure_stage = stage;
+        status.recovery_attempt = 0; status.retry_at_ms = esp_timer_get_time()/1000 + 1000;
         for (size_t i = 0; i < registry.count; ++i) {
             radiator_record &d = registry.records[i];
-            if (d.state_save_result == RADIO_STORE_PENDING || d.state_clear_result == RADIO_STORE_PENDING) {
-                if (d.state_save_result == RADIO_STORE_PENDING) d.state_save_result = RADIO_STORE_FAILED;
-                if (d.state_clear_result == RADIO_STORE_PENDING) d.state_clear_result = RADIO_STORE_FAILED;
-                d.state_store_error = error;
-            }
             if (!d.command_reserved) continue;
+            if (!d.command_pending) d.control = controls[i].status;
+            if (!d.command_pending && (d.control.phase == RF_CONTROL_MATCHED || d.control.phase == RF_CONTROL_TIMEOUT)) {
+                // A validated readback/deadline already completed this command
+                // before a later RX restoration fault. Keep that actual outcome.
+                d.control_error = control_errors[i];
+                if (d.command_cookie) { d.tracked_result = d.control; d.tracked_error = d.control_error; }
+                d.command_pending = d.command_reserved = false;
+                continue;
+            }
+            int outcome = (!d.command_pending && control_errors[i] == RADIO_ERR_DELIVERY_UNCERTAIN) || d.control.attempts
+                ? RADIO_ERR_DELIVERY_UNCERTAIN : error;
             controls[i].status.phase = d.control.phase = RF_CONTROL_ERROR;
-            control_errors[i] = d.control_error = error;
-            if (d.command_cookie) { d.tracked_result = d.control; d.tracked_error = error; }
+            control_errors[i] = d.control_error = outcome;
+            if (d.command_cookie) { d.tracked_result = d.control; d.tracked_error = outcome; }
             d.command_pending = d.command_reserved = false;
         }
         if (pair_reserved) {
-            pair.phase = status.pairing.phase = RF_PAIR_ERROR;
-            pair_error = status.pairing_error = error;
+            // A completed, successfully persisted inclusion stays saved even
+            // when restoring RX after its acknowledgement fails.
+            if (exchange_pending || !saved) {
+                if (exchange_pending) saved = false; // Previous inclusion's save is not this queued attempt.
+                bool uncertain = pair_error == RADIO_ERR_DELIVERY_UNCERTAIN ||
+                    (!exchange_pending && pair.phase >= RF_PAIR_WAIT_REPLY && pair.phase <= RF_PAIR_WAIT_ACK);
+                pair.phase = status.pairing.phase = RF_PAIR_ERROR;
+                pair_error = status.pairing_error = uncertain ? RADIO_ERR_DELIVERY_UNCERTAIN : error;
+            }
+            status.pairing = pair; status.pairing_saved = saved;
             pair_reserved = exchange_pending = false;
             exchange_id = status.exchange_id = 0;
         }
-        if (status.mode_pending) {
-            status.mode_pending = false; status.control_enabled = false;
-            status.mode_error = error; status.mode_save_result = RADIO_STORE_FAILED;
-        }
-        if (status.monitor_pending) {
-            status.monitor_pending=false; status.monitor_result=RADIO_STORE_FAILED;
-            status.monitor_error=error; // Queued action never reached persistence.
-        }
-        if (status.adoption_result == RADIO_STORE_PENDING) {
-            status.adoption_result = RADIO_STORE_FAILED; status.adoption_error = error;
-        }
-        if (mutation_pending) {
-            status.mutation_error = error;
-            mutation_pending = status.mutation_pending = false;
+        // Bounded in-place filtering, preserving the order of accepted local
+        // writes. No old RF handoff can be mistaken for a newly admitted one.
+        unsigned count = uxQueueMessagesWaiting(radio_requests);
+        radio_request r;
+        for (unsigned i=0; i<count; ++i) {
+            if (xQueueReceive(radio_requests,&r,0)!=pdPASS) break;
+            if (r.action > CONTROL_START) (void)xQueueSend(radio_requests,&r,0);
         }
         unlock_status();
+        frame = {}; started = -1;
+        ESP_LOGE("radio", "Fault stage=%s code=%d; recovery scheduled", radio_failure_name(stage), error);
+    }
+    void recover() {
+        lock_status();
+        if (status.retry_pending) {
+            status.retry_pending = false; status.health = RADIO_RECOVERING;
+            status.recovery_attempt = 0; status.retry_at_ms = esp_timer_get_time()/1000;
+        }
+        bool attempt = (status.health == RADIO_INITIALIZING || status.health == RADIO_RECOVERING) &&
+            esp_timer_get_time()/1000 >= status.retry_at_ms;
+        if (attempt) { ++status.recovery_attempt; increment(status.recovery_attempts); }
+        unlock_status();
+        if (!attempt) return;
+        int result = initialize_radio();
+        lock_status();
+        status.error = result;
+        if (result == RADIOLIB_ERR_NONE) {
+            if (status.failure_stage != RADIO_FAILURE_NONE) increment(status.recovery_successes);
+            status.health = RADIO_READY; status.ready = true; status.retry_at_ms = 0;
+        } else {
+            status.failure_stage = RADIO_FAILURE_INITIALIZE; status.failure_code = result;
+            if (status.recovery_attempt == RADIO_RECOVERY_ATTEMPTS) {
+                status.health = RADIO_FAULTED; status.retry_at_ms = 0;
+            } else status.retry_at_ms = esp_timer_get_time()/1000 +
+                (1000LL << (status.recovery_attempt - 1)); // 1, 2, 4 seconds; never unbounded
+        }
+        unlock_status();
+        frame = {}; started = -1;
+        ESP_LOGI("radio", "Setup attempt=%u result=%d", status.recovery_attempt, result);
     }
     void step() {
         radio_request request;
@@ -589,9 +681,11 @@ struct radio_worker {
         int64_t now_ms = esp_timer_get_time() / 1000;
         rf_pair_tick(&pair, now_ms);
         for (size_t i = 0; i < registry.count; ++i) rf_control_tick(&controls[i], now_ms);
-        if (!radio_transport_status().ready) { fail(status.error); return; }
+        if (!radio_transport_status().ready) { recover(); return; }
+        hal.begin_operation(250);
         service_receive();
         if (!radio_transport_status().ready) return;
+        if (hal.error()) { fail(hal.error()); return; }
         now_ms = esp_timer_get_time() / 1000;
         rf_pair_tick(&pair, now_ms);
         for (size_t i = 0; i < registry.count; ++i) rf_control_tick(&controls[i], now_ms);
@@ -608,7 +702,9 @@ struct radio_worker {
         }
         // next() is read-only. A deferral retains the frame in its machine,
         // without a sent callback, attempt increment or round-robin advancement.
-        if ((pairing_tx || control_tx) && receive_idle()) {
+        bool idle = (pairing_tx || control_tx) && receive_idle();
+        if (hal.error()) { fail(hal.error()); return; }
+        if (idle) {
             // The only change since read-only selection can be expiry. Recheck
             // that deadline after SPI sampling, without rebuilding the frame and
             // widening the final FIFO-check-to-standby window.
@@ -619,21 +715,32 @@ struct radio_worker {
                                             rf_control_active(&controls[chosen].status);
             if (!still_ready) { publish(); return; }
             int rx_result;
-            int tx_result = transmit_frame(outgoing, rx_result);
+            bool uncertain;
+            int tx_result = transmit_frame(outgoing, rx_result, uncertain);
+            int outcome = (tx_result || rx_result) && uncertain ? RADIO_ERR_DELIVERY_UNCERTAIN : tx_result;
             if (pairing_tx) {
-                pair_error = tx_result;
+                pair_error = outcome;
                 rf_pair_sent(&pair, esp_timer_get_time() / 1000, tx_result == 0);
             } else {
                 next_device = (chosen + 1) % registry.count;
-                control_errors[chosen] = tx_result;
-                rf_control_sent(&controls[chosen], esp_timer_get_time() / 1000, tx_result == 0);
+                control_errors[chosen] = outcome;
+                if (tx_result && !uncertain) {
+                    // Preparation failed before entering transmit(). Do not count
+                    // a state-frame attempt that could not have gone on air.
+                    controls[chosen].status.phase = RF_CONTROL_ERROR;
+                } else rf_control_sent(&controls[chosen], esp_timer_get_time() / 1000, tx_result == 0);
             }
-            lock_status();
-            status.error = rx_result;
-            status.ready = rx_result == RADIOLIB_ERR_NONE;
-            unlock_status();
+            if (tx_result == RADIO_ERR_LISTEN_ONLY || tx_result == ESP_ERR_INVALID_ARG) {
+                publish(); return; // Admission/construction refusal is not a hardware fault.
+            }
+            if (tx_result || rx_result) {
+                // One locked transition closes admission and publishes outcomes
+                // before releasing any reservations or removing queued RF work.
+                fail(rx_result ? rx_result : tx_result,
+                     rx_result ? RADIO_FAILURE_RX_RESTORE : RADIO_FAILURE_TX);
+                return;
+            }
         }
-        if (!radio_transport_status().ready) { fail(status.error); return; }
         publish();
     }
     // All FIFO/radio access stays in this owner. Unknown counts are busy, even
@@ -651,6 +758,7 @@ struct radio_worker {
     void service_receive() {
         uint8_t count = 0;
         bool stable = receive_count(count);
+        if (hal.error()) { fail(hal.error()); return; }
         if ((!stable || count) && started < 0) started = esp_timer_get_time();
         bool restart = stable && (count & 0x80) != 0;
         bool receive_error = restart;
@@ -682,6 +790,7 @@ struct radio_worker {
                     }
                     if (result != RADIOLIB_ERR_NONE) restart = receive_error = true;
                 }
+                if (hal.error()) { fail(hal.error()); return; }
                 if (result == RADIOLIB_ERR_NONE && frame.size &&
                     (frame.bytes[0] < 11 || frame.size == expected)) {
                     bool valid = rf_valid(&frame);
@@ -732,7 +841,7 @@ struct radio_worker {
                         }
                     }
                     if (valid) {
-                        ++status.valid_frames;
+                        increment(status.valid_frames);
                         status.has_frame = true;
                         status.last_frame = frame;
                         status.frame_time_us = now;
@@ -741,7 +850,7 @@ struct radio_worker {
                             status.last_report = report;
                             status.report_time_us = now;
                         }
-                    } else ++status.invalid_frames;
+                    } else increment(status.invalid_frames);
                     unlock_status();
                     restart = true;
                 }
@@ -753,8 +862,9 @@ struct radio_worker {
         if (restart) {
             if (result == RADIOLIB_ERR_NONE)
                 result = radio.startReceive(); // standby, flush, re-enter RX
+            if (hal.error()) result = hal.error();
             lock_status();
-            if (receive_error) ++status.receive_errors;
+            if (receive_error) increment(status.receive_errors);
             status.error = result;
             status.ready = result == RADIOLIB_ERR_NONE;
             unlock_status();
@@ -774,7 +884,6 @@ static void receive_task(void *)
     static radio_worker worker;
     for (;;) {
         worker.step();
-        if (!radio_transport_status().ready) { vTaskDelete(nullptr); return; }
         vTaskDelay(1);
     }
 }
@@ -782,7 +891,10 @@ static void receive_task(void *)
 extern "C" void radio_transport_start(void)
 {
     status_lock = xSemaphoreCreateMutex();
-    if (!status_lock) { status.error = ESP_ERR_NO_MEM; return; }
+    if (!status_lock) {
+        status.health = RADIO_FAULTED; status.error = status.failure_code = ESP_ERR_NO_MEM;
+        status.failure_stage = RADIO_FAILURE_RESOURCES; return;
+    }
     status.capacity = CLEVERBOX_RADIATOR_CAPACITY;
     observations[0] = {}; candidates[0] = {};
     status.observation_count = status.candidate_count = 0;
@@ -808,34 +920,13 @@ extern "C" void radio_transport_start(void)
     }
     if (load_result != ESP_OK) status.pairing_error = load_result;
     radio_requests = xQueueCreate(CLEVERBOX_RADIATOR_CAPACITY + 1, sizeof(radio_request));
-    // Working receive assumptions from the RF spec, not a calibrated TX profile.
-    int result = radio.begin(868.3, 1000.0 / 27.0, 17.0, 101.6, 0, 32);
-    status.chip_version = result == RADIOLIB_ERR_NONE ? radio.getChipVersion() : -1;
-    // Preamble length is not established; do not require a 28-bit preamble.
-    if (result == RADIOLIB_ERR_NONE) result = radio.setPreambleLength(32, 0);
-    if (result == RADIOLIB_ERR_NONE) result = radio.setEncoding(RADIOLIB_ENCODING_NRZ);
-    if (result == RADIOLIB_ERR_NONE) result = radio.setSyncWord(0xd3, 0x91);
-    // CC1101 30/32-bit sync detection for the repeated D391 D391 word.
-    if (result == RADIOLIB_ERR_NONE)
-        result = module.SPIsetRegValue(RADIOLIB_CC1101_REG_MDMCFG2, 3, 2, 0);
-    if (result == RADIOLIB_ERR_NONE) result = radio.setCrcFiltering(false);
-    if (result == RADIOLIB_ERR_NONE) result = radio.disableAddressFiltering();
-    // Infinite packet mode retains L and both software CRCs in the FIFO.
-    // Variable-length hardware mode would stop before the outer CRC.
-    if (result == RADIOLIB_ERR_NONE)
-        result = module.SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL0, 2, 1, 0);
-    if (result == RADIOLIB_ERR_NONE)
-        result = module.SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL1, 0, 2, 2);
-    if (result == RADIOLIB_ERR_NONE) result = radio.startReceive();
-    // RadioLib's blocking short-frame TX completion uses GDO2 as an input.
-    hal.pinMode(RADIO_GDO2, hal.GpioModeInput);
-    if (!radio_requests && result == RADIOLIB_ERR_NONE) result = ESP_ERR_NO_MEM;
-    status.error = result;
-    status.ready = result == RADIOLIB_ERR_NONE;
-    if (status.ready && xTaskCreate(receive_task, "radio_rx", 6144, nullptr, 5, nullptr) != pdPASS) {
-        status.ready = false;
-        status.error = ESP_ERR_NO_MEM;
-        radio.standby();
+    status.health = RADIO_INITIALIZING;
+    status.chip_version = -1;
+    if (!radio_requests) { status.health = RADIO_FAULTED; status.error = ESP_ERR_NO_MEM;
+        status.failure_stage = RADIO_FAILURE_RESOURCES; status.failure_code = status.error; return; }
+    status.worker_running = true;
+    if (xTaskCreate(receive_task, "radio_rx", 6144, nullptr, 5, nullptr) != pdPASS) {
+        status.worker_running = false; status.health = RADIO_FAULTED;
+        status.error = status.failure_code = ESP_ERR_NO_MEM; status.failure_stage = RADIO_FAILURE_RESOURCES;
     }
-    ESP_LOGI("radio", "CC1101 version=%d status=%d", status.chip_version, status.error);
 }

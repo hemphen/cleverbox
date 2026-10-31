@@ -40,7 +40,8 @@ public:
     RadioLibTime_t millis() override { us += 100; return us / 1000; }
     RadioLibTime_t micros() override { us += 10; return us; }
     long pulseIn(uint32_t, uint32_t, RadioLibTime_t) override { return 0; }
-    // Deliberately inherit the empty base yield, as the production IdfHal does.
+    // Model the production HAL yielding to other tasks during library waits.
+    void yield() override { us += 1000; }
     void spiBegin() override {}
     void spiEnd() override {}
     void spiBeginTransaction() override {}
@@ -170,6 +171,10 @@ int main() {
     hal.idle_failure = true;
     assert(radio.standby() == RADIOLIB_ERR_UNKNOWN);
     assert(radio.startReceive() == RADIOLIB_ERR_UNKNOWN);
+    hal.idle_failure = false;
+    auto sent_before = hal.sent;
+    configure(radio, module, 101.6); // full profile reinitialization after faults, no TX probe
+    assert(hal.sent == sent_before && hal.regs[0x35] == 0x0d && (hal.regs[8] & 7) == 2);
     std::printf("RadioLib %d.%d.%d: profile, fixed TX, GDO2, state-entry/completion timeouts, RX restore and register failures passed\n",
                 RADIOLIB_VERSION_MAJOR, RADIOLIB_VERSION_MINOR, RADIOLIB_VERSION_PATCH);
 }

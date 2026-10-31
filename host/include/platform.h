@@ -33,6 +33,7 @@ inline int xQueueSend(QueueHandle_t, const void *p, int) {
     if (queued.size() == queue_capacity) return 0;
     auto b = static_cast<const uint8_t *>(p); queued.emplace_back(b, b + item_size); return pdPASS;
 }
+inline unsigned uxQueueMessagesWaiting(QueueHandle_t) { return queued.size(); }
 inline int xQueueReceive(QueueHandle_t, void *p, int) {
     if (queued.empty()) return 0;
     memcpy(p, queued.front().data(), item_size); queued.pop_front(); return pdPASS;
@@ -45,12 +46,21 @@ constexpr int RADIOLIB_CC1101_REG_PKTCTRL0 = 0, RADIOLIB_CC1101_REG_RXBYTES = 1,
 inline std::vector<uint8_t> fifo;
 inline size_t fifo_used;
 void simulated_transmit(const uint8_t *, size_t);
-class IdfHal { public: int GpioModeInput = 0; void pinMode(int, int) {} };
+inline int injected_begin, injected_receive, injected_tx, injected_spi;
+class IdfHal { public:
+    int GpioModeInput = 0, failure = 0;
+    void pinMode(int, int) {}
+    void begin_operation(unsigned) { failure = 0; }
+    int error() { return failure; }
+    void record_error(int e) { if (!failure) failure=e; }
+};
+inline IdfHal *host_hal;
 class Module {
 public:
-    Module(IdfHal *, int, int, uint32_t, int) {}
+    Module(IdfHal *h, int, int, uint32_t, int) { host_hal=h; }
     int SPIsetRegValue(int, int, int, int) { return 0; }
     uint8_t SPIreadRegister(int reg) {
+        if (injected_spi) { host_hal->record_error(injected_spi); return 0; }
         if (reg == (RADIOLIB_CC1101_REG_RXBYTES | 0x40)) return fifo.size() - fifo_used;
         assert(reg == RADIOLIB_CC1101_REG_FIFO && fifo_used < fifo.size());
         return fifo[fifo_used++];
@@ -64,9 +74,9 @@ public:
     explicit CC1101(Module *) {}
     int standby() { return 0; }
     int fixedPacketLengthMode(size_t) { return 0; }
-    int transmit(const uint8_t *p, size_t n) { simulated_transmit(p, n); return 0; }
-    int startReceive() { fifo.clear(); fifo_used = 0; return 0; }
-    int begin(double, double, double, double, int, int) { return 0; }
+    int transmit(const uint8_t *p, size_t n) { simulated_transmit(p, n); return injected_tx; }
+    int startReceive() { fifo.clear(); fifo_used = 0; return injected_receive; }
+    int begin(double, double, double, double, int, int) { if (injected_spi) host_hal->record_error(injected_spi); return injected_begin; }
     int getChipVersion() { return -1; } // No physical chip.
     int setPreambleLength(int, int) { return 0; }
     int setEncoding(int) { return 0; }

@@ -162,3 +162,23 @@ write `B/#` and its own `homeassistant/device/cleverbox_<bridge_id>_<id>/config`
 topics, including the `cleverbox_<bridge_id>_passive_<address>` namespace. Clients that send commands need to read `B/#` and write
 `B/radiators/+/set`. Keep retain disabled for commands. Credentials and
 payloads are not encrypted on the network.
+
+## Radio health
+
+The existing `bridge` snapshot adds `radio_health`, `radio_ready`, `control_ready`,
+`radio_failure_stage`, `radio_failure_code`, `recovery_attempt`,
+`recovery_attempts`, `recovery_successes`, `retry_exhausted` and `retry_in_ms`.
+Radio-health transitions trigger a snapshot on the next 100 ms MQTT owner tick;
+normal publication remains every five seconds. Bridge transport availability
+stays online while its broker session works, including during a radio outage.
+
+Paired and passive state snapshots add `radio_ready` and `radio_health`.
+`available` still means a report was received this boot. `fresh` additionally
+requires a ready radio. Readings, destination and age remain the last validated
+observation; recovery does not refresh them. Exhaustion requires the STA HTTP
+retry action, not an MQTT command or automatic reconnect.
+
+Delivery error `0x730A` means uncertain physical delivery. The bridge snapshot
+retains the underlying failure stage/code. Tracked command results still name
+the original request/session. Reconnect publishes results and observations,
+never failed commands. See [the failure policy](architecture.md#radio-health-and-recovery).

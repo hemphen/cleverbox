@@ -23,7 +23,7 @@ static void test_passive_mode() {
     const uint8_t c[]={0xf1,1,2,3}, dst[]={0xf1,0x10,0,1}; uint32_t id;
     assert(radio_pair_start(c,dst,&id)==RADIO_ERR_LISTEN_ONLY);
     worker.step(); assert(!status.control_enabled && status.mode_save_result==RADIO_STORE_OK && !transmit_count);
-    int rx=-1; assert(transmit_frame(command.state,rx)==RADIO_ERR_LISTEN_ONLY && !transmit_count && rx==0);
+    int rx=-1; bool uncertain; assert(transmit_frame(command.state,rx,uncertain)==RADIO_ERR_LISTEN_ONLY && !transmit_count && rx==0);
     hear(worker,state_frame());
     assert(status.candidate_count==1); // receive and storage remain available without TX
     assert(radio_candidate_adopt(1,registry.records[0].pair.radiator,candidates[0].version,false)==ESP_OK);
@@ -44,7 +44,7 @@ static void test_passive_mode() {
     mode_store_result=0; assert(radio_mode_set(true)==ESP_OK); worker.step();
     assert(!status.mode_error && !status.mode_persistence_uncertain && status.control_enabled);
     transmit_hook=mode_during_tx;
-    assert(transmit_frame(command.state,rx)==ESP_OK && !tx_in_progress);
+    assert(transmit_frame(command.state,rx,uncertain)==ESP_OK && !tx_in_progress);
     transmit_hook=nullptr;
     assert(radio_pair_start(c,dst,&id)==ESP_OK);
     assert(radio_mode_set(false)==RADIO_ERR_MODE_BUSY);

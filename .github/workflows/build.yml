@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   protocol:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libcjson-dev pkg-config mosquitto python3-venv cmake
@@ -30,7 +30,7 @@ jobs:
           build/mqtt-venv/bin/pip install paho-mqtt==2.1.0
           PATH="$PWD/build/mqtt-venv/bin:$PATH" make test-mqtt-broker
   firmware:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: espressif/idf:v5.5.1
     steps:
       - uses: actions/checkout@v4

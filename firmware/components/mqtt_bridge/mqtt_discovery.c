@@ -211,9 +211,9 @@ static bool build(const radiator_record *d, bool removal, bool passive) {
                 cJSON_AddStringToObject(c, "json_attributes_template", attrs);
             }
         }
-        if (passive && i==4) {
+        if (i==3 || i==4) {
             cJSON_AddStringToObject(c,"json_attributes_topic",topic);
-            cJSON_AddStringToObject(c,"json_attributes_template","{{ dict(radiator=value_json.radiator, controller=value_json.get('controller')) | to_json }}");
+            cJSON_AddStringToObject(c,"json_attributes_template","{{ dict(radio_ready=value_json.radio_ready, radio_health=value_json.radio_health, radiator=value_json.get('radiator'), controller=value_json.get('controller')) | to_json }}");
         }
         cJSON_AddStringToObject(c, "value_template", templ);
     }

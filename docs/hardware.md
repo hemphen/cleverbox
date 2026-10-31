@@ -205,3 +205,25 @@ Passive monitoring checks (software/HA success is not physical heating evidence)
 - [ ] Run for several days with all radiators. Record task stack and heap high-water marks.
 - [ ] Settings survive repeated power cycles.
 - [ ] Heating continues with Home Assistant, the network and the Touch E3 absent.
+
+## Radio fault acceptance
+
+All radio recovery evidence so far is software fault injection. Record real
+hardware results separately. Keep the antenna fitted; do not hot-plug radio,
+power or SPI wires while powered. Use a controlled test firmware hook that
+returns a driver error, safe test fixtures, or faults already present on the
+bench. Power down before changing wiring. A software-injected error alone does
+not establish electrical fault recovery.
+
+- [ ] Record real driver errors and bus/radio failure stages without resets or aborts. Restore a safe fixture and verify RX after automatic recovery and after exhausted-budget STA retry. Missing hardware must stop retrying after four attempts.
+- [ ] Induce bounded RX-restoration failure safely. Verify the complete RF/register profile after reinitialization, reception of genuine reports and no permanently busy radiator reservations.
+- [ ] Test TX and post-TX restoration errors; compare independent packet capture with uncertain delivery diagnostics. No automatic probe, pairing or replay may appear.
+- [ ] Independently capture RF in listen-only throughout initial failure, automatic recovery, exhaustion, repeated STA retries, reconnect and reboot: exact on-air silence.
+- [ ] Run sustained multi-radiator reception alongside HTTP, MQTT and HA traffic and repeated independent faults. Measure packet loss, network latency and recovery timing.
+- [ ] Check paired and passive HA readings unavailable on radio failure, increasing original report age, stable identities, old expired readings still unavailable after recovery and genuine new reports restoring freshness.
+- [ ] Measure heap/free-block minima, radio/HTTP/MQTT stack high-water marks and watchdog behavior during setup failures, driver timeouts and sustained RX/TX traffic. Confirm the retained SPI transaction buffers are never reused while in flight.
+- [ ] Check no replay or pairing after recovery, HA/bridge/broker restart. Pairings, IDs, templates, passive selections, RF mode and unrelated NVS settings survive.
+
+A silently wrong SPI response or failed RF front end without an observable error
+is not guaranteed detectable. Driver/internal assertion deadlocks are not
+recoverable by this owner policy; see [adapter limits](architecture.md#adapter-bounds-and-limits).
