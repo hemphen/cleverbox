@@ -90,9 +90,11 @@ static void test_passive_capture() {
     hear(worker,state); // replacement invalidates even an identical capture selection
     assert(radio_candidate_adopt(1,registry.records[0].pair.radiator,original.version,false)==RADIO_ERR_CANDIDATE_CHANGED);
     auto selected=candidates[0];
+    registry.records[0].has_control_template=true;
+    memcpy(registry.records[0].control_template,state_frame().bytes,CONTROLLER_STATE_BYTES);
     assert(radio_candidate_adopt(1,registry.records[0].pair.radiator,selected.version,false)==ESP_OK);
     state.bytes[32]^=1; reseal_test(state); hear(worker,state); // save snapshot then receive replacement
-    assert(!memcmp(registry.records[0].saved_template,selected.state,59));
+    assert(!memcmp(registry.records[0].saved_template,selected.state,59) && !registry.records[0].has_control_template);
     assert(status.adoption_result==RADIO_STORE_OK && !strcmp(status.adoption_version,selected.version));
     assert(radio_candidate_adopt(1,registry.records[0].pair.radiator,candidates[0].version,false)==RADIO_ERR_REPLACE_REQUIRED);
     store_result=ESP_ERR_TIMEOUT;

@@ -344,7 +344,8 @@ static esp_err_t commissioning_status(httpd_req_t *r) {
         cJSON *row = cJSON_CreateObject(); char a[9], b[9];
         address_text(o.report.source, a); address_text(o.report.destination, b);
         cJSON_AddStringToObject(row, "radiator", a); cJSON_AddStringToObject(row, "controller", b);
-        int64_t age = (now - o.time_us) / 1000;
+        // A radio task may publish after this HTTP snapshot sampled now.
+        int64_t age = now > o.time_us ? (now - o.time_us) / 1000 : 0;
         cJSON_AddNumberToObject(row, "age_ms", age); cJSON_AddBoolToObject(row, "stale", age >= RF_REPORT_STALE_MS);
         cJSON_AddNumberToObject(row, "mode", o.report.mode);
         if (o.report.temperature_available) cJSON_AddNumberToObject(row, "temperature_c", o.report.temperature_centi_c / 100.0);
@@ -360,7 +361,7 @@ static esp_err_t commissioning_status(httpd_req_t *r) {
         address_text(c.state + 6, a); address_text(c.state + 1, b);
         cJSON_AddStringToObject(row, "radiator", a); cJSON_AddStringToObject(row, "controller", b);
         cJSON_AddStringToObject(row, "version", c.version);
-        cJSON_AddNumberToObject(row, "age_ms", (now - c.time_us) / 1000);
+        cJSON_AddNumberToObject(row, "age_ms", now > c.time_us ? (now - c.time_us) / 1000 : 0);
         matching_pair(row, c.state + 6); cJSON_AddItemToArray(captured, row);
     }
     cJSON *adoption = cJSON_AddObjectToObject(j, "adoption");

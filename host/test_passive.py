@@ -8,7 +8,7 @@ from test_http_boundary import request, files
 from test_mqtt import connect, send, publications
 
 
-def seal(f):
+def seal(f, repair_inner=True):
     f = bytearray(f)
     def crc(data, reflected):
         c = 0xffff
@@ -18,7 +18,8 @@ def seal(f):
                 c = ((c >> 1) ^ (0xa001 if c & 1 else 0)) if reflected else (((c << 1) ^ (0x8005 if c & 0x8000 else 0)) & 0xffff)
         return c
     l = f[0]
-    f[l-1:l+1] = crc(f[1:l-1], True).to_bytes(2, 'little')
+    if repair_inner:
+        f[l-1:l+1] = crc(f[1:l-1], True).to_bytes(2, 'little')
     f[l+1:l+3] = crc(f[:l+1], False).to_bytes(2, 'big')
     return f.hex().upper()
 
@@ -109,7 +110,7 @@ def inventory_and_workflow(directory):
         bad = bytearray.fromhex(captured); bad[-1] ^= 1; inject(app, bad.hex())
         # Inner CRC broken while outer checksum is valid.
         bad = bytearray.fromhex(captured); bad[-3] ^= 1
-        outer = bytes.fromhex(seal(bad))[-2:]; bad[-2:] = outer; inject(app, bad.hex())
+        inject(app, seal(bad, repair_inner=False))
         inject(app, changed(captured, 10, b'\x44')) # CRC valid, wrong structure
         s = status(app)
         assert len(s['observations']) == 2 and len(s['candidates']) == 1 and s['candidates'][0]['version'] == original['version']
