@@ -104,15 +104,20 @@ Leave the existing Touch E3 system running.
 - [ ] After changing a target on the Touch E3, the next report shows it and `report.age_ms` resets.
 - [ ] Capture a 59-byte controller-state frame (hex starting `38`) from the Touch E3 to each radiator. These are candidate templates for stage 5.
 
-Cleverbox has no reliable capture mechanism yet. `last_frame` in
-`GET /api/radio` holds only the latest CRC-valid frame of any type and address.
-The next frame, such as an acknowledgement, a report or another radiator's
-traffic, replaces it, often before the page refreshes every 2 s. Capture with an
-external receiver, such as an SDR with the
-[clevertouch-radio](https://github.com/hemphen/clevertouch-radio) decoder.
-Sampling `/api/radio` in a tight loop and keeping each `last_frame` that starts
-with `38` and has the radiator as destination (bytes 6–9) can also work, but it
-is opportunistic.
+Select **listen-only** on an upgraded device; fresh installations default to it.
+Use **Passive commissioning** on the local page. It retains observations from
+any controller and genuine controller-state candidates separately. Refresh
+candidate choices after capture. Neither receiving nor adopting sends RF.
+An SDR with the [reference decoder](https://github.com/hemphen/clevertouch-radio)
+provides independent on-air verification; software counters alone cannot prove
+that the device is silent.
+
+- [ ] Independently capture RF through boot, sustained receive, HTTP/MQTT command rejection, network/broker reconnects and reboot: no TX in listen-only.
+- [ ] Identify several radiator RF addresses reporting to Touch E3 or other controllers without pairing them.
+- [ ] Verify temperature, target, mode, destination, monotonic age and stale indication; unavailable values stay unavailable.
+- [ ] Retain genuine 59-byte candidates before pairing. Subsequent reports/acks/noise cannot replace them. Check source, destination and capture age against independent capture.
+- [ ] Mode survives reboot. Corrupt/unreadable mode reports an error and closes RF without erasure.
+- [ ] During sustained reception, measure heap/stack high-water marks and HTTP/MQTT responsiveness; exercise cache bounds and eviction indicators.
 
 ### 3. Network and recovery
 
@@ -142,15 +147,18 @@ proves actual Wi-Fi or ESP/lwIP interface routing. All checks below remain pendi
 
 ### 5. Pairing and control
 
-Disconnect the Touch E3. Put one radiator in pairing mode (`rF.bi`). Pairing
+Capture its genuine template first. Disconnect the Touch E3, explicitly enable
+control on STA, then put one radiator in pairing mode (`rF.bi`). Pairing
 can reset the radiator's stored settings.
 
 - [ ] Pairing goes through `offer`, `waiting_reply`, `bind`, `waiting_ack`, `complete`, and `saved: true`.
 - [ ] Pairing with no radiator in pairing mode times out and saves nothing.
 - [ ] Cancelling during the bind delay saves nothing.
-- [ ] Import a template for the radiator and send Comfort, Off, Frost and Eco. Each reaches `matched`, and the radiator display agrees.
+- [ ] Adopt the matching captured candidate (or manually import a genuine template), verify persistence, and send Comfort, Off, Frost and Eco. Each reaches `matched`, and the radiator display agrees.
 - [ ] Heating behaviour matches the setting (observe the radiator, not only reports).
 - [ ] With the radiator unpowered, a command reaches `timeout`; a later matching report changes it to `matched` without new transmissions.
+- [ ] Listen-only request during pairing/command work is refused clearly; after bounded completion retry it and independently verify silence. Control enable alone sends nothing.
+- [ ] Capture → Touch E3 disconnected → explicit enable → pair → adopt works with real equipment and genuine bytes; the transmitted controller source is Cleverbox’s paired identity.
 - [ ] Reboot with a command pending: the pairing and saved template remain, the command is not resumed and nothing is sent at boot.
 
 Open questions to answer here, using genuine captured templates only:

@@ -9,7 +9,7 @@
 #include "cJSON.h"
 #include <stdio.h>
 #include <string.h>
-static httpd_uri_t routes[13];
+static httpd_uri_t routes[15];
 static size_t route_count;
 static httpd_req_t request;
 static int socket_fd = -1;
@@ -19,7 +19,7 @@ void host_http_socket(int fd) { socket_fd = fd; }
 int httpd_req_to_sockfd(httpd_req_t *r) { return r->socket_fd; }
 esp_err_t httpd_register_uri_handler(httpd_handle_t server, const httpd_uri_t *route) {
     (void)server;
-    if (route_count == 13) return ESP_FAIL;
+    if (route_count == 15) return ESP_FAIL;
     routes[route_count++] = *route; return ESP_OK;
 }
 esp_err_t httpd_req_get_hdr_value_str(httpd_req_t *r, const char *name, char *out, size_t n) {

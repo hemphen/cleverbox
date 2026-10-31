@@ -180,6 +180,18 @@ http:
         assert {e['unique_id']:e for e in discovered()} == entries
         assert app.http()['simulation_tx'] == tx
         print('HA boot/package validation: passed', flush=True)
+        # HA Apply cannot bypass listen-only; unrelated passive reports never
+        # become discovery devices. Exercise the real broker/HA service path.
+        app.http('/api/commissioning', {'mode':'listen-only'}, 202); advance(10)
+        snapshots(); apply(1,22,'Comfort'); pump(lambda:admitted(1,'listen_only'))
+        assert app.http()['simulation_tx'] == tx
+        app.sim('inject',frame=changed_frame(REPORT,3)); advance(10)
+        assert app.http('/api/commissioning')['observations']
+        snapshots(); assert len(discovered()) == 14
+        app.http('/api/commissioning', {'mode':'control-enabled'}, 202); advance(10)
+        assert app.http()['simulation_tx'] == tx
+        snapshots()
+        print('HA listen-only rejection, passive discovery isolation and silent explicit enable: passed', flush=True)
         apply(1,22,'Comfort'); pump(lambda:admitted(1,'time_unavailable'))
         assert app.http()['simulation_tx'] == tx
         app.http('/api/time',dict(action='manual',unix_seconds=1767268800)); snapshots()

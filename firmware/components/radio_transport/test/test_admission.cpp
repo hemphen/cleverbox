@@ -13,8 +13,13 @@ static rf_frame state_frame() {
     rf_frame f = {};
     assert(rf_parse_hex("38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0078B20C0000A20F60D9", f.bytes, sizeof(f.bytes), &f.size)); return f;
 }
+extern "C" esp_err_t device_mode_load(bool *enabled, bool *stored) { *enabled = true; *stored = true; return ESP_OK; }
+static int mode_store_result;
+extern "C" esp_err_t device_mode_save(bool) { return mode_store_result; }
 static void reset() {
-    status = {}; status.ready = true; registry = {}; registry.count = 2; registry.next_id = 3;
+    status_lock = xSemaphoreCreateMutex(); mode_store_result = 0; tx_in_progress = false;
+    capture_sequence = 0; capture_boot = 1;
+    status = {}; status.ready = true; status.control_enabled = true; registry = {}; registry.count = 2; registry.next_id = 3;
     for (unsigned i = 0; i < 2; ++i) {
         auto &d = registry.records[i]; d.id = i + 1;
         const uint8_t controller[] = {0xf1,1,2,3}, radiator[] = {0xf1,4,5,6};
@@ -320,6 +325,7 @@ static void test_sustained_input_deadlines() {
     rf_frame bad = report_b(false); bad.bytes[16] ^= 1; load_fifo(bad, bad.size);
     malformed.step(); assert(status.invalid_frames == 1 && transmit_count == 1 && status.ready);
 }
+#include "passive_cases.inc"
 int main() {
     command.mode = RF_COMFORT; command.centi_c = 2050; command.clock_seconds = 43200;
     reset(); radio_worker worker;
@@ -367,6 +373,7 @@ int main() {
     test_partial_and_fifo_only(); test_report_before_selection(); test_final_guard_and_expiry();
     test_bounded_rx_recovery(); test_deferred_state_and_results();
     test_expired_handoffs_and_rx_failure(); test_sustained_input_deadlines();
+    test_passive_mode(); test_passive_capture();
     puts("RX-before-TX arbitration, FIFO errata, late guard, bounded recovery/deadlines and deferred work: passed");
     printf("Memory: capacity=%u record=%zu registry=%zu worker=%zu request=%zu\n", (unsigned)CLEVERBOX_RADIATOR_CAPACITY, sizeof(radiator_record), sizeof(registry), sizeof(radio_worker), sizeof(radio_request));
     puts("Independent reservations, fair turns, compaction, fatal radio failure, handoff and queue capacity: passed");

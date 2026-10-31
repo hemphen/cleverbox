@@ -2,6 +2,8 @@
 #pragma once
 // Host-only FIFO/queue facade for the production radio worker. No RF driver runs.
 #include <cassert>
+#include <mutex>
+#include <sys/random.h>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
@@ -10,6 +12,11 @@
 #include "esp_err.h"
 #include "esp_timer.h"
 #include "board.h"
+using SemaphoreHandle_t = std::mutex *;
+inline constexpr int portMAX_DELAY = -1;
+inline SemaphoreHandle_t xSemaphoreCreateMutex() { static std::mutex m; return &m; }
+inline int xSemaphoreTake(SemaphoreHandle_t m, int) { m->lock(); return 1; }
+inline int xSemaphoreGive(SemaphoreHandle_t m) { m->unlock(); return 1; }
 using portMUX_TYPE = int;
 #define portMUX_INITIALIZER_UNLOCKED 0
 #define portENTER_CRITICAL(lock) assert(++*(lock) == 1)
@@ -67,3 +74,5 @@ public:
     int setCrcFiltering(bool) { return 0; }
     int disableAddressFiltering() { return 0; }
 };
+
+inline uint32_t esp_random() { uint32_t n; if (getrandom(&n, sizeof(n), 0) != sizeof(n)) std::abort(); return n; }

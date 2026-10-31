@@ -186,3 +186,45 @@ esp_err_t device_registry_load(radiator_registry *r) {
     }
     return device_registry_save(r);
 }
+
+// Two-byte v1 mode record. A failed write may have reached flash: callers must
+// fail closed and report uncertainty instead of promising rollback.
+esp_err_t device_mode_save(bool enabled) {
+    nvs_handle_t h;
+    esp_err_t e = nvs_open("cleverbox", NVS_READWRITE, &h);
+    if (e != ESP_OK) return e;
+    uint8_t data[2] = {1, enabled ? 1 : 0}, check[2] = {0};
+    e = nvs_set_blob(h, "rf_mode", data, sizeof(data));
+    if (e == ESP_OK) e = nvs_commit(h);
+    size_t n = sizeof(check);
+    if (e == ESP_OK) e = nvs_get_blob(h, "rf_mode", check, &n);
+    if (e == ESP_OK && (n != sizeof(check) || memcmp(data, check, n))) e = ESP_ERR_INVALID_STATE;
+    nvs_close(h);
+    return e;
+}
+esp_err_t device_mode_load(bool *enabled, bool *stored) {
+    *enabled = false; *stored = false;
+    nvs_handle_t h;
+    esp_err_t e = nvs_open("cleverbox", NVS_READONLY, &h);
+    if (e == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    if (e != ESP_OK) return e;
+    uint8_t data[2]; size_t n = sizeof(data);
+    e = nvs_get_blob(h, "rf_mode", data, &n);
+    if (e == ESP_OK) {
+        if (n != sizeof(data) || data[0] != 1 || data[1] > 1) e = ESP_ERR_INVALID_STATE;
+        else { *enabled = data[1] != 0; *stored = true; }
+    } else if (e == ESP_ERR_NVS_NOT_FOUND) {
+        // Presence, even an empty registry or invalid older key, identifies an
+        // installation. Read errors are not evidence of a fresh installation.
+        static const char *keys[] = {"registry", "pairing", "control_state", "wifi", "timezone", "mqtt", "ha_discovery"};
+        bool existing = false;
+        for (size_t i = 0; i < sizeof(keys)/sizeof(keys[0]); ++i) {
+            n = 0; e = nvs_get_blob(h, keys[i], NULL, &n);
+            if (e == ESP_OK) existing = true;
+            else if (e != ESP_ERR_NVS_NOT_FOUND) break;
+        }
+        if (e == ESP_ERR_NVS_NOT_FOUND || e == ESP_OK) { e = ESP_OK; *enabled = existing; }
+    }
+    nvs_close(h);
+    return e;
+}

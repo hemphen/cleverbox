@@ -34,7 +34,7 @@ flowchart TB
 HTTP and MQTT never touch the radio. They validate a request, reserve the
 target radiator and put the request on the radio worker's queue. The worker is
 the only code that drives the CC1101, runs the pairing and command state
-machines and writes the radiator registry.
+machines and writes the radiator registry and operating mode.
 
 ## Components
 
@@ -63,10 +63,96 @@ for compatibility, real-library tests, resources and hardware limits.
 | ESP-MQTT client | 6144 B | 5 | event-driven | socket I/O; callbacks only copy input |
 | `network_setup` | 4096 B | 3 | ≤ 20 ms queue wait | Wi-Fi mode, credentials, AP policy, BOOT button |
 
-Shared radio state (registry records and the status block) is guarded by a
-`portMUX` spinlock. Requests pass to the worker through a FreeRTOS queue of
+Shared radio state, passive caches, mode changes and admission are guarded by a
+task mutex. Template validation and nonblocking queue calls do not disable
+interrupts. The mutex is released before NVS or radio I/O. Requests pass to the worker through a FreeRTOS queue of
 `capacity + 1` entries. MQTT status and input use a second spinlock. Network
 and time status use mutexes. NVS, JSON and network I/O never run inside a lock.
+
+## Operating mode
+
+Fresh installations start **listen-only**. On first boot the decision is saved
+in `rf_mode` before registry migration or later setup can create settings.
+An upgrade without that key retains **control-enabled** if any prior application
+key exists, including an empty registry. This preserves existing installations;
+select listen-only explicitly before passive commissioning on an upgraded unit.
+Corrupt or unreadable mode/settings detection fails closed for RF and reports a
+storage error without erasing or replacing the bad record. An explicit STA mode
+save can repair it. Wi-Fi forget never clears the operating mode.
+
+Mode changes are explicit STA-only requests, queued to the existing worker.
+They reserve admission under the task mutex and are refused while pairing,
+any queued/active command, another mutation or TX is outstanding. Existing
+bounded work finishes normally; retry the transition explicitly. No work is
+discarded, suspended or resumed by a mode change. While mode persistence is
+pending, new pairing and commands are refused. Failed writes close RF, report
+`failed` and persistence uncertainty, and may leave old or new mode bytes in
+flash. Only a verified successful write reports `succeeded`.
+
+HTTP and MQTT use shared admission. The worker also checks mode immediately
+before physical TX and marks TX in progress under the same mutex. Mode admission
+cannot pass while that flag is set. Thus no transmission can begin after
+listen-only is reported active. Enabling control only saves mode; it does not
+pair, poll, adopt a template or create RF work. Network/MQTT events do not change
+mode. Boot never resumes RF work.
+
+## Passive commissioning
+
+The production codec decodes reports regardless of destination controller.
+A RAM observation cache uses the radiator's source RF address as identity and
+retains the latest decoded readings, destination controller and monotonic
+receipt time. Five minutes marks an observation stale. No heating or energy
+fields are added. Observations do not create pairing, authorize commands or
+produce MQTT/HA discovery. Paired command machines still require both their
+saved source and destination addresses to match.
+
+A separate RAM cache retains CRC-valid, structurally valid 59-byte controller
+states by radiator destination, from any source controller and before pairing.
+Reports, acknowledgements and unknown/malformed frames cannot overwrite them.
+Capture uses the codec's existing template validator; active learning retains
+its strict paired-controller source rule. Passive capture neither changes
+active learned/saved templates nor writes flash.
+
+Each cache holds `2 × CLEVERBOX_RADIATOR_CAPACITY` entries (default 16). A known
+address updates in place. Otherwise use the first unused slot, then replace the
+least recently received/captured entry; timestamp ties choose the lowest slot.
+Caches are independent: report traffic cannot evict templates. Full flags and
+saturating eviction counters make the bounds visible. They allocate and write
+no flash per packet. Entries and capture versions clear on reboot. External
+identities are RF addresses, never reusable cache indices.
+
+Every capture gets a version made from a random 64-bit boot nonce and a strictly
+increasing 64-bit sequence. Even identical recaptures change it; sequence
+exhaustion refuses further capture rather than wrapping. Explicit adoption
+requires that version and radiator address, a matching paired ID, STA access,
+and `replace:true` when a saved template exists. Missing/replaced/evicted or
+old-boot versions are rejected. Admission copies the exact selected bytes into
+the existing registry save request under the mutex; later traffic cannot alter
+the queued snapshot. The persistence result names its ID/version. On success,
+adoption saves that template and clears the learned RAM override so the selected
+bytes become the active saved template. On failure the previous templates remain.
+Adoption works in listen-only and sends nothing. Command construction still
+rewrites the source to the paired controller; captured sources grant no control.
+Manual hex import remains available.
+
+Default-capacity host layout measurements: observations 32 B each, candidates
+112 B each, 2304 B for both cache arrays. Requests grow from 136 to 176 B
+(+360 B for the default nine-entry queue). Registry records and the worker's
+state machines do not grow. Mode/status metadata, two 64-bit version counters
+and one startup-allocated task mutex add a small fixed overhead. These are
+layout/bounded-allocation measurements, not runtime heap or stack high-water
+measurements; verify the ESP build and sustained receive on hardware.
+
+The [local workflow](http-api.md#passive-commissioning) supports capture alongside
+Touch E3. Disconnect it before explicit control enable and pairing; pairing can
+reset radiator settings. Genuine reception, independent no-TX proof and
+new-controller template acceptance remain [hardware checks](hardware.md).
+
+The next separate milestone is opt-in HA read-only discovery of selected RF
+addresses, persistent selections, stable bridge/address device identity and
+freshness/availability. Cache replacement must not change a selected identity.
+Transition from observation to control remains explicit. This milestone adds
+none of that discovery or selection persistence.
 
 ## Radiator registry
 
@@ -288,6 +374,7 @@ automatically.
 
 | Key | Layout | Written when |
 | --- | --- | --- |
+| `rf_mode` | v1: version (1), control-enabled flag (0 or 1); 2 bytes | Initial fresh/upgrade decision and explicit STA mode saves |
 | `registry` | v1: version (1), count (LE16), next ID (LE32), then per record: ID (LE32), name (33, NUL-terminated), controller and radiator address (4 + 4), saved flag (1), template (59). Size `7 + 105 × count`. | Pairing saved, rename, remove, template save/import/clear |
 | `pairing` | Legacy v1: version, controller, radiator (9 bytes). Read once for migration, never written. | – |
 | `control_state` | Legacy v1: version, addresses, template (68 bytes) or 9-byte clear marker. Read for migration only. | – |
@@ -356,7 +443,7 @@ observability outside the physical API.
 `--test-clock`, `--test-interfaces` (extra loopback destinations for AP/unknown
 classification). Storage defaults to `local/simulation-pairing.bin`; each NVS key
 gets its own file next to it (`.registry`, `.wifi`, `.mqtt`, `.timezone`,
-`.ha_discovery`). Stop the simulator and delete these files to reset.
+`.ha_discovery`, `.rf_mode`). Stop the simulator and delete these files to reset.
 
 ## Constants
 

@@ -253,7 +253,8 @@ static void route(const input *in) {
                         if (!tracked[i].id) { t = &tracked[i]; break; }
                     // Removed identities are pruned by observations before routing.
                     if (t) { memset(t, 0, sizeof(*t)); t->id = id; t->cookie = cookie; t->request_id = (uint64_t)seq; strcpy(t->session, session); if (token) strcpy(t->command_token, token); }
-                } else if (err == RADIO_ERR_TIME_UNAVAILABLE) reason = "time_unavailable";
+                } else if (err == RADIO_ERR_LISTEN_ONLY) reason = "listen_only";
+                else if (err == RADIO_ERR_TIME_UNAVAILABLE) reason = "time_unavailable";
                 else if (err == ESP_ERR_INVALID_ARG) reason = "invalid_settings_or_template";
                 else reason = "busy_or_unavailable_or_missing_template";
             }

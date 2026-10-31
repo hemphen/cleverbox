@@ -9,6 +9,11 @@
 #include "device_store.h"
 #include "device_time.h"
 #include "freertos/queue.h"
+#ifndef CLEVERBOX_HOST
+#include "freertos/semphr.h"
+#include "esp_random.h"
+#endif
+#include <stdio.h>
 #include <string.h>
 
 #ifdef ESP_PLATFORM
@@ -21,13 +26,22 @@ static IdfHal hal;
 static Module module(&hal, RADIO_CS, RADIO_GDO0, RADIOLIB_NC, RADIO_GDO2);
 static CC1101 radio(&module);
 static radio_status status = {};
-static portMUX_TYPE status_lock = portMUX_INITIALIZER_UNLOCKED;
+// Task mutex: admission validates/copies frames and calls the nonblocking queue
+// API here. Never disable interrupts around FreeRTOS APIs or codec work.
+static SemaphoreHandle_t status_lock;
+static void lock_status() { if (status_lock) xSemaphoreTake(status_lock, portMAX_DELAY); }
+static void unlock_status() { if (status_lock) xSemaphoreGive(status_lock); }
+static bool tx_in_progress;
+static radio_observation observations[RADIO_PASSIVE_CAPACITY];
+static radio_candidate candidates[RADIO_PASSIVE_CAPACITY];
+static uint64_t capture_sequence, capture_boot;
+
 
 extern "C" radio_status radio_transport_status(void)
 {
-    portENTER_CRITICAL(&status_lock);
+    lock_status();
     radio_status copy = status;
-    portEXIT_CRITICAL(&status_lock);
+    unlock_status();
     return copy;
 }
 
@@ -43,22 +57,23 @@ static radiator_record *find_device(uint32_t id) {
     return nullptr;
 }
 extern "C" esp_err_t radio_device_status(uint32_t id, radiator_record *out) {
-    portENTER_CRITICAL(&status_lock);
+    lock_status();
     radiator_record *d = find_device(id);
     if (d) *out = *d;
-    portEXIT_CRITICAL(&status_lock);
+    unlock_status();
     return d ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 extern "C" esp_err_t radio_device_at(size_t index, radiator_record *out) {
-    portENTER_CRITICAL(&status_lock);
+    lock_status();
     bool found = index < registry.count;
     if (found) *out = registry.records[index];
-    portEXIT_CRITICAL(&status_lock);
+    unlock_status();
     return found ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
-enum radio_action { PAIR_START, PAIR_CANCEL, PAIR_SAVE, CONTROL_START, STATE_SAVE, STATE_CLEAR, RENAME, REMOVE };
+enum radio_action { PAIR_START, PAIR_CANCEL, PAIR_SAVE, CONTROL_START, STATE_SAVE, STATE_CLEAR, RENAME, REMOVE, MODE_SET };
 struct radio_request {
     radio_action action; uint32_t id;
+    bool enabled; char adoption_version[33];
     uint8_t controller[4], candidate[4];
     uint8_t state[CONTROLLER_STATE_BYTES];
     rf_mode mode; int centi_c; unsigned clock_seconds;
@@ -71,14 +86,71 @@ static esp_err_t queue_request(const radio_request &r) {
     // Caller still holds admission lock; undo only this request's reservation.
     return ESP_ERR_TIMEOUT;
 }
+static bool rf_allowed() { return status.control_enabled && !status.mode_pending && !status.mode_error; }
+extern "C" esp_err_t radio_mode_set(bool enabled) {
+    radio_request r = {}; r.action = MODE_SET; r.enabled = enabled;
+    lock_status();
+    bool busy = pair_reserved || mutation_pending || status.mode_pending || tx_in_progress;
+    for (size_t i = 0; i < registry.count; ++i) busy |= registry.records[i].command_reserved;
+    esp_err_t e = RADIO_ERR_MODE_BUSY;
+    if (!busy && status.ready && radio_requests) {
+        status.mode_pending = true;
+        e = queue_request(r);
+        if (e == ESP_OK) status.mode_save_result = RADIO_STORE_PENDING;
+        else status.mode_pending = false;
+    }
+    unlock_status(); return e;
+}
+extern "C" esp_err_t radio_observation_at(size_t index, radio_observation *out) {
+    lock_status(); bool found = index < status.observation_count;
+    if (found) *out = observations[index];
+    unlock_status(); return found ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+extern "C" esp_err_t radio_candidate_at(size_t index, radio_candidate *out) {
+    lock_status(); bool found = index < status.candidate_count;
+    if (found) *out = candidates[index];
+    unlock_status(); return found ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+// Owner calls under task mutex. Lowest timestamp wins; ties use the lowest
+// slot. Reports and controller candidates have independent replacement bounds.
+static void capture_passive(const rf_frame &f, const rf_report *report, bool state, int64_t now) {
+    if (report) {
+        size_t slot = status.observation_count;
+        for (size_t i = 0; i < status.observation_count; ++i)
+            if (!memcmp(observations[i].report.source, report->source, 4)) { slot = i; break; }
+        if (slot == RADIO_PASSIVE_CAPACITY) {
+            slot = 0;
+            for (size_t i = 1; i < RADIO_PASSIVE_CAPACITY; ++i)
+                if (observations[i].time_us < observations[slot].time_us) slot = i;
+            if (status.observation_evictions != UINT32_MAX) ++status.observation_evictions;
+        } else if (slot == status.observation_count) ++status.observation_count;
+        observations[slot] = {*report, now};
+    }
+    if (state && capture_sequence != UINT64_MAX) {
+        size_t slot = status.candidate_count;
+        for (size_t i = 0; i < status.candidate_count; ++i)
+            if (!memcmp(candidates[i].state + 6, f.bytes + 6, 4)) { slot = i; break; }
+        if (slot == RADIO_PASSIVE_CAPACITY) {
+            slot = 0;
+            for (size_t i = 1; i < RADIO_PASSIVE_CAPACITY; ++i)
+                if (candidates[i].time_us < candidates[slot].time_us) slot = i;
+            if (status.candidate_evictions != UINT32_MAX) ++status.candidate_evictions;
+        } else if (slot == status.candidate_count) ++status.candidate_count;
+        auto &c = candidates[slot]; memcpy(c.state, f.bytes, CONTROLLER_STATE_BYTES); c.time_us = now;
+        // Even identical bytes get a fresh version: a selection names one exact
+        // capture, never a reusable slot. Refuse wrapping the counter.
+        snprintf(c.version, sizeof(c.version), "%016llX%016llX",
+                 (unsigned long long)capture_boot, (unsigned long long)++capture_sequence);
+    }
+}
 extern "C" esp_err_t radio_pair_start(const uint8_t controller[4], const uint8_t candidate[4], uint32_t *id) {
     rf_pairing check = {};
     if (!rf_pair_start(&check, controller, candidate, esp_timer_get_time() / 1000)) return ESP_ERR_INVALID_ARG;
     radio_request r = {}; r.action = PAIR_START; r.admitted_ms = esp_timer_get_time() / 1000;
     memcpy(r.controller, controller, 4); memcpy(r.candidate, candidate, 4);
-    portENTER_CRITICAL(&status_lock);
-    esp_err_t result = ESP_ERR_INVALID_STATE;
-    if (status.ready && radio_requests && !status.registry_error && !exchange_id && !mutation_pending &&
+    lock_status();
+    esp_err_t result = rf_allowed() ? ESP_ERR_INVALID_STATE : RADIO_ERR_LISTEN_ONLY;
+    if (rf_allowed() && status.ready && radio_requests && !status.registry_error && !exchange_id && !mutation_pending &&
         registry.count < CLEVERBOX_RADIATOR_CAPACITY && registry.next_id != UINT32_MAX) {
         bool commands_outstanding = false;
         for (size_t i = 0; i < registry.count; ++i) commands_outstanding |= registry.records[i].command_reserved;
@@ -89,11 +161,11 @@ extern "C" esp_err_t radio_pair_start(const uint8_t controller[4], const uint8_t
             else { status.pairing_duplicate = false; status.pairing_id = r.id; status.exchange_id = r.id; *id = r.id; }
         }
     }
-    portEXIT_CRITICAL(&status_lock); return result;
+    unlock_status(); return result;
 }
 static esp_err_t pair_action(uint32_t id, radio_action action) {
     radio_request r = {}; r.action = action;
-    portENTER_CRITICAL(&status_lock);
+    lock_status();
     // Legacy no-id action is allowed only for the unambiguous pending inclusion.
     if (!id && registry.count <= 1) id = status.pairing_id;
     esp_err_t result = ESP_ERR_INVALID_STATE;
@@ -101,17 +173,17 @@ static esp_err_t pair_action(uint32_t id, radio_action action) {
         (action != PAIR_SAVE || (!exchange_pending && !status.pairing_saved && status.pairing.phase == RF_PAIR_COMPLETE))) {
         r.id = id; result = queue_request(r);
     }
-    portEXIT_CRITICAL(&status_lock); return result;
+    unlock_status(); return result;
 }
 extern "C" esp_err_t radio_pair_cancel(uint32_t id) { return pair_action(id, PAIR_CANCEL); }
 extern "C" esp_err_t radio_pair_save(uint32_t id) { return pair_action(id, PAIR_SAVE); }
 static esp_err_t control_start_at(uint32_t id, const rf_control_request *request, int64_t admitted_ms, uint64_t cookie = 0) {
     if (!request) return ESP_ERR_INVALID_ARG;
     radio_request r = {}; r.action = CONTROL_START; r.admitted_ms = admitted_ms; rf_control_request chosen = *request;
-    portENTER_CRITICAL(&status_lock);
+    lock_status();
     radiator_record *d = find_device(id);
-    esp_err_t result = ESP_ERR_INVALID_STATE;
-    if (d && status.ready && radio_requests && !status.registry_error && !pair_reserved && !d->command_reserved && !mutation_pending) {
+    esp_err_t result = rf_allowed() ? ESP_ERR_INVALID_STATE : RADIO_ERR_LISTEN_ONLY;
+    if (d && rf_allowed() && status.ready && radio_requests && !status.registry_error && !pair_reserved && !d->command_reserved && !mutation_pending) {
         if (!chosen.state.size) {
             const uint8_t *bytes = d->has_control_template ? d->control_template :
                 d->has_saved_template ? d->saved_template : nullptr;
@@ -138,7 +210,7 @@ static esp_err_t control_start_at(uint32_t id, const rf_control_request *request
             }
         }
     }
-    portEXIT_CRITICAL(&status_lock); return result;
+    unlock_status(); return result;
 }
 extern "C" esp_err_t radio_control_start(uint32_t id, const rf_control_request *request) {
     return control_start_at(id, request, esp_timer_get_time() / 1000);
@@ -148,24 +220,41 @@ extern "C" esp_err_t radio_control_start_device(uint32_t id, const rf_control_re
 }
 extern "C" esp_err_t radio_control_start_device_tracked(uint32_t id, const rf_control_request *request, uint64_t cookie) {
     if (!request) return ESP_ERR_INVALID_ARG;
+    lock_status(); bool allowed = rf_allowed(); unlock_status();
+    if (!allowed) return RADIO_ERR_LISTEN_ONLY;
     rf_control_request chosen = *request; int64_t sampled_ms;
     if (!device_time_command_clock(&chosen.clock_seconds, &sampled_ms)) return RADIO_ERR_TIME_UNAVAILABLE;
     return control_start_at(id, &chosen, sampled_ms, cookie);
 }
-static esp_err_t enqueue_mutation(uint32_t id, radio_action action, const rf_frame *imported, const char *name) {
+static esp_err_t enqueue_mutation(uint32_t id, radio_action action, const rf_frame *imported, const char *name, const uint8_t *radiator = nullptr, const char *version = nullptr, bool replace = false) {
     radio_request r = {}; r.action = action;
     if (name) {
         if (!*name || strlen(name) > RADIATOR_NAME_BYTES) return ESP_ERR_INVALID_ARG;
         for (const char *c = name; *c; ++c) if ((unsigned char)*c < 32 || *c == 127) return ESP_ERR_INVALID_ARG;
         memcpy(r.name, name, strlen(name) + 1);
     }
-    portENTER_CRITICAL(&status_lock);
+    lock_status();
     radiator_record *d = find_device(id);
     esp_err_t result = ESP_ERR_INVALID_STATE;
-    if (d && status.ready && radio_requests && !mutation_pending &&
+    if (d && status.ready && radio_requests && !mutation_pending && !status.mode_pending &&
         (!status.registry_error || (d->state_load_error && (action == STATE_SAVE || action == STATE_CLEAR))) &&
         !(action == REMOVE && d->command_reserved)) {
         result = ESP_OK; r.id = d->id;
+        rf_frame captured = {};
+        if (version) {
+            result = RADIO_ERR_CANDIDATE_CHANGED;
+            for (size_t i = 0; i < status.candidate_count; ++i) {
+                const auto &c = candidates[i];
+                if (!strcmp(c.version, version) && !memcmp(c.state + 6, radiator, 4)) {
+                    captured.size = CONTROLLER_STATE_BYTES; memcpy(captured.bytes, c.state, CONTROLLER_STATE_BYTES);
+                    imported = &captured; result = ESP_OK; break;
+                }
+            }
+            if (result == ESP_OK && memcmp(radiator, d->pair.radiator, 4)) result = ESP_ERR_INVALID_ARG;
+            if (result == ESP_OK && d->has_saved_template && !replace) result = RADIO_ERR_REPLACE_REQUIRED;
+            if (result != ESP_OK) { unlock_status(); return result; }
+            memcpy(r.adoption_version, version, sizeof(r.adoption_version));
+        }
         if (action == STATE_SAVE) {
             if (imported) {
                 if (imported->size == CONTROLLER_STATE_BYTES) memcpy(r.state, imported->bytes, CONTROLLER_STATE_BYTES);
@@ -188,15 +277,25 @@ static esp_err_t enqueue_mutation(uint32_t id, radio_action action, const rf_fra
                 status.mutation_error = 0; status.mutation_pending = true;
                 if (action == STATE_SAVE) d->state_save_result = RADIO_STORE_PENDING;
                 if (action == STATE_CLEAR) d->state_clear_result = RADIO_STORE_PENDING;
+                if (version) {
+                    status.adoption_id = d->id;
+                    memcpy(status.adoption_version, version, sizeof(status.adoption_version));
+                    status.adoption_result = RADIO_STORE_PENDING; status.adoption_error = 0;
+                }
             }
         }
     }
-    portEXIT_CRITICAL(&status_lock); return result;
+    unlock_status(); return result;
 }
 extern "C" esp_err_t radio_state_save(uint32_t id, const rf_frame *f) { return enqueue_mutation(id, STATE_SAVE, f, nullptr); }
 extern "C" esp_err_t radio_state_clear(uint32_t id) { return enqueue_mutation(id, STATE_CLEAR, nullptr, nullptr); }
 extern "C" esp_err_t radio_device_rename(uint32_t id, const char *name) { return name ? enqueue_mutation(id, RENAME, nullptr, name) : ESP_ERR_INVALID_ARG; }
 extern "C" esp_err_t radio_device_remove(uint32_t id) { return enqueue_mutation(id, REMOVE, nullptr, nullptr); }
+
+extern "C" esp_err_t radio_candidate_adopt(uint32_t id, const uint8_t radiator[4], const char *version, bool replace) {
+    if (!radiator || !version || strlen(version) != 32) return ESP_ERR_INVALID_ARG;
+    return enqueue_mutation(id, STATE_SAVE, nullptr, nullptr, radiator, version, replace);
+}
 
 static int transmit_frame(const rf_frame &frame, int &rx_result)
 {
@@ -204,6 +303,12 @@ static int transmit_frame(const rf_frame &frame, int &rx_result)
         rx_result = RADIOLIB_ERR_NONE;
         return ESP_ERR_INVALID_ARG;
     }
+    // Final boundary serializes with mode admission. tx_in_progress prevents
+    // acknowledging a transition during the entire physical transmission.
+    lock_status();
+    if (!rf_allowed()) { unlock_status(); rx_result = RADIOLIB_ERR_NONE; return RADIO_ERR_LISTEN_ONLY; }
+    tx_in_progress = true;
+    unlock_status();
     // Poll, inclusion and 59-byte controller-state frames all fit in the FIFO. Fixed length sends our complete envelope
     // without RadioLib adding another length byte or a hardware CRC.
     int result = radio.standby();
@@ -214,6 +319,7 @@ static int transmit_frame(const rf_frame &frame, int &rx_result)
     if (rx_result == RADIOLIB_ERR_NONE)
         rx_result = module.SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL0, 2, 1, 0);
     if (rx_result == RADIOLIB_ERR_NONE) rx_result = radio.startReceive();
+    lock_status(); tx_in_progress = false; unlock_status();
     return result != RADIOLIB_ERR_NONE ? result : rx_result;
 }
 
@@ -226,9 +332,9 @@ static void save_pair(const rf_pairing &pair, bool &saved, int &error) {
     memcpy(d.pair.controller, pair.controller, 4); memcpy(d.pair.radiator, pair.radiator, 4);
     error = device_registry_save_record(&registry, &d, 0); saved = error == ESP_OK;
     if (saved) {
-        portENTER_CRITICAL(&status_lock);
+        lock_status();
         registry.records[registry.count++] = d; registry.next_id = d.id + 1;
-        portEXIT_CRITICAL(&status_lock);
+        unlock_status();
     }
 }
 
@@ -256,7 +362,7 @@ struct radio_worker {
     int control_errors[CLEVERBOX_RADIATOR_CAPACITY] = {};
     size_t next_device = 0; // Round-robin choice among frames ready for TX.
     void publish() {
-        portENTER_CRITICAL(&status_lock);
+        lock_status();
         status.pairing = pair; status.pairing_saved = saved; status.pairing_error = pair_error;
         for (size_t i = 0; i < registry.count; ++i) {
             radiator_record &d = registry.records[i];
@@ -275,12 +381,12 @@ struct radio_worker {
             exchange_id = 0; pair_reserved = false;
         }
         status.exchange_id = exchange_id; status.device_count = registry.count;
-        portEXIT_CRITICAL(&status_lock);
+        unlock_status();
     }
     void fail(int error) {
         // The worker is about to stop. Queued commands have not reached controls[]
         // yet, so terminate reservations in the registry as well as active machines.
-        portENTER_CRITICAL(&status_lock);
+        lock_status();
         for (size_t i = 0; i < registry.count; ++i) {
             radiator_record &d = registry.records[i];
             if (d.state_save_result == RADIO_STORE_PENDING || d.state_clear_result == RADIO_STORE_PENDING) {
@@ -300,16 +406,34 @@ struct radio_worker {
             pair_reserved = exchange_pending = false;
             exchange_id = status.exchange_id = 0;
         }
+        if (status.mode_pending) {
+            status.mode_pending = false; status.control_enabled = false;
+            status.mode_error = error; status.mode_save_result = RADIO_STORE_FAILED;
+        }
+        if (status.adoption_result == RADIO_STORE_PENDING) {
+            status.adoption_result = RADIO_STORE_FAILED; status.adoption_error = error;
+        }
         if (mutation_pending) {
             status.mutation_error = error;
             mutation_pending = status.mutation_pending = false;
         }
-        portEXIT_CRITICAL(&status_lock);
+        unlock_status();
     }
     void step() {
         radio_request request;
         if (xQueueReceive(radio_requests, &request, 0) == pdPASS) {
-            if (request.action >= STATE_SAVE) {
+            if (request.action == MODE_SET) {
+                int result = device_mode_save(request.enabled);
+                lock_status();
+                // Failed persistence always closes RF, including a failed disable
+                // that might have reached NVS. Never report a durable success.
+                status.control_enabled = result == ESP_OK && request.enabled;
+                status.mode_error = result;
+                status.mode_persistence_uncertain = result != ESP_OK;
+                status.mode_save_result = result == ESP_OK ? RADIO_STORE_OK : RADIO_STORE_FAILED;
+                status.mode_pending = false;
+                unlock_status();
+            } else if (request.action >= STATE_SAVE) {
                 radiator_record *d = find_device(request.id);
                 int result = ESP_ERR_NOT_FOUND;
                 if (d) {
@@ -322,7 +446,7 @@ struct radio_worker {
                     }
                     result = device_registry_save_record(&registry, request.action == REMOVE ? nullptr : &changed,
                                                         request.action == REMOVE ? d->id : 0);
-                    portENTER_CRITICAL(&status_lock);
+                    lock_status();
                     if (result == ESP_OK) {
                         if (request.action == REMOVE) {
                             size_t index = d - registry.records;
@@ -333,7 +457,7 @@ struct radio_worker {
                             next_device = 0;
                         } else {
                             *d = changed; d->state_load_error = 0;
-                            if (request.action == STATE_CLEAR) {
+                            if (request.action == STATE_CLEAR || request.adoption_version[0]) {
                                 d->has_control_template = false; memset(d->control_template, 0, sizeof(d->control_template));
                                 d->control_template_time_us = 0;
                             }
@@ -345,11 +469,15 @@ struct radio_worker {
                             result == ESP_OK ? RADIO_STORE_OK : RADIO_STORE_FAILED;
                     }
                     if (result == ESP_OK) status.registry_error = 0;
-                    portEXIT_CRITICAL(&status_lock);
+                    unlock_status();
                 }
-                portENTER_CRITICAL(&status_lock);
+                lock_status();
+                if (request.adoption_version[0]) {
+                    status.adoption_result = result == ESP_OK ? RADIO_STORE_OK : RADIO_STORE_FAILED;
+                    status.adoption_error = result;
+                }
                 status.mutation_error = result; mutation_pending = status.mutation_pending = false;
-                portEXIT_CRITICAL(&status_lock);
+                unlock_status();
             } else if (request.action == CONTROL_START) {
                 radiator_record *d = find_device(request.id);
                 if (d) {
@@ -359,11 +487,11 @@ struct radio_worker {
                     command.mode = request.mode; command.centi_c = request.centi_c; command.clock_seconds = request.clock_seconds;
                     bool started = rf_control_start(&controls[index], &command, d->pair.controller, d->pair.radiator,
                                                     request.admitted_ms);
-                    portENTER_CRITICAL(&status_lock);
+                    lock_status();
                     d->command_pending = false;
                     if (started) control_errors[index] = 0;
                     else { d->command_reserved = false; d->control = {}; }
-                    portEXIT_CRITICAL(&status_lock);
+                    unlock_status();
                 }
             } else if (request.action == PAIR_CANCEL && request.id == exchange_id && pair_reserved) {
                 rf_pair_cancel(&pair);
@@ -372,7 +500,7 @@ struct radio_worker {
                 save_pair(pair, saved, pair_error);
             else if (request.action == PAIR_START) {
                 saved = false; pair_error = 0; pair = {};
-                portENTER_CRITICAL(&status_lock); exchange_pending = false; portEXIT_CRITICAL(&status_lock);
+                lock_status(); exchange_pending = false; unlock_status();
                 rf_pair_start(&pair, request.controller, request.candidate, request.admitted_ms);
             }
         }
@@ -418,10 +546,10 @@ struct radio_worker {
                 control_errors[chosen] = tx_result;
                 rf_control_sent(&controls[chosen], esp_timer_get_time() / 1000, tx_result == 0);
             }
-            portENTER_CRITICAL(&status_lock);
+            lock_status();
             status.error = rx_result;
             status.ready = rx_result == RADIOLIB_ERR_NONE;
-            portEXIT_CRITICAL(&status_lock);
+            unlock_status();
         }
         if (!radio_transport_status().ready) { fail(status.error); return; }
         publish();
@@ -484,7 +612,7 @@ struct radio_worker {
                         for (size_t i = 0; i < registry.count; ++i)
                             if (!memcmp(registry.records[i].pair.radiator, pair.radiator, 4)) {
                                 pair.phase = RF_PAIR_ERROR; pair_error = ESP_ERR_INVALID_STATE;
-                                portENTER_CRITICAL(&status_lock); status.pairing_duplicate = true; portEXIT_CRITICAL(&status_lock);
+                                lock_status(); status.pairing_duplicate = true; unlock_status();
                             }
                     }
                     if (before != RF_PAIR_COMPLETE && pair.phase == RF_PAIR_COMPLETE)
@@ -492,7 +620,8 @@ struct radio_worker {
                     // Receive ownership is determined by both addresses, never UI selection.
                     rf_frame checked_state = {};
                     bool state_frame = valid && rf_set_target(&checked_state, &frame, RF_OFF, 0);
-                    portENTER_CRITICAL(&status_lock);
+                    lock_status();
+                    capture_passive(frame, decoded ? &report : nullptr, state_frame, now);
                     for (size_t i = 0; i < registry.count; ++i) {
                         radiator_record &d = registry.records[i];
                         if (state_frame && !memcmp(frame.bytes + 1, d.pair.controller, 4) &&
@@ -525,7 +654,7 @@ struct radio_worker {
                             status.report_time_us = now;
                         }
                     } else ++status.invalid_frames;
-                    portEXIT_CRITICAL(&status_lock);
+                    unlock_status();
                     restart = true;
                 }
             }
@@ -536,11 +665,11 @@ struct radio_worker {
         if (restart) {
             if (result == RADIOLIB_ERR_NONE)
                 result = radio.startReceive(); // standby, flush, re-enter RX
-            portENTER_CRITICAL(&status_lock);
+            lock_status();
             if (receive_error) ++status.receive_errors;
             status.error = result;
             status.ready = result == RADIOLIB_ERR_NONE;
-            portEXIT_CRITICAL(&status_lock);
+            unlock_status();
             if (result != RADIOLIB_ERR_NONE) {
                 ESP_LOGE("radio", "Receive failed: %d", result);
                 fail(result); return;
@@ -564,7 +693,22 @@ static void receive_task(void *)
 
 extern "C" void radio_transport_start(void)
 {
+    status_lock = xSemaphoreCreateMutex();
+    if (!status_lock) { status.error = ESP_ERR_NO_MEM; return; }
     status.capacity = CLEVERBOX_RADIATOR_CAPACITY;
+    observations[0] = {}; candidates[0] = {};
+    status.observation_count = status.candidate_count = 0;
+    capture_sequence = 0;
+    capture_boot = ((uint64_t)esp_random() << 32) | esp_random();
+    bool enabled = false, stored = false;
+    int mode_result = device_mode_load(&enabled, &stored);
+    // Commit the initial decision before registry migration or other setup
+    // creates keys that could make a fresh passive device look like an upgrade.
+    if (mode_result == ESP_OK && !stored) mode_result = device_mode_save(enabled);
+    status.control_enabled = mode_result == ESP_OK && enabled;
+    status.mode_error = mode_result;
+    status.mode_persistence_uncertain = mode_result != ESP_OK;
+    status.mode_save_result = mode_result == ESP_OK ? RADIO_STORE_OK : RADIO_STORE_FAILED;
     int load_result = device_registry_load(&registry);
     status.registry_error = load_result;
     status.device_count = registry.count;

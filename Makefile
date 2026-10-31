@@ -22,13 +22,18 @@ test:
 	  firmware/components/device_store/test/test_store.c -o $(BUILD_DIR)/test_store
 	./$(BUILD_DIR)/test_store
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ihost/include -Ifirmware/components/device_store/include -Ifirmware/components/radiator_protocol/include \
+	  firmware/components/radiator_protocol/radiator_protocol.c firmware/components/device_store/device_store.c \
+	  firmware/components/device_store/test/test_mode_store.c -o $(BUILD_DIR)/test_mode_store
+	./$(BUILD_DIR)/test_mode_store
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
 	  -Ifirmware/components/radiator_protocol/include \
 	  firmware/components/radiator_protocol/radiator_protocol.c \
 	  firmware/components/radiator_protocol/radiator_control.c \
 	  firmware/components/radiator_protocol/test/test_control.c -o $(BUILD_DIR)/test_control
 	./$(BUILD_DIR)/test_control
 	@for header in RadioLib.h esp_err.h esp_log.h esp_timer.h esp_rom_sys.h \
-	  driver/gpio.h driver/spi_master.h freertos/FreeRTOS.h freertos/task.h freertos/queue.h; do \
+	  driver/gpio.h driver/spi_master.h freertos/FreeRTOS.h freertos/task.h freertos/queue.h freertos/semphr.h esp_random.h; do \
 	  mkdir -p $(BUILD_DIR)/transport_stubs/$$(dirname $$header); \
 	  printf '#include "transport_stubs.h"\n' > $(BUILD_DIR)/transport_stubs/$$header; done
 	$(CC) $(CPPFLAGS) -std=c11 -Ifirmware/components/radiator_protocol/include \
@@ -122,6 +127,7 @@ simulate: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/serve.py
 
 test-http: host test-http-physical
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_passive.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_http.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_registry.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_network.py
