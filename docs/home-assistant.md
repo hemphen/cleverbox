@@ -222,7 +222,7 @@ expiry applies independently. Device and entity IDs do not change, and no new
 health entity is added.
 
 The optional package's existing `Cleverbox ready` now follows the bridge
-snapshot's `control_ready`, with 15-second expiry and broker availability.
+snapshot's `radio_ready`, with 15-second expiry and broker availability.
 Apply becomes unavailable during an outage and the shared command admission
 still rejects unavailable RF. Deploy the updated package for this UI behavior.
 Retry through the local STA page; recovery, HA birth, broker reconnect and reboot

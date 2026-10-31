@@ -31,7 +31,7 @@ mqtt:
     - name: Cleverbox ready
       unique_id: cleverbox_020000000001_ready
       state_topic: cleverbox/v1/020000000001/bridge
-      value_template: "{{ 'online' if value_json.control_ready else 'offline' }}"
+      value_template: "{{ 'online' if value_json.radio_ready else 'offline' }}"
       expire_after: 15
       availability_topic: cleverbox/v1/020000000001/availability
       payload_on: online
