@@ -16,6 +16,7 @@ tested on the board.
 | --- | --- | --- |
 | Listen-only mode, passive inventory and retained template capture | Tested | Not tested |
 | Receive and decode radiator reports | Tested | Not tested |
+| Bounded radio recovery and health diagnostics | Tested | Not tested |
 | Pair radiators (one at a time, up to 8) | Tested | Not tested |
 | Set target and mode, confirmed by radiator readback | Tested | Not tested |
 | Wi-Fi setup, setup access point and button recovery | Tested | Not tested |
@@ -62,10 +63,10 @@ clock. See [architecture](docs/architecture.md#templates).
   SNTP or by hand on the station interface. Physical `POST /api/command`
   rejects `clock_seconds`; only the host simulator accepts that test override
   ([Time](docs/architecture.md#time)).
-- If the radio cannot be initialised, or restoring reception fails at runtime,
-  the radio task stops until the next reboot. A transmit failure ends only the
-  affected command; receive errors are counted and reception restarts
-  ([Receive path](docs/architecture.md#receive-path)).
+- Observable radio faults close RF admission and trigger a finite recovery batch.
+  Exhaustion requires **Retry radio** on the station interface. Recovery sends
+  nothing and never resumes failed work. Silent RF/bus failures without a driver
+  error cannot always be detected. See [recovery bounds and limits](docs/architecture.md#radio-health-and-recovery).
 
 ## Quick start
 

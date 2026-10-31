@@ -86,7 +86,7 @@ void simulated_transmit(const uint8_t *p, size_t n) {
     }
 }
 extern "C" void simulation_init(void) {
-    radio_transport_start(); worker = new radio_worker;
+    radio_transport_start(); worker = new radio_worker; worker->step();
     // Saved pairing belongs to the application; a simulated radiator remembers
     // its bind across process restarts. No boot report or automatic TX.
     for (auto &d : devices) for (size_t i = 0; i < registry.count; ++i)
@@ -131,4 +131,14 @@ extern "C" void simulation_status(cJSON *j) {
     cJSON_AddNumberToObject(j, "simulation_time_ms", now_us / 1000);
     cJSON *tx = cJSON_AddArrayToObject(j, "simulation_tx");
     for (const auto &s : transmissions) cJSON_AddItemToArray(tx, cJSON_CreateString(s.c_str()));
+}
+
+// Fault injection changes only adapter returns; production worker owns policy.
+extern "C" int simulation_radio_fault(const char *stage, int code) {
+    if (!strcmp(stage,"initialize")) injected_begin=code;
+    else if (!strcmp(stage,"receive")) injected_receive=code;
+    else if (!strcmp(stage,"transmit")) injected_tx=code;
+    else if (!strcmp(stage,"spi")) injected_spi=code;
+    else return 0;
+    return 1;
 }

@@ -15,7 +15,7 @@ remain redacted. POST admission is:
 | --- | --- | --- | --- |
 | `/api/network` (configure, forget, finish_recovery) | Allowed | Allowed | Denied |
 | `/api/pairing`, `/api/command`, `/api/controller-state`, `/api/radiators` | Denied | Allowed | Denied |
-| `/api/commissioning`, `/api/time`, `/api/mqtt`, `/api/preview` | Denied | Allowed | Denied |
+| `/api/radio`, `/api/commissioning`, `/api/time`, `/api/mqtt`, `/api/preview` | Denied | Allowed | Denied |
 
 Denial returns `403` with an explanation and requests socket closure, before
 any handler, queued work, persistence change or RF request. The UI disables
@@ -59,6 +59,7 @@ is neither HTTP authentication nor a network firewall.
 | Method and path | Body limit | Purpose |
 | --- | --- | --- |
 | `GET /api/commissioning`, `POST /api/commissioning` | 255 B | Passive diagnostics, monitoring selections and explicit operating mode |
+| `POST /api/radio` | 63 B | Explicit retry of an exhausted radio |
 | `GET /api/radio[?id=N]` | – | Radio diagnostics, all radiators, one selected radiator |
 | `GET /api/radiators` | – | Same response as `/api/radio` |
 | `POST /api/radiators` | 255 B | Select, rename, remove |
@@ -174,6 +175,33 @@ Optional query `?id=N` selects a radiator; unknown IDs return `404`.
 
 `last_frame` and `report` are global diagnostics, not the selected radiator's
 observation.
+
+### Radio health
+
+`GET /api/radio` also returns:
+
+| Field | Meaning |
+| --- | --- |
+| `health` | `initializing`, `ready`, `recovering`, `faulted` |
+| `ready` | Radio setup and entry to RX succeeded; independent of traffic |
+| `control_ready` | Global radio/mode/registry/pairing/mutation/clock gates permit commands; device busy/template checks still apply |
+| `failure_stage`, `failure_code` | Last failure, retained after success: `none`, `initialize`, `receive`, `transmit`, `rx_restore`, `resources` and underlying code |
+| `recovery_attempt`, `recovery_attempt_limit` | Current/last batch attempt and fixed limit 4 |
+| `recovery_attempts`, `recovery_successes` | Saturating lifetime setup-attempt and successful-recovery counters; initial success is not a recovery |
+| `retry_in_ms` | Monotonic delay until next attempt, or null when ready, exhausted or initial setup is in progress |
+| `retry_pending`, `retry_allowed` | Explicit retry queued; exhausted radio with a running worker may accept a retry |
+
+`POST /api/radio` requires exactly `{"action":"retry"}`. STA admission is
+checked before parsing; AP/unknown POST returns `403`. `202` reserves one new
+batch; poll health for its outcome. Ready, recovering, repeated requests or
+missing worker return `409`. The UI's **Retry radio** uses this action. It sends
+nothing and resumes no failed command or pairing. Local configuration actions
+can continue during radio failure; check their actual save outcomes separately.
+
+`command.error` or `inclusion.error` `0x730A` means physical delivery is uncertain,
+not a confirmed failure to send. Inspect `failure_stage/code` for the cause.
+Reported observations keep their original ages during recovery. A global
+`ready:false` distinguishes radio failure from a quiet radiator.
 
 ### Radiator object
 

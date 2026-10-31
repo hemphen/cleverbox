@@ -138,6 +138,7 @@ simulate: host
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/serve.py
 
 test-http: host test-http-physical
+	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_radio_health.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_passive_ha.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_passive.py
 	CLEVERBOX_SIM_LIBRARY=$(abspath $(BUILD_DIR)/host/libcleverbox.so) python3 host/test_http.py

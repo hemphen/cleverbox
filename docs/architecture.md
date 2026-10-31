@@ -346,9 +346,113 @@ whose source and destination match a record's radiator and controller addresses
 becomes that radiator's observation and feeds its command machine. Observations
 older than 5 minutes are marked `stale`.
 
-If the CC1101 cannot be set up at boot, HTTP stays available and `ready` is
-false. If restarting reception fails at runtime, every outstanding command ends
-with `error` and the radio task stops until reboot.
+## Radio health and recovery
+
+The existing worker owns initial radio setup, every SPI transaction and recovery.
+Startup creates that worker even when the first CC1101 setup fails. HTTP, Wi-Fi
+and MQTT run independently. No additional worker, queue, ISR or radio wiring is
+introduced. RadioLib stays pinned to 7.8.1 and the packet profile is unchanged.
+
+Health is `initializing`, `ready`, `recovering` or `faulted`. `ready` means setup
+and entry to RX succeeded, not that any radiator has been heard. Driver/resource
+allocation failures before the worker exists report `faulted`/`resources`; an
+explicit radio retry cannot repair failed task or mutex allocation.
+
+Each automatic batch has **four setup attempts**. Boot attempts immediately;
+a runtime fault waits one second before its first attempt. Failed attempts wait
+**1, 2 and 4 seconds**, measured from completion, before the next attempt.
+After attempt four there is no automatic retry. The initial batch therefore
+has seven seconds of backoff; a runtime batch has eight, plus setup durations
+and task scheduling. A successfully recovered radio gets a fresh batch on a
+new independent fault. Counters saturate at `UINT32_MAX`.
+
+Only `POST /api/radio` with `{"action":"retry"}` on STA can start a new batch
+after exhaustion. It reserves the retry under the admission mutex. Duplicate
+requests while pending/recovering or requests while ready return `409`.
+Retry neither changes RF mode nor creates pairing, polls or commands.
+
+A fault closes RF admission, records its stage/code and ends all outstanding
+commands and pairing. RF handoffs still in the bounded queue are removed.
+Reservations clear; successful recovery never resumes them. Other queued
+local actions keep their order and run normally, including during exhaustion.
+Their pending/save results describe the actual persistence call, not radio
+health. A validated matching report remains matched if RX restoration then fails.
+An inclusion already saved successfully remains complete/saved even
+if restoring RX immediately after its acknowledgement fails. Unsaved pairing
+work ends; retry pairing explicitly. IDs, pairings, templates, selections and
+all unrelated storage survive recovery unchanged.
+
+An error before entering `transmit()` is a failure to attempt that frame.
+Once that call starts, a failure or failed RX restoration reports
+`RADIO_ERR_DELIVERY_UNCERTAIN` (`0x730A`) for that command/pairing: bytes may
+already have gone on air. Commands which previously attempted a state frame
+also report uncertainty when ended by another radio fault. The underlying
+failure remains in radio stage/code diagnostics. No error confirms radiator
+settings; later matching reports can still reconcile results without sending.
+
+### Failure boundaries
+
+| Path | Handling |
+| --- | --- |
+| Initial detection/configuration or entry to RX fails | Finite setup batch; network interfaces remain running |
+| Partial/truncated frame, overflow, invalid count, unstable count, bad CRC | Existing bounded FIFO cleanup; no reinitialization if RX restoration succeeds |
+| Receive standby/startReceive/register operation fails | End RF work, discard partial software frame, recover |
+| SPI init/add/start/completion returns an error, or operation deadline expires | Sticky HAL error suppresses further SPI for that operation; recover before accepting any read bytes |
+| TX preparation, blocking TX or post-TX RX restoration fails | End RF work with delivery uncertainty where appropriate; recover even if RX restoration itself succeeded |
+
+Every setup attempt reapplies the established frequency/modulation/packet
+configuration and enters RX. It transmits no probe and does not update report
+or candidate timestamps. Partial bytes are discarded; previously validated
+observations remain available for inspection with their original age.
+
+### Adapter bounds and limits
+
+The HAL replaces aborting SPI `ESP_ERROR_CHECK` calls with a sticky error.
+It checks owner-operation deadlines of **1200 ms for setup**, **250 ms for
+receive service/final idle sampling**, and **1000 ms for TX and restoration**.
+These suppress further SPI; they do not unwind a library call. RadioLib's
+reachable waits are separately finite: ten chip-detection reads with 10 ms
+delays, 100 ms standby, 1600 µs TX calibration, short-packet GDO deadlines and
+register readback checks. HAL `yield()` gives other tasks a tick. The unbounded
+large-packet refill stable-count loop is unreachable because every transmitted
+frame is fixed length and at most 64 bytes with address filtering disabled.
+
+SPI completion uses `spi_device_polling_end` with `pdMS_TO_TICKS(20)+1`, allowing
+one extra driver timeout tick. A timed-out transaction's descriptor and two
+64-byte buffers stay in the static HAL. No later attempt reuses them until
+completion is confirmed. A still-stuck transaction consumes an attempt without
+issuing another transfer. The driver bus/device live for the worker lifetime;
+RadioLib detection failure cannot tear down an in-flight transaction.
+
+ESP-IDF 5.5.1 rejects finite acquire/start timeout arguments ([driver source](https://github.com/espressif/esp-idf/blob/v5.5.1/components/esp_driver_spi/src/gpspi/spi_master.c)).
+The HAL acquires SPI2 once in the owner. There is exactly one device, no queued
+SPI transfers and no competing bus owner; polling start has no background work
+to await. This is an ownership invariant, not a hard cancellation guarantee for
+an arbitrary driver deadlock. IDF's internal assertions, a stalled scheduler,
+memory corruption or a driver call that never returns cannot be caught by this
+policy. No forced task deletion, bus teardown or watchdog disabling is used.
+A permanently broken bus/radio can exhaust the budget and require hardware
+repair/reset. A bus returning plausible zeros or a silent RF front end may
+produce no observable error; quiet traffic alone never triggers recovery.
+
+### Health and observations
+
+[HTTP diagnostics](http-api.md#radio-health) and the existing MQTT bridge
+snapshot expose health, readiness, last failure, attempts/successes and retry
+timing. Only fault transitions and setup outcomes log; receive cleanup uses
+saturating counters rather than per-packet error logs. Historical last failure
+stays visible after success; `error` clears when ready.
+
+HA reading sensors become unavailable on a radio outage. Existing freshness
+entities show off with radio-health attributes; report-age and result diagnostics
+remain visible. Snapshots retain the original readings and ages. Recovery can
+make a still-young reading available again, but cannot make an expired one fresh.
+The normal five-minute monotonic age rule and 15-second publication-loss expiry
+still apply. There is no added HA entity. See [HA semantics](home-assistant.md#radio-outages).
+
+These guarantees are covered by software fault injection, not physical bus/RF
+measurements. Run the [hardware recovery checks](hardware.md#radio-fault-acceptance)
+before unattended installation.
 
 ## Time
 
@@ -505,6 +609,8 @@ gets its own file next to it (`.registry`, `.wifi`, `.mqtt`, `.timezone`,
 | 1 s | Delay before bind |
 | 100 ms | Incomplete-frame receive timeout |
 | 1 ms | Radio worker poll interval |
+| 4 | Radio setup attempts per batch |
+| 1 / 2 / 4 s | Radio setup retry delays |
 | 100 ms | MQTT owner tick |
 | 5 s | MQTT state snapshot interval, reconnect pause, SUBACK and PUBACK timeouts |
 | 15 s | Wi-Fi attempt deadline |

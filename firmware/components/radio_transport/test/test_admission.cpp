@@ -19,8 +19,8 @@ static int mode_store_result;
 extern "C" esp_err_t device_mode_save(bool) { return mode_store_result; }
 static void reset() {
     status_lock = xSemaphoreCreateMutex(); mode_store_result = 0; tx_in_progress = false;
-    capture_sequence = 0; capture_boot = 1;
-    status = {}; status.ready = true; status.control_enabled = true; registry = {}; registry.count = 2; registry.next_id = 3;
+    capture_sequence = 0; capture_boot = 1; monitors={};
+    status = {}; status.ready = true; status.health=RADIO_READY; status.worker_running=true; status.control_enabled = true; registry = {}; registry.count = 2; registry.next_id = 3;
     for (unsigned i = 0; i < 2; ++i) {
         auto &d = registry.records[i]; d.id = i + 1;
         const uint8_t controller[] = {0xf1,1,2,3}, radiator[] = {0xf1,4,5,6};
@@ -28,6 +28,7 @@ static void reset() {
     }
     mutation_pending = exchange_pending = pair_reserved = queue_full = false; exchange_id = 0;
     dequeue_hook = transmit_hook = delay_hook = nullptr; store_result = 0;
+    hal.begin_operation(0); begin_result=standby_result=0; begin_count=0;
     transmit_result = receive_result = 0; transmit_count = 0; test_now_us = 1000000; checks = 0;
     count_reads = receive_starts = 0; count_hook = nullptr; receiving = true; packet_mode = 2; fixed_length = 0;
     incoming_size = incoming_used = 0; radio_requests = xQueueCreate(CLEVERBOX_RADIATOR_CAPACITY + 1, sizeof(radio_request));
@@ -106,10 +107,10 @@ static void test_fatal_rx_failure() {
     command.state = cstate; assert(radio_control_start(3, &command) == ESP_OK);
     assert(queue_count == 2 && registry.records[2].command_pending);
     receive_result = -77; worker.step(); // B transmits; restoring RX fails while C is still queued.
-    assert(!status.ready && status.error == -77 && queue_count == 1);
+    assert(!status.ready && status.error == -77 && queue_count == 0);
     for (unsigned i = 0; i < 3; ++i) {
         auto &d = registry.records[i];
-        assert(d.control.phase == RF_CONTROL_ERROR && d.control_error == -77);
+        assert(d.control.phase == RF_CONTROL_ERROR && d.control_error == (i==1 ? RADIO_ERR_DELIVERY_UNCERTAIN : -77));
         assert(!d.command_reserved && !d.command_pending);
     }
     assert(radio_control_start(1, &command) == ESP_ERR_INVALID_STATE);
@@ -202,7 +203,7 @@ static uint8_t late_fifo(uint8_t count) {
 }
 static uint8_t late_unstable(uint8_t count) { return count_reads > 2 ? count_reads % 2 : count; }
 static uint8_t crossing_deadline(uint8_t count) {
-    if (count_reads == 3) test_now_us += RF_CONTROL_WAIT_MS * 1000LL;
+    if (count_reads == 3) test_now_us += 2000;
     return count;
 }
 static void test_final_guard_and_expiry() {
@@ -216,7 +217,8 @@ static void test_final_guard_and_expiry() {
         assert(status.receive_errors == 1 && transmit_count == 1);
         worker.step(); assert(transmit_count == 1);
     }
-    reset(); radio_worker worker; start_control(worker, 1); count_hook = crossing_deadline;
+    reset(); radio_worker worker; start_control(worker, 1);
+    test_now_us=worker.controls[1].deadline_ms*1000-1000; count_hook = crossing_deadline;
     worker.step();
     assert(!transmit_count && registry.records[1].control.phase == RF_CONTROL_TIMEOUT);
     assert(!registry.records[1].command_reserved);
@@ -261,9 +263,10 @@ static void test_deferred_state_and_results() {
     reset(); radio_worker failed; start_control(failed, 1); failed.step();
     rf_control_receive(&failed.controls[1], test_now_us / 1000, &report);
     transmit_result = -99; failed.step();
-    assert(transmit_count == 2 && status.ready && receiving && packet_mode == 2);
+    assert(transmit_count == 2 && !status.ready && receiving && packet_mode == 2);
     assert(registry.records[1].control.phase == RF_CONTROL_ERROR && registry.records[1].control.attempts == 1);
-    assert(registry.records[1].control_error == -99);
+    assert(registry.records[1].control_error == RADIO_ERR_DELIVERY_UNCERTAIN);
+    transmit_result=0; test_now_us+=1000000; failed.step(); assert(status.ready);
     hear(failed, report_b(true)); assert(registry.records[1].control.phase == RF_CONTROL_MATCHED);
 }
 static void test_expired_handoffs_and_rx_failure() {
@@ -327,6 +330,8 @@ static void test_sustained_input_deadlines() {
     malformed.step(); assert(status.invalid_frames == 1 && transmit_count == 1 && status.ready);
 }
 #include "passive_cases.inc"
+#include "recovery_cases.inc"
+
 int main() {
     command.mode = RF_COMFORT; command.centi_c = 2050; command.clock_seconds = 43200;
     reset(); radio_worker worker;
@@ -370,6 +375,8 @@ int main() {
     assert(radio_pair_cancel(id) == ESP_OK); worker.step(); assert(!exchange_id);
     queue_full = true; assert(radio_control_start(1, &command) == ESP_ERR_TIMEOUT);
     assert(!registry.records[0].command_reserved); queue_full = false;
+    test_recovery_bounds(); test_radio_fault_observation_and_writes();
+    test_fault_persistence_and_pairing(); test_hal_containment();
     test_queue_capacity(); test_fair_turns(); test_compaction(); test_fatal_rx_failure(); test_admission_clock_and_queue_delay();
     test_partial_and_fifo_only(); test_report_before_selection(); test_final_guard_and_expiry();
     test_bounded_rx_recovery(); test_deferred_state_and_results();
@@ -379,8 +386,10 @@ int main() {
     status.control_enabled=false; hear(monitoring,report_b(false));
     assert(radio_monitor_change("select",report_b(false).bytes+1,"Observed")==ESP_OK);
     monitoring.fail(ESP_ERR_TIMEOUT);
-    assert(!status.monitor_pending && status.monitor_result==RADIO_STORE_FAILED && status.monitor_error==ESP_ERR_TIMEOUT);
-    assert(!monitors.count && !transmit_count);
+    assert(status.monitor_pending && status.monitor_result==RADIO_STORE_PENDING);
+    monitoring.step();
+    assert(!status.monitor_pending && status.monitor_result==RADIO_STORE_OK && !status.monitor_error);
+    assert(monitors.count==1 && !transmit_count);
     puts("RX-before-TX arbitration, FIFO errata, late guard, bounded recovery/deadlines and deferred work: passed");
     printf("Memory: capacity=%u record=%zu registry=%zu worker=%zu request=%zu\n", (unsigned)CLEVERBOX_RADIATOR_CAPACITY, sizeof(radiator_record), sizeof(registry), sizeof(radio_worker), sizeof(radio_request));
     puts("Independent reservations, fair turns, compaction, fatal radio failure, handoff and queue capacity: passed");

@@ -3,6 +3,7 @@
 #include "mqtt_discovery.h"
 #include "radio_transport.h"
 #include "network_setup.h"
+#include "device_time.h"
 #include "esp_timer.h"
 #include "cJSON.h"
 #include "nvs.h"
@@ -288,20 +289,36 @@ static void results(bool force) {
 }
 static void observations(void) {
     radiator_record d; int64_t time = now();
+    radio_status radio = radio_transport_status();
+    unsigned clock; int64_t sampled;
+    bool time_ready=device_time_command_clock(&clock,&sampled);
     cJSON *bridge = envelope(session, 0);
     cJSON_AddNumberToObject(bridge, "uptime_ms", (double)time);
     cJSON_AddNumberToObject(bridge, "request_id_floor", (double)high_water);
     cJSON_AddNumberToObject(bridge, "stale_after_ms", RF_REPORT_STALE_MS);
+    cJSON_AddStringToObject(bridge,"radio_health",radio_health_name(radio.health));
+    cJSON_AddBoolToObject(bridge,"radio_ready",radio.ready);
+    cJSON_AddBoolToObject(bridge,"control_ready",radio.ready && radio.control_enabled && !radio.mode_pending && !radio.mode_error && !radio.registry_error && !radio.exchange_id && !radio.mutation_pending && time_ready);
+    cJSON_AddStringToObject(bridge,"radio_failure_stage",radio_failure_name(radio.failure_stage));
+    cJSON_AddNumberToObject(bridge,"radio_failure_code",radio.failure_code);
+    cJSON_AddNumberToObject(bridge,"recovery_attempt",radio.recovery_attempt);
+    cJSON_AddNumberToObject(bridge,"recovery_attempts",radio.recovery_attempts);
+    cJSON_AddNumberToObject(bridge,"recovery_successes",radio.recovery_successes);
+    cJSON_AddBoolToObject(bridge,"retry_exhausted",radio.health==RADIO_FAULTED);
+    if (radio.retry_at_ms) cJSON_AddNumberToObject(bridge,"retry_in_ms",(double)(radio.retry_at_ms>time?radio.retry_at_ms-time:0));
+    else cJSON_AddNullToObject(bridge,"retry_in_ms");
     json_publish("bridge", bridge);
     for (size_t i = 0; radio_device_at(i, &d) == ESP_OK; ++i) {
         cJSON *j = envelope(session, 0); char suffix[64];
         command_permit *permit = permit_for(d.id);
         if (permit) cJSON_AddStringToObject(j, "command_token", permit->token);
         cJSON_AddNumberToObject(j, "id", d.id); cJSON_AddStringToObject(j, "name", d.name);
+        cJSON_AddBoolToObject(j,"radio_ready",radio.ready);
+        cJSON_AddStringToObject(j,"radio_health",radio_health_name(radio.health));
         cJSON_AddBoolToObject(j, "available", d.has_paired_report);
         // Conservative 15-second headroom: HA expiry cannot carry a reported
         // fresh value beyond the five-minute threshold between snapshots.
-        cJSON_AddBoolToObject(j, "fresh", d.has_paired_report && time-d.paired_report_time_us/1000 + 15000 < RF_REPORT_STALE_MS);
+        cJSON_AddBoolToObject(j, "fresh", radio.ready && d.has_paired_report && time-d.paired_report_time_us/1000 + 15000 < RF_REPORT_STALE_MS);
         if (permit && permit->admission[0]) cJSON_AddItemToObject(j, "admission", cJSON_Parse(permit->admission));
         cJSON *delivery = cJSON_AddObjectToObject(j, "delivery");
         for (size_t k = 0; k < CLEVERBOX_RADIATOR_CAPACITY; ++k) {
@@ -333,9 +350,11 @@ static void observations(void) {
         cJSON *j=envelope(session,0); char a[9], b[9], suffix[64];
         snprintf(a,sizeof(a),"%02X%02X%02X%02X",m.selection.address[0],m.selection.address[1],m.selection.address[2],m.selection.address[3]);
         cJSON_AddStringToObject(j,"radiator",a); cJSON_AddStringToObject(j,"name",m.selection.name);
+        cJSON_AddBoolToObject(j,"radio_ready",radio.ready);
+        cJSON_AddStringToObject(j,"radio_health",radio_health_name(radio.health));
         cJSON_AddBoolToObject(j,"available",m.available);
         int64_t age=time-m.observation.time_us/1000; if (age<0) age=0;
-        cJSON_AddBoolToObject(j,"fresh",m.available && age+15000<RF_REPORT_STALE_MS);
+        cJSON_AddBoolToObject(j,"fresh",radio.ready && m.available && age+15000<RF_REPORT_STALE_MS);
         if (m.available) {
             const rf_report *r=&m.observation.report;
             snprintf(b,sizeof(b),"%02X%02X%02X%02X",r->destination[0],r->destination[1],r->destination[2],r->destination[3]);
@@ -455,6 +474,9 @@ void mqtt_bridge_tick(void) {
         stop(); retry_ms = now()+MQTT_RETRY_MS; return;
     }
     results(became_ready);
+    static radio_health published_health = RADIO_INITIALIZING;
+    radio_health health = radio_transport_status().health;
+    if (health != published_health) { published_health = health; state_ms = 0; }
     if (now() >= state_ms) { observations(); state_ms = now()+5000; }
     // Drain a bounded batch. Epoch checks discard work queued before link loss;
     // there is no offline input queue. Already-admitted RF runs independently.
