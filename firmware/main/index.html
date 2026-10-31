@@ -83,6 +83,30 @@ this does not establish capture-free setup. No heating or RF compatibility is te
 <p id="simulationAction" role="status"></p>
 </section>
 <section>
+<h2>Passive commissioning</h2>
+<p id="commissioningStatus" role="status">Checking operating mode…</p>
+<button id="listenOnly">Select listen-only</button><button id="enableControl">Enable control</button>
+<p id="modeAction" role="status"></p>
+<ol>
+<li>Leave Touch E3 running and select listen-only. Fresh installations start here.</li>
+<li>Wait for reports and controller-state candidates. A target change on Touch E3 may produce a candidate.</li>
+<li>Identify the intended radiator by its RF address below. Hearing a device never pairs or selects it for Home Assistant.</li>
+<li>Disconnect Touch E3 before enabling control and pairing explicitly. Pairing can reset radiator settings.</li>
+<li>Refresh candidates, select the matching capture and adopt it into the paired record. Then send a normal command below.</li>
+</ol>
+<small>No step runs automatically. Captures and observations clear on reboot; saved templates and operating mode persist.
+Enabling control sends nothing. Listen-only is refused while pairing or RF commands are outstanding; let bounded work finish and retry.</small>
+<pre id="passiveObservations">No reports heard this boot.</pre>
+<label>Captured controller-state candidate <select id="candidateSelect"></select></label>
+<button id="refreshCandidates">Refresh candidate choices</button>
+<p id="candidateDetails"></p>
+<label><input id="replaceCandidate" type="checkbox" style="width:auto"> Explicitly replace an existing saved template</label>
+<button id="adoptCandidate">Adopt selected capture</button>
+<p id="adoptionAction" role="status"></p><p id="adoptionStatus" role="status"></p>
+<small>Adoption requires a matching paired radiator and station access. It writes a template; it sends no RF and is allowed in listen-only.
+Candidate choices name a specific capture. If it changes or is evicted, refresh and select again.</small>
+</section>
+<section>
 <h2>Radio receiver</h2>
 <p id="radioStatus" role="status">Checking radio…</p>
 <details><summary>Global receive diagnostics (all addresses)</summary><pre id="radioReport">No radiator report received.</pre><pre id="radioDiagnostics"></pre></details>
@@ -139,9 +163,10 @@ The radiator supplies its actual address in the reply. Capacity is shown below; 
 <section><h2>Result</h2><pre id="result" role="status" aria-live="polite">No command prepared.</pre></section>
 <script>
 const field=id=>document.getElementById(id);
-let networkTimer, httpControlAllowed=false;
-const controlButtons=['renameRadiator','removeRadiator','pairStart','pairCancel','pairSave','sendTarget','saveState','importState','clearState','saveTimezone','setManualTime','mqttSave','mqttEnable','mqttDisable','mqttForget','mqttDiscoveryEnable','mqttDiscoveryDisable'];
+let networkTimer, httpControlAllowed=false, rfControlAllowed=false;
+const controlButtons=['renameRadiator','removeRadiator','pairStart','pairCancel','pairSave','sendTarget','saveState','importState','clearState','saveTimezone','setManualTime','mqttSave','mqttEnable','mqttDisable','mqttForget','mqttDiscoveryEnable','mqttDiscoveryDisable','listenOnly','enableControl','adoptCandidate'];
 function restrictControls(){
+  if(!rfControlAllowed) for(const id of ['pairStart','sendTarget']) field(id).disabled=true;
   if(!httpControlAllowed){
     for(const id of controlButtons) field(id).disabled=true;
     document.querySelectorAll('button[data-command]').forEach(button=>button.disabled=true);
@@ -289,6 +314,77 @@ async function mqttAction(action){
 for(const [id,action] of [['mqttDiscoveryEnable','discovery_enable'],['mqttDiscoveryDisable','discovery_disable'],['mqttSave','configure'],['mqttEnable','enable'],['mqttDisable','disable'],['mqttForget','forget']])
   field(id).addEventListener('click',()=>mqttAction(action));
 refreshMqtt();
+let commissioningTimer, candidateChoices=[], choicesLoaded=false, liveCandidates=[];
+function candidateDetails(){
+  const c=candidateChoices.find(c=>c.version===field('candidateSelect').value);
+  const live=c && liveCandidates.some(x=>x.version===c.version);
+  field('candidateDetails').textContent=c
+    ? c.radiator+' ← '+c.controller+' · Capture '+c.version+(live?'':' · Replaced or evicted; refresh choices.')
+    : 'Choose a capture. Candidate availability is independent of radiator reports.';
+  field('adoptCandidate').disabled=!httpControlAllowed||!live||!c?.paired;
+}
+async function refreshCommissioning(refreshChoices=false){
+  clearTimeout(commissioningTimer);
+  try{
+    const response=await fetch('/api/commissioning',{cache:'no-store'});
+    if(!response.ok) throw new Error('Commissioning status unavailable.');
+    const s=await response.json();
+    rfControlAllowed=s.mode==='control-enabled' && !s.pending && !s.storage_error;
+    field('commissioningStatus').textContent='Mode: '+s.mode+' · Durable save: '+s.save_status+
+      (s.pending?' · Change queued; wait for persistence outcome.':'')+
+      (s.storage_error?' · Storage error '+s.storage_error+'; RF disabled.':'')+
+      (s.persistence_uncertain?' · Persistence uncertain; inspect after reboot or retry explicitly.':'')+
+      ' · Cache capacity: '+s.capacity+(s.observations_full?' · Observation bound reached':'')+(s.candidates_full?' · Candidate bound reached':'')+
+      ' · Evictions: reports '+s.observation_evictions+', candidates '+s.candidate_evictions;
+    field('listenOnly').disabled=field('enableControl').disabled=s.pending||!httpControlAllowed;
+    liveCandidates=s.candidates;
+    field('passiveObservations').textContent=s.observations.map(o=>{
+      const c=s.candidates.find(c=>c.radiator===o.radiator);
+      return o.radiator+' → '+o.controller+' · '+(o.stale?'STALE · ':'')+(o.age_ms/1000).toFixed(1)+' s ago'+
+        '\nMeasured: '+(o.temperature_c===null?'unavailable':o.temperature_c+' °C')+' · Target: '+(o.target_c===null?'unavailable':o.target_c+' °C')+' · Mode: '+(modes[o.mode]??o.mode)+
+        '\nPaired: '+(o.paired?'ID '+o.paired_id:'no')+' · Saved template: '+(o.saved_template?'yes':'no')+
+        ' · Candidate: '+(c?c.controller+' · '+(c.age_ms/1000).toFixed(1)+' s ago':'none');
+    }).join('\n\n') || 'No reports heard this boot.';
+    if(refreshChoices || !choicesLoaded){
+      candidateChoices=s.candidates.map(c=>({...c})); choicesLoaded=true;
+      field('candidateSelect').replaceChildren(...candidateChoices.map(c=>{
+        const option=document.createElement('option');option.value=c.version;
+        option.textContent=c.radiator+' ← '+c.controller+' · '+(c.age_ms/1000).toFixed(1)+' s ago · '+(c.paired?'paired ID '+c.paired_id:'unpaired');return option;
+      }));
+      field('candidateSelect').value=candidateChoices[0]?.version??'';
+      field('replaceCandidate').checked=false;
+    }
+    candidateDetails();
+    const a=s.adoption;
+    field('adoptionStatus').textContent='Latest adoption: '+a.status+(a.id?' · ID '+a.id+' · '+a.version:'')+(a.error?' · Storage error '+a.error+'; previous template retained. Retry explicitly.':'');
+  }catch(error){rfControlAllowed=false;field('commissioningStatus').textContent=error.message;field('adoptCandidate').disabled=true;}
+  finally{restrictControls();commissioningTimer=setTimeout(refreshCommissioning,2000);}
+}
+async function changeMode(mode){
+  if(!requireControl('modeAction')) return;
+  try{
+    const response=await fetch('/api/commissioning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
+    if(!response.ok) throw new Error(await response.text());
+    field('modeAction').textContent='Mode change queued. Wait for durable save status; no RF requested.';
+    await refreshCommissioning(); await refreshRadio();
+  }catch(error){field('modeAction').textContent=error.message;}
+}
+field('listenOnly').addEventListener('click',()=>changeMode('listen-only'));
+field('enableControl').addEventListener('click',()=>changeMode('control-enabled'));
+field('refreshCandidates').addEventListener('click',()=>refreshCommissioning(true));
+field('candidateSelect').addEventListener('change',candidateDetails);
+field('adoptCandidate').addEventListener('click',async()=>{
+  if(!requireControl('adoptionAction')) return;
+  const c=candidateChoices.find(c=>c.version===field('candidateSelect').value);
+  if(!c?.paired) return;
+  try{
+    const response=await fetch('/api/controller-state',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'adopt',id:c.paired_id,radiator:c.radiator,version:c.version,replace:field('replaceCandidate').checked===true})});
+    if(!response.ok) throw new Error(await response.text());
+    field('adoptionAction').textContent='Adoption queued. Check the matching ID/version persistence outcome. No RF requested.';
+    await refreshCommissioning();
+  }catch(error){field('adoptionAction').textContent=error.message;}
+});
 let simulationConfigured=false, selectedId=0, pairingId=0, selectionEpoch=0, refreshTimer;
 function resetSelection(id){
   selectedId=id; selectionEpoch++;
@@ -391,6 +487,7 @@ async function refreshRadio(){
   clearTimeout(refreshTimer); refreshTimer=setTimeout(refreshRadio,2000);
 }
 refreshRadio();
+refreshCommissioning();
 async function simulationAction(body){
   try {
     const response=await fetch('/api/simulation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -430,7 +527,7 @@ field('saveState').addEventListener('click',()=>controllerStateAction('save'));
 field('importState').addEventListener('click',()=>controllerStateAction('import'));
 field('clearState').addEventListener('click',()=>controllerStateAction('clear'));
 field('sendTarget').addEventListener('click',async()=>{
-  if(!requireControl('commandAction')) return;
+  if(!requireControl('commandAction') || !rfControlAllowed) return;
   const button=field('sendTarget'); button.disabled=true;
   const body={id:selectedId,mode:Number(field('mode').value),
     centi_c:Math.round(Number(field('temperature').value)*100)};
@@ -445,6 +542,7 @@ field('sendTarget').addEventListener('click',async()=>{
 document.querySelectorAll('button[data-pair-action]').forEach(button=>button.addEventListener('click',async()=>{
   if(!requireControl('pairAction')) return;
   const action=button.dataset.pairAction;
+  if(action==='start' && !rfControlAllowed) return;
   const body={action};
   if(action!=='start') body.id=pairingId;
   if(action==='start'){

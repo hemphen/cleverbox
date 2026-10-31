@@ -115,6 +115,9 @@ static esp_err_t pairing_action(httpd_req_t *r)
     } else if (valid_id && action && !strcmp(action, "cancel")) result = radio_pair_cancel(id);
     else if (valid_id && action && !strcmp(action, "save")) result = radio_pair_save(id);
     cJSON_Delete(j);
+    if (result == RADIO_ERR_LISTEN_ONLY) {
+        httpd_resp_set_status(r, "409 Conflict"); return httpd_resp_sendstr(r, "Listen-only mode: enable control explicitly on the station interface first.");
+    }
     if (result == ESP_ERR_INVALID_ARG)
         return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid pairing action or addresses");
     if (result != ESP_OK) {
@@ -181,6 +184,9 @@ static esp_err_t live_command(httpd_req_t *r)
 #endif
     }
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    if (result == RADIO_ERR_LISTEN_ONLY) {
+        httpd_resp_set_status(r, "409 Conflict"); return httpd_resp_sendstr(r, "Listen-only mode or mode storage error: no RF commands admitted.");
+    }
     if (result == RADIO_ERR_TIME_UNAVAILABLE) {
         httpd_resp_set_status(r, "409 Conflict");
         return httpd_resp_sendstr(r, "Device time unavailable. Connect home Wi-Fi for SNTP or explicitly set UTC time in Device time, then retry.");
@@ -215,12 +221,25 @@ static esp_err_t controller_state_action(httpd_req_t *r)
     bool valid_id = identity(j, &id);
     if (valid_id && action && !strcmp(action, "save")) result = radio_state_save(id, NULL);
     else if (valid_id && action && !strcmp(action, "clear")) result = radio_state_clear(id);
+    else if (valid_id && action && !strcmp(action, "adopt")) {
+        uint8_t radiator[4];
+        cJSON *replace = cJSON_GetObjectItemCaseSensitive(j, "replace");
+        if (cJSON_IsObject(j) && cJSON_GetArraySize(j) == 5 && id &&
+            address(j, "radiator", radiator) && cJSON_IsBool(replace))
+            result = radio_candidate_adopt(id, radiator, string(j, "version"), cJSON_IsTrue(replace));
+    }
     else if (valid_id && action && !strcmp(action, "import")) {
         rf_frame frame = {0};
         if (rf_parse_hex(string(j, "state"), frame.bytes, sizeof(frame.bytes), &frame.size))
             result = radio_state_save(id, &frame);
     }
     cJSON_Delete(j);
+    if (result == RADIO_ERR_CANDIDATE_CHANGED || result == RADIO_ERR_REPLACE_REQUIRED) {
+        httpd_resp_set_status(r, "409 Conflict");
+        return httpd_resp_sendstr(r, result == RADIO_ERR_CANDIDATE_CHANGED ?
+            "Candidate replaced, evicted or from another boot. Refresh and select again." :
+            "Saved template already exists. Explicit replace:true required.");
+    }
     if (result == ESP_ERR_INVALID_ARG)
         return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid action or same-radiator controller-state frame");
     if (result != ESP_OK) {
@@ -295,6 +314,90 @@ static esp_err_t json_response(httpd_req_t *r, cJSON *j) {
     if (!body) return ESP_ERR_NO_MEM;
     httpd_resp_set_type(r, "application/json"); httpd_resp_set_hdr(r, "Cache-Control", "no-store");
     esp_err_t result = httpd_resp_sendstr(r, body); cJSON_free(body); return result;
+}
+// Passive diagnostics deliberately have the same AP/unknown read exposure as
+// existing RF diagnostics. Candidate bytes remain internal; mutations need STA.
+static void matching_pair(cJSON *j, const uint8_t radiator[4]) {
+    radiator_record d; bool found = false;
+    for (size_t i = 0; radio_device_at(i, &d) == ESP_OK; ++i)
+        if (!memcmp(d.pair.radiator, radiator, 4)) { found = true; break; }
+    cJSON_AddBoolToObject(j, "paired", found);
+    cJSON_AddBoolToObject(j, "saved_template", found && d.has_saved_template);
+    if (found) cJSON_AddNumberToObject(j, "paired_id", d.id);
+}
+static esp_err_t commissioning_status(httpd_req_t *r) {
+    radio_status s = radio_transport_status(); int64_t now = esp_timer_get_time();
+    cJSON *j = cJSON_CreateObject(); if (!j) return ESP_ERR_NO_MEM;
+    cJSON_AddStringToObject(j, "mode", s.control_enabled ? "control-enabled" : "listen-only");
+    cJSON_AddBoolToObject(j, "pending", s.mode_pending);
+    cJSON_AddStringToObject(j, "save_status", store_result(s.mode_save_result));
+    cJSON_AddNumberToObject(j, "storage_error", s.mode_error);
+    cJSON_AddBoolToObject(j, "persistence_uncertain", s.mode_persistence_uncertain);
+    cJSON_AddNumberToObject(j, "capacity", RADIO_PASSIVE_CAPACITY);
+    cJSON_AddBoolToObject(j, "observations_full", s.observation_count == RADIO_PASSIVE_CAPACITY);
+    cJSON_AddBoolToObject(j, "candidates_full", s.candidate_count == RADIO_PASSIVE_CAPACITY);
+    cJSON_AddNumberToObject(j, "observation_evictions", s.observation_evictions);
+    cJSON_AddNumberToObject(j, "candidate_evictions", s.candidate_evictions);
+    cJSON *observed = cJSON_AddArrayToObject(j, "observations");
+    radio_observation o;
+    for (size_t i = 0; radio_observation_at(i, &o) == ESP_OK; ++i) {
+        cJSON *row = cJSON_CreateObject(); char a[9], b[9];
+        address_text(o.report.source, a); address_text(o.report.destination, b);
+        cJSON_AddStringToObject(row, "radiator", a); cJSON_AddStringToObject(row, "controller", b);
+        // A radio task may publish after this HTTP snapshot sampled now.
+        int64_t age = now > o.time_us ? (now - o.time_us) / 1000 : 0;
+        cJSON_AddNumberToObject(row, "age_ms", age); cJSON_AddBoolToObject(row, "stale", age >= RF_REPORT_STALE_MS);
+        cJSON_AddNumberToObject(row, "mode", o.report.mode);
+        if (o.report.temperature_available) cJSON_AddNumberToObject(row, "temperature_c", o.report.temperature_centi_c / 100.0);
+        else cJSON_AddNullToObject(row, "temperature_c");
+        if (o.report.target_available) cJSON_AddNumberToObject(row, "target_c", o.report.target_centi_c / 100.0);
+        else cJSON_AddNullToObject(row, "target_c");
+        matching_pair(row, o.report.source); cJSON_AddItemToArray(observed, row);
+    }
+    cJSON *captured = cJSON_AddArrayToObject(j, "candidates");
+    radio_candidate c;
+    for (size_t i = 0; radio_candidate_at(i, &c) == ESP_OK; ++i) {
+        cJSON *row = cJSON_CreateObject(); char a[9], b[9];
+        address_text(c.state + 6, a); address_text(c.state + 1, b);
+        cJSON_AddStringToObject(row, "radiator", a); cJSON_AddStringToObject(row, "controller", b);
+        cJSON_AddStringToObject(row, "version", c.version);
+        cJSON_AddNumberToObject(row, "age_ms", now > c.time_us ? (now - c.time_us) / 1000 : 0);
+        matching_pair(row, c.state + 6); cJSON_AddItemToArray(captured, row);
+    }
+    cJSON *adoption = cJSON_AddObjectToObject(j, "adoption");
+    cJSON_AddNumberToObject(adoption, "id", s.adoption_id);
+    cJSON_AddStringToObject(adoption, "version", s.adoption_version);
+    cJSON_AddStringToObject(adoption, "status", store_result(s.adoption_result));
+    cJSON_AddNumberToObject(adoption, "error", s.adoption_error);
+    return json_response(r, j);
+}
+static esp_err_t commissioning_action(httpd_req_t *r) {
+    char body[128], type[40];
+    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
+        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
+    size_t used = 0;
+    while (used < r->content_len) {
+        int n = httpd_req_recv(r, body + used, r->content_len - used);
+        if (n <= 0) return ESP_FAIL;
+        used += (size_t)n;
+    }
+    body[used] = 0;
+    cJSON *j = !memchr(body, 0, used) && mqtt_json_flat(body) ? cJSON_ParseWithOpts(body, NULL, true) : NULL;
+    const char *mode = string(j, "mode");
+    esp_err_t e = ESP_ERR_INVALID_ARG;
+    if (cJSON_IsObject(j) && cJSON_GetArraySize(j) == 1 && mode &&
+        (!strcmp(mode, "listen-only") || !strcmp(mode, "control-enabled")))
+        e = radio_mode_set(!strcmp(mode, "control-enabled"));
+    cJSON_Delete(j);
+    if (e == ESP_ERR_INVALID_ARG) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST,
+        "Use mode: listen-only or control-enabled");
+    if (e != ESP_OK) {
+        httpd_resp_set_status(r, "409 Conflict");
+        return httpd_resp_sendstr(r, "Mode transition busy: finish pairing, outstanding RF commands or local persistence first; then retry explicitly.");
+    }
+    httpd_resp_set_status(r, "202 Accepted"); httpd_resp_set_type(r, "application/json");
+    return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");
 }
 static esp_err_t radio_status_page(httpd_req_t *r) {
     radio_status s = radio_transport_status(); int64_t now = esp_timer_get_time();
@@ -598,6 +701,8 @@ typedef struct {
     bool recovery;
 } api_route;
 static const api_route routes[] = {
+    {"/api/commissioning", HTTP_GET, commissioning_status, true},
+    {"/api/commissioning", HTTP_POST, commissioning_action, false},
     {"/api/mqtt", HTTP_GET, mqtt_status_page, true},
     {"/api/mqtt", HTTP_POST, mqtt_action, false},
     {"/api/time", HTTP_GET, time_status_page, true},

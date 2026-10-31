@@ -47,7 +47,7 @@ def run(directory):
         for destination, name in ((sta, 'sta'), (ap, 'ap'), (unknown, 'unknown')):
             s = request(app, destination, '/api/network', headers=spoof)
             assert s['http_interface'] == name and s['http_control_allowed'] == (name == 'sta')
-            for path in ('/api/radio', '/api/radiators', '/api/time', '/api/mqtt'):
+            for path in ('/api/radio', '/api/radiators', '/api/time', '/api/mqtt', '/api/commissioning'):
                 request(app, destination, path, headers=spoof)
         # Unknown classification never authorises connectivity mutations either.
         request(app, unknown, '/api/network', {'action': 'forget', 'confirm': True}, 403, spoof)
@@ -64,6 +64,8 @@ def run(directory):
                    for a in ('start', 'save', 'cancel')]
         actions += [('/api/controller-state', {'action': a, 'state': STATE, 'id': 1}) for a in ('save', 'import', 'clear')]
         actions += [('/api/radiators', {'action': a, 'id': 1, 'name': 'Blocked'}) for a in ('rename', 'remove', 'select')]
+        actions += [('/api/commissioning', {'mode':'control-enabled'}),
+                    ('/api/controller-state', {'action':'adopt','id':1,'radiator':'F1040506','version':'A'*32,'replace':True})]
         actions += [('/api/command', {'id': 1, 'mode': 0, 'centi_c': 2050, 'state': STATE}),
                     ('/api/preview', {'command': 'offer', 'source': 'F1010203', 'destination': 'F1100001'}),
                     ('/api/time', {'action': 'manual', 'unix_seconds': 1767268800}),

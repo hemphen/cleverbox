@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include <cassert>
+#include <mutex>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +13,11 @@ constexpr int ESP_OK = 0, ESP_ERR_NOT_FOUND = 1, ESP_ERR_INVALID_STATE = 2,
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
 
+using SemaphoreHandle_t = std::mutex *;
+inline constexpr int portMAX_DELAY = -1;
+inline SemaphoreHandle_t xSemaphoreCreateMutex() { static std::mutex m; return &m; }
+inline int xSemaphoreTake(SemaphoreHandle_t m, int) { m->lock(); return 1; }
+inline int xSemaphoreGive(SemaphoreHandle_t m) { m->unlock(); return 1; }
 using portMUX_TYPE = int;
 #define portMUX_INITIALIZER_UNLOCKED 0
 #define portENTER_CRITICAL(lock) assert(++*(lock) == 1)
@@ -153,3 +159,5 @@ inline int spi_bus_add_device(int, const spi_device_interface_config_t *, void *
 inline int spi_device_polling_transmit(void *, spi_transaction_t *) { return 0; }
 inline void spi_bus_remove_device(void *) {}
 inline void spi_bus_free(int) {}
+
+inline uint32_t esp_random() { static uint32_t n = 1000; return ++n; }

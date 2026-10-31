@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "esp_err.h"
+#include "mode_store.h"
 #include <stdint.h>
 #include "radiator_protocol.h"
 #include "radiator_control.h"

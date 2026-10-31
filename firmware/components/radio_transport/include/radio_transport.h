@@ -10,7 +10,28 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#define RADIO_PASSIVE_CAPACITY (2 * CLEVERBOX_RADIATOR_CAPACITY)
+#define RADIO_ERR_LISTEN_ONLY 0x7302
+#define RADIO_ERR_MODE_BUSY 0x7303
+#define RADIO_ERR_CANDIDATE_CHANGED 0x7304
+#define RADIO_ERR_REPLACE_REQUIRED 0x7305
+// Independent caches: reports can never evict captured templates.
+typedef struct { rf_report report; int64_t time_us; } radio_observation;
 typedef struct {
+    uint8_t state[CONTROLLER_STATE_BYTES];
+    int64_t time_us;
+    char version[33]; // boot nonce + never-reused capture sequence, hexadecimal
+} radio_candidate;
+typedef struct {
+    bool control_enabled, mode_pending, mode_persistence_uncertain;
+    int mode_error;
+    radio_store_result mode_save_result;
+    size_t observation_count, candidate_count;
+    uint32_t observation_evictions, candidate_evictions;
+    uint32_t adoption_id;
+    char adoption_version[33];
+    radio_store_result adoption_result;
+    int adoption_error;
     bool ready;
     int error;
     int chip_version;
@@ -27,6 +48,10 @@ typedef struct {
     int registry_error, mutation_error;
     bool mutation_pending;
 } radio_status;
+esp_err_t radio_mode_set(bool control_enabled);
+esp_err_t radio_observation_at(size_t index, radio_observation *out);
+esp_err_t radio_candidate_at(size_t index, radio_candidate *out);
+esp_err_t radio_candidate_adopt(uint32_t id, const uint8_t radiator[4], const char *version, bool replace);
 // Starts reception and loads saved pairing without transmitting. Failure leaves the HTTP interface available.
 void radio_transport_start(void);
 radio_status radio_transport_status(void);

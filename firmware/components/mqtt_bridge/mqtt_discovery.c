@@ -3,6 +3,7 @@
 #include "radio_transport.h"
 #include "cJSON.h"
 #include "nvs.h"
+#include "mode_store.h"
 #include "esp_timer.h"
 #include <stdio.h>
 #include <string.h>
@@ -33,6 +34,8 @@ static esp_err_t save(void) {
     for (unsigned b = 0; b < 4; ++b) record[4+b] = generation >> (8*b);
     for (size_t i = 0; i < SLOTS; ++i)
         for (unsigned b = 0; b < 4; ++b) record[8+4*i+b] = ids[i] >> (8*b);
+    esp_err_t mode_error = device_mode_prepare_write();
+    if (mode_error != ESP_OK) return mode_error;
     nvs_handle_t h; esp_err_t err = nvs_open("cleverbox", NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
     // Never erase the journal before replacing it: a torn update must leave

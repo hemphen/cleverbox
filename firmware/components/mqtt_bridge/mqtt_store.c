@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "mqtt_bridge.h"
 #include "nvs.h"
+#include "mode_store.h"
 #include <string.h>
 #include <ctype.h>
 static bool printable(const char *s, size_t max) {
@@ -45,6 +46,8 @@ esp_err_t mqtt_store_load(mqtt_settings *out) {
 }
 esp_err_t mqtt_store_save(const mqtt_settings *s) {
     if (!mqtt_settings_valid(s)) return ESP_ERR_INVALID_ARG;
+    esp_err_t mode_error = device_mode_prepare_write();
+    if (mode_error != ESP_OK) return mode_error;
     unsigned char b[MQTT_RECORD_BYTES]; encode(s, b); nvs_handle_t h;
     esp_err_t err = nvs_open("cleverbox", NVS_READWRITE, &h);
     if (err != ESP_OK) return err;

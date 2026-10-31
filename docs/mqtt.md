@@ -3,7 +3,9 @@
 Cleverbox connects to one MQTT 3.1.1 broker over plain TCP. Configure it on the
 web page or with [`POST /api/mqtt`](http-api.md#post-apimqtt). Commands sent over
 MQTT go through the same admission and delivery as HTTP commands. Templates and
-the clock must be set up through HTTP first.
+the clock must be set up through HTTP first. Listen-only mode (the fresh default)
+rejects every command through shared RF admission. Only an explicit STA HTTP
+action can enable control; MQTT/network reconnects never change mode.
 
 ## Connection
 
@@ -99,6 +101,7 @@ in [command delivery](architecture.md#command-delivery).
 | `request_id_exhausted` | Counter at 2⁵³−1; reconnect for a new session |
 | `invalid_fields` | Wrong field set or values |
 | `unknown_identity` | No radiator with this ID |
+| `listen_only` | RF disabled by operating mode, pending mode transition or mode storage error |
 | `time_unavailable` | Device clock not set |
 | `invalid_settings_or_template` | Settings rejected by the codec |
 | `busy_or_unavailable_or_missing_template` | Radiator busy, pairing running, radio not ready or no template |

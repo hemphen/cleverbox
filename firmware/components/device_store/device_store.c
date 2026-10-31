@@ -120,7 +120,9 @@ esp_err_t device_registry_save_record(const radiator_registry *r, const radiator
         memcpy(b + REG_PAIR, &d->pair, 8); b[REG_SAVED] = d->has_saved_template;
         if (d->has_saved_template) memcpy(b + REG_STATE, d->saved_template, CONTROLLER_STATE_BYTES);
     }
-    nvs_handle_t h; esp_err_t result = nvs_open("cleverbox", NVS_READWRITE, &h);
+    esp_err_t result = device_mode_prepare_write();
+    if (result != ESP_OK) return result;
+    nvs_handle_t h; result = nvs_open("cleverbox", NVS_READWRITE, &h);
     if (result != ESP_OK) return result;
     size_t previous_size = sizeof(registry_previous);
     result = nvs_get_blob(h, "registry", registry_previous, &previous_size);

@@ -22,6 +22,8 @@ async function main() {
   let network = {http_interface:'sta',http_control_allowed:true,state:'disconnected',configured:false,recovery_ap:true,attempts:0,setup_result:'none',error:'none',ip:''};
   let networkReadsFail=false, confirmResult=true;
   let clock={usable:false,source:'unsynchronized',timezone:'UTC0',synchronized_this_boot:false,sync_age_ms:null};
+  let commissioning={mode:'control-enabled',pending:false,save_status:'succeeded',storage_error:0,capacity:16,
+    observations:[],candidates:[],observation_evictions:0,candidate_evictions:0,adoption:{status:'not_attempted'}};
   let mqtt={configured:true,enabled:true,connected:false,bridge_id:'020000000001'};
   let lastRequest, responseOK = true, deferredStatus;
   const context = vm.createContext({
@@ -35,6 +37,7 @@ async function main() {
     confirm(){return confirmResult;},
     setTimeout() {}, clearTimeout() {},
     async fetch(url, options) {
+      if(url==='/api/commissioning' && !options.body) return {ok:true,json:async()=>commissioning};
       if(url==='/api/mqtt' && !options.body) return {ok:true,json:async()=>mqtt};
       if(url==='/api/time' && !options.body) return {ok:true,json:async()=>clock};
       if(url==='/api/network' && !options.body){
@@ -254,6 +257,35 @@ async function main() {
   assert.match(fields.mqttStatus.textContent,/cleanup pending: 2/);
   assert.match(fields.mqttStatus.textContent,/publication failed; retrying/);
   for(const field of Object.values(fields)) assert(!field.textContent.includes(secret));
-  console.log('UI learned/missing state, optional import, preview, admission and error rendering: passed');
+  commissioning.mode='listen-only';
+  commissioning.observations=[{radiator:'F1040506',controller:'F10A0B0C',age_ms:300001,stale:true,mode:0,temperature_c:null,target_c:20.5,paired:true,paired_id:1,saved_template:true}];
+  commissioning.candidates=[{radiator:'F1040506',controller:'F10A0B0C',version:'A'.repeat(32),age_ms:4500,paired:true,paired_id:1}];
+  await vm.runInContext('refreshCommissioning(true)',context);
+  assert.equal(fields.sendTarget.disabled,true); assert.equal(fields.pairStart.disabled,true);
+  assert.match(fields.passiveObservations.textContent,/F1040506 → F10A0B0C.*STALE/);
+  assert.match(fields.passiveObservations.textContent,/Measured: unavailable/);
+  assert.match(fields.passiveObservations.textContent,/Candidate: F10A0B0C/);
+  assert.equal(fields.adoptCandidate.disabled,false);
+  fields.replaceCandidate.checked=true;
+  await fields.adoptCandidate.handlers.click();
+  assert.deepEqual(lastRequest,{url:'/api/controller-state',body:{action:'adopt',id:1,radiator:'F1040506',version:'A'.repeat(32),replace:true}});
+  commissioning.candidates[0]={...commissioning.candidates[0],version:'B'.repeat(32)};
+  await vm.runInContext('refreshCommissioning()',context);
+  assert.equal(fields.candidateSelect.value,'A'.repeat(32));
+  assert.equal(fields.adoptCandidate.disabled,true);
+  assert.match(fields.candidateDetails.textContent,/Replaced or evicted/);
+  await fields.refreshCandidates.handlers.click();
+  assert.equal(fields.candidateSelect.value,'B'.repeat(32)); assert.equal(fields.replaceCandidate.checked,false);
+  commissioning.save_status='failed';commissioning.storage_error=6;commissioning.persistence_uncertain=true;
+  commissioning.adoption={id:1,version:'A'.repeat(32),status:'failed',error:6};
+  await vm.runInContext('refreshCommissioning()',context);
+  assert.match(fields.commissioningStatus.textContent,/RF disabled/);
+  assert.match(fields.commissioningStatus.textContent,/Persistence uncertain/);
+  assert.match(fields.adoptionStatus.textContent,/failed.*ID 1.*Storage error/);
+  network.http_control_allowed=false; network.http_interface='ap';
+  await vm.runInContext('refreshNetwork()',context);
+  await vm.runInContext('refreshCommissioning()',context);
+  assert.equal(fields.enableControl.disabled,true); assert.equal(fields.adoptCandidate.disabled,true);
+  console.log('UI passive mode/candidate selection/errors plus learned/missing state, optional import, preview, admission and error rendering: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

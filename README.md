@@ -14,6 +14,7 @@ tested on the board.
 
 | Feature | Software | Hardware |
 | --- | --- | --- |
+| Listen-only mode, passive inventory and retained template capture | Tested | Not tested |
 | Receive and decode radiator reports | Tested | Not tested |
 | Pair radiators (one at a time, up to 8) | Tested | Not tested |
 | Set target and mode, confirmed by radiator readback | Tested | Not tested |
@@ -24,6 +25,12 @@ tested on the board.
 | OTA firmware updates | Not started | |
 
 ## How it works
+
+Fresh installations start listen-only. Upgrades without a saved mode preserve
+control behavior. The local passive view identifies reports from any controller
+and retains genuine template candidates without pairing or transmitting.
+Follow the [commissioning workflow](docs/http-api.md#passive-commissioning).
+Disconnect Touch E3 before explicitly enabling control and pairing.
 
 Cleverbox pairs with each radiator as its RF controller and listens for the
 reports the radiator sends about every two minutes. To change a setting it
@@ -41,9 +48,9 @@ clock. See [architecture](docs/architecture.md#templates).
 
 - No hardware testing yet. RF timing, transmit acceptance and heating behaviour
   are unverified.
-- A radiator paired by Cleverbox needs an imported template before it can be
-  controlled. Passive learning only accepts frames sent from the record's
-  controller address, which after pairing only Cleverbox itself uses.
+- Control needs a genuine same-radiator template. Capture one passively while
+  Touch E3 is operating, then adopt it after explicit pairing, or import hex.
+  New-controller acceptance still requires hardware validation.
 - The HTTP interface has no login. The setup access point uses the fixed,
   published password `cleverbox`. After setup it opens only through deliberate
   recovery (BOOT or Wi-Fi forget), and permits Wi-Fi setup and diagnostics only.
@@ -72,7 +79,7 @@ make simulate
 Open http://127.0.0.1:8080. The simulator runs the production firmware code
 against two invented radiators, `F1040506` and `F1040507`:
 
-1. Choose a simulated device and start pairing. Inclusion completes in about
+1. Explicitly enable control in **Passive commissioning**, then choose a simulated device and start pairing. Inclusion completes in about
    two seconds.
 2. Under **Device time**, set a manual UTC time.
 3. Inject the synthetic controller-state fixture, then **Save learned state**.

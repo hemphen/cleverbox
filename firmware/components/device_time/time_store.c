@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "device_time.h"
 #include "nvs.h"
+#include "mode_store.h"
 #include <string.h>
 // Separate versioned configuration only; no timestamp, sync state or flash writes
 // on SNTP notifications. String occupies only its used length on flash.
@@ -16,6 +17,8 @@ esp_err_t time_store_load(char out[DEVICE_TZ_BYTES + 1]) {
 }
 esp_err_t time_store_save(const char *tz) {
     if (!device_timezone_valid(tz)) return ESP_ERR_INVALID_ARG;
+    esp_err_t mode_error = device_mode_prepare_write();
+    if (mode_error != ESP_OK) return mode_error;
     unsigned char record[DEVICE_TZ_BYTES + 3] = {1}; memcpy(record + 1, tz, strlen(tz) + 1);
     nvs_handle_t h; esp_err_t err = nvs_open("cleverbox", NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
