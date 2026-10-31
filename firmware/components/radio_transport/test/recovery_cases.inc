@@ -91,6 +91,15 @@ static void test_fault_persistence_and_pairing() {
     ack.bytes[4]=8; reseal_test(ack); receive_result=-82; hear(saved_pair,ack);
     assert(!status.ready && saved_pair.saved && status.pairing_saved && status.pairing.phase==RF_PAIR_COMPLETE);
     assert(registry.count==3 && registry.records[2].id==3 && !pair_reserved && !exchange_id);
+    reset(); radio_worker old_saved; old_saved.saved=true; old_saved.pair.phase=RF_PAIR_COMPLETE;
+    status.pairing_saved=true;
+    assert(radio_pair_start(c,candidate,&id)==ESP_OK); old_saved.fail(-84);
+    assert(!status.pairing_saved && status.pairing.phase==RF_PAIR_ERROR && registry.count==2);
+    // A confirmed readback remains confirmed even when its RX restart fails.
+    reset(); radio_worker readback; start_control(readback,1); readback.step();
+    hear(readback,report_b(false));
+    receive_result=-85; hear(readback,report_b(true));
+    assert(!status.ready && registry.records[1].control.phase==RF_CONTROL_MATCHED && !registry.records[1].command_reserved);
     // A pre-TX failure has not entered transmit(), so it is a confirmed
     // failure to attempt this frame, rather than uncertain physical delivery.
     reset(); radio_worker pre_tx; command.state=state_frame();

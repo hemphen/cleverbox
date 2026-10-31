@@ -10,7 +10,7 @@
 #include "cJSON.h"
 #include <stdio.h>
 #include <string.h>
-static httpd_uri_t routes[20];
+static httpd_uri_t routes[16];
 static size_t route_count;
 static httpd_req_t request;
 static int socket_fd = -1;

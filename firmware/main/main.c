@@ -44,7 +44,7 @@ void app_main(void)
     httpd_handle_t server;
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
     http.stack_size = 8192;
-    http.max_uri_handlers = 20; // Root + control/setup + MQTT GET/POST.
+    http.max_uri_handlers = 17; // Root + control/setup + MQTT GET/POST.
     ESP_ERROR_CHECK(httpd_start(&server, &http));
     httpd_uri_t root = {.uri = "/", .method = HTTP_GET, .handler = home};
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &root));

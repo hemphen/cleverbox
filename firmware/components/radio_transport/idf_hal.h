@@ -97,6 +97,7 @@ private:
     // A timed-out IDF transaction may still be in flight. Its descriptor and
     // buffers must outlive the call. Never reuse them or release the bus until
     // polling_end confirms completion, including on later explicit retries.
+    static_assert(sizeof(spi_transaction_t) <= 64, "Review SPI transaction storage bound");
     spi_transaction_t transaction = {};
     alignas(4) uint8_t tx[64] = {}, rx[64] = {};
     bool finish_pending() {

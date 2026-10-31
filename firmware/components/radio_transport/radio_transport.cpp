@@ -487,7 +487,15 @@ struct radio_worker {
             radiator_record &d = registry.records[i];
             if (!d.command_reserved) continue;
             if (!d.command_pending) d.control = controls[i].status;
-            int outcome = d.control_error == RADIO_ERR_DELIVERY_UNCERTAIN || d.control.attempts
+            if (!d.command_pending && (d.control.phase == RF_CONTROL_MATCHED || d.control.phase == RF_CONTROL_TIMEOUT)) {
+                // A validated readback/deadline already completed this command
+                // before a later RX restoration fault. Keep that actual outcome.
+                d.control_error = control_errors[i];
+                if (d.command_cookie) { d.tracked_result = d.control; d.tracked_error = d.control_error; }
+                d.command_pending = d.command_reserved = false;
+                continue;
+            }
+            int outcome = (!d.command_pending && control_errors[i] == RADIO_ERR_DELIVERY_UNCERTAIN) || d.control.attempts
                 ? RADIO_ERR_DELIVERY_UNCERTAIN : error;
             controls[i].status.phase = d.control.phase = RF_CONTROL_ERROR;
             control_errors[i] = d.control_error = outcome;
@@ -498,6 +506,7 @@ struct radio_worker {
             // A completed, successfully persisted inclusion stays saved even
             // when restoring RX after its acknowledgement fails.
             if (exchange_pending || !saved) {
+                if (exchange_pending) saved = false; // Previous inclusion's save is not this queued attempt.
                 bool uncertain = pair_error == RADIO_ERR_DELIVERY_UNCERTAIN ||
                     (!exchange_pending && pair.phase >= RF_PAIR_WAIT_REPLY && pair.phase <= RF_PAIR_WAIT_ACK);
                 pair.phase = status.pairing.phase = RF_PAIR_ERROR;
@@ -721,9 +730,8 @@ struct radio_worker {
                 publish(); return; // Admission/construction refusal is not a hardware fault.
             }
             if (tx_result || rx_result) {
-                // Publish the selected uncertain result before ending all affected
-                // work, including other devices and not-yet-handed-off requests.
-                publish();
+                // One locked transition closes admission and publishes outcomes
+                // before releasing any reservations or removing queued RF work.
                 fail(rx_result ? rx_result : tx_result,
                      rx_result ? RADIO_FAILURE_RX_RESTORE : RADIO_FAILURE_TX);
                 return;

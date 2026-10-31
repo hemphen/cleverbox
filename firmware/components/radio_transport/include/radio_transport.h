@@ -14,7 +14,6 @@ extern "C" {
 // wait 1 s before the first attempt. A new fault starts a new batch.
 #define RADIO_RECOVERY_ATTEMPTS 4
 #define RADIO_ERR_DELIVERY_UNCERTAIN 0x730A
-#define RADIO_ERR_UNAVAILABLE 0x730B
 typedef enum { RADIO_INITIALIZING, RADIO_RECOVERING, RADIO_READY, RADIO_FAULTED } radio_health;
 typedef enum { RADIO_FAILURE_NONE, RADIO_FAILURE_INITIALIZE, RADIO_FAILURE_RECEIVE,
                RADIO_FAILURE_TX, RADIO_FAILURE_RX_RESTORE, RADIO_FAILURE_RESOURCES } radio_failure_stage;

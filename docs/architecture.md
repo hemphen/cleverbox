@@ -376,7 +376,8 @@ commands and pairing. RF handoffs still in the bounded queue are removed.
 Reservations clear; successful recovery never resumes them. Other queued
 local actions keep their order and run normally, including during exhaustion.
 Their pending/save results describe the actual persistence call, not radio
-health. An inclusion already saved successfully remains complete/saved even
+health. A validated matching report remains matched if RX restoration then fails.
+An inclusion already saved successfully remains complete/saved even
 if restoring RX immediately after its acknowledgement fails. Unsaved pairing
 work ends; retry pairing explicitly. IDs, pairings, templates, selections and
 all unrelated storage survive recovery unchanged.
