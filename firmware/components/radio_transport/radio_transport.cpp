@@ -241,29 +241,22 @@ static esp_err_t control_start_at(uint32_t id, const rf_control_request *request
     radiator_record *d = find_device(id);
     esp_err_t result = rf_allowed() ? ESP_ERR_INVALID_STATE : RADIO_ERR_LISTEN_ONLY;
     if (d && rf_allowed() && status.ready && radio_requests && !status.registry_error && !pair_reserved && !d->command_reserved && !mutation_pending) {
-        if (!chosen.state.size) {
-            const uint8_t *bytes = d->has_control_template ? d->control_template :
-                d->has_saved_template ? d->saved_template : nullptr;
-            if (bytes) { chosen.state.size = CONTROLLER_STATE_BYTES; memcpy(chosen.state.bytes, bytes, CONTROLLER_STATE_BYTES); }
-        }
-        if (chosen.state.size) {
-            rf_control check = {};
-            if (!rf_control_start(&check, &chosen, d->pair.controller, d->pair.radiator, admitted_ms))
-                result = ESP_ERR_INVALID_ARG;
-            else {
-                r.id = d->id; memcpy(r.state, chosen.state.bytes, CONTROLLER_STATE_BYTES);
-                r.mode = chosen.mode; r.centi_c = chosen.centi_c; r.clock_seconds = chosen.clock_seconds;
-                rf_control_status previous = d->control; int previous_error = d->control_error;
-                d->command_reserved = d->command_pending = true;
-                d->control = check.status; d->control_error = 0;
-                result = queue_request(r);
-                if (result != ESP_OK) {
-                    d->command_reserved = d->command_pending = false;
-                    d->control = previous; d->control_error = previous_error;
-                } else {
-                    d->command_cookie = cookie;
-                    if (cookie) { d->result_cookie = cookie; d->tracked_result = d->control; d->tracked_error = 0; }
-                }
+        rf_control check = {};
+        if (!rf_control_start(&check, &chosen, d->pair.controller, d->pair.radiator, admitted_ms))
+            result = ESP_ERR_INVALID_ARG;
+        else {
+            r.id = d->id;
+            r.mode = chosen.mode; r.centi_c = chosen.centi_c; r.clock_seconds = chosen.clock_seconds;
+            rf_control_status previous = d->control; int previous_error = d->control_error;
+            d->command_reserved = d->command_pending = true;
+            d->control = check.status; d->control_error = 0;
+            result = queue_request(r);
+            if (result != ESP_OK) {
+                d->command_reserved = d->command_pending = false;
+                d->control = previous; d->control_error = previous_error;
+            } else {
+                d->command_cookie = cookie;
+                if (cookie) { d->result_cookie = cookie; d->tracked_result = d->control; d->tracked_error = 0; }
             }
         }
     }
@@ -733,8 +726,7 @@ struct radio_worker {
                 radiator_record *d = find_device(request.id);
                 if (d) {
                     size_t index = d - registry.records;
-                    rf_control_request command = {}; command.state.size = CONTROLLER_STATE_BYTES;
-                    memcpy(command.state.bytes, request.state, CONTROLLER_STATE_BYTES);
+                    rf_control_request command = {};
                     command.mode = request.mode; command.centi_c = request.centi_c; command.clock_seconds = request.clock_seconds;
                     bool started = rf_control_start(&controls[index], &command, d->pair.controller, d->pair.radiator,
                                                     request.admitted_ms);

@@ -2,9 +2,9 @@
 
 `rf_touch_e3_state` builds one Cleverbox replacement-controller profile from
 explicit inputs and a fresh radiator report. It needs no controller-state
-capture or per-radiator template. This is a portable codec entry point only:
-production `rf_control_next` still calls `rf_live_state`, and all template
-admission, commissioning, storage, HTTP, MQTT and HA behavior stays unchanged.
+capture or per-radiator template. Production `rf_control_next` uses this builder as its sole normal state-frame
+path. See [delivery and context policy](architecture.md#command-delivery) and
+[legacy compatibility](architecture.md#templates).
 The builder creates bytes, never RF work. It adds no transmission trigger.
 
 ## Contract
@@ -43,12 +43,27 @@ mode, local seconds since midnight and Boost minutes. There are no defaults.
 The caller must retain the actual receipt time and current-boot provenance.
 The age check alone is not proof of a report answering a particular poll. It
 cannot replace the production command machine's fresh-report routing, admission,
-deadline or readback rules. Those rules are unchanged and do not use this builder.
+deadline or readback rules. The command machine enforces those rules before using this builder.
 
 Failure returns false and clears a non-null output, including its size, so a
 previous usable frame cannot survive a failed call. Success writes a staged
 59-byte frame. Inputs are unchanged unless output aliases the report frame;
 that in-place use is supported. No allocation or platform dependency is added.
+
+## Normal command duration
+
+Production supplies **120 minutes** (`5B=0078`) for Comfort, Off, Frost and Eco.
+This is an explicit wire-profile choice, not a default borrowed from a synthetic
+fixture, a timer, a countdown or an autonomous expiry claim. No Boost mode or
+scheduled follow-up command is added. The builder itself still requires an
+explicit duration input and retains its existing range contract.
+
+The pinned [Boost evidence](https://github.com/hemphen/clevertouch-radio/blob/b951a71721a28989298f884b1fc075a90e569cb8/docs/evidence/radiator-rf.md#boost-time-5b)
+records 120 as the ordinary default, a re-pairing reset from 116 to 120, and a
+return from 117 to 120 after cancelling Boost. The observed configured 1439 and
+remainders 116/117 do not conflict with selecting this one non-Boost profile.
+They are not per-radiator capabilities. Saved template `5B` values are ignored.
+Physical behavior under this profile still requires acceptance testing.
 
 ## Complete wire layout
 
@@ -137,14 +152,14 @@ clock/minute/target rounding boundaries, invalid identities and relationships,
 bad inner/outer CRCs separately, malformed/truncated reports, unsupported modes,
 missing/future/negative/stale timestamps and signed timestamp limits. A deliberately
 different legacy template proves opaque values, `97` bits and `5B` stay preserved
-in the existing path. Existing state-machine and host regressions still apply.
+in the retained legacy diagnostic codec. Normal delivery never calls it. Existing state-machine and host regressions still apply.
 
 The normal Build workflow also runs host/HTTP, capacity, discovery-limit, real
 broker and pinned RadioLib tests and an ESP-IDF 5.5.1 ESP32-C6 firmware build.
-Actual HA integration is not required by AGENTS.md for this isolated codec entry
-point: no MQTT/HA, identity registry, observation behavior, device-time/network
-recovery or host HA code changes. Moving the unchanged stale-threshold definition
-into the codec header does not change observation freshness.
+Actual HA integration on the final affected revision is required for normal
+command-path changes, including no-template draft-and-Apply control. Host/worker
+suites also exercise generated command routing, retry context, legacy preservation,
+time, recovery, replay protection and listen-only silence.
 
 Software vectors establish construction correctness only. Independent on-air
 capture, radiator readback and physical heating acceptance remain unverified

@@ -166,11 +166,13 @@ static esp_err_t live_command(httpd_req_t *r)
 #endif
     bool valid = identity(j, &id) && integer(j, "mode", 0, 3, &mode) && integer(j, "centi_c", 0, 3000, &target) &&
                  (!override || integer(j, "clock_seconds", 0, 86399, &clock));
-    // Omission selects learned RAM state, then saved state. Explicit invalid imports must
-    // fail, rather than silently falling back to a different template.
-    if (valid && cJSON_GetObjectItemCaseSensitive(j, "state"))
-        valid = rf_parse_hex(string(j, "state"), command.state.bytes,
-                             sizeof(command.state.bytes), &command.state.size);
+    // Deprecated per-command template overrides must fail explicitly. Retained
+    // diagnostic import/preview APIs never supply normal command bytes.
+    if (cJSON_GetObjectItemCaseSensitive(j, "state")) {
+        cJSON_Delete(j);
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST,
+            "state override is deprecated; commands use the generated controller profile");
+    }
     if (valid) {
         command.mode = (rf_mode)mode; command.centi_c = target; command.clock_seconds = clock;
     }
@@ -192,10 +194,10 @@ static esp_err_t live_command(httpd_req_t *r)
         return httpd_resp_sendstr(r, "Device time unavailable. Connect home Wi-Fi for SNTP or explicitly set UTC time in Device time, then retry.");
     }
     if (result == ESP_ERR_INVALID_ARG)
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid target, mode, clock or radiator template");
+        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid target, mode, clock or saved relationship");
     if (result != ESP_OK) {
         httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, "Command busy, radio unavailable, no saved pairing or no learned controller state or saved state; check radio status or import a template");
+        return httpd_resp_sendstr(r, "Command busy, radio unavailable or no valid saved pairing; check radio status");
     }
     httpd_resp_set_status(r, "202 Accepted");
     httpd_resp_set_type(r, "application/json");
@@ -278,6 +280,8 @@ static void device_json(cJSON *j, const radiator_record *d, int64_t now) {
     cJSON_AddNumberToObject(command, "error", d->control_error);
     cJSON_AddNumberToObject(command, "attempts", d->control.attempts);
     cJSON_AddBoolToObject(command, "pending", d->command_reserved);
+    cJSON_AddStringToObject(command, "frame_source", "generated-touch-e3");
+    // Deprecated legacy-data diagnostics, never command prerequisites.
     cJSON_AddBoolToObject(command, "template_available", d->has_control_template || d->has_saved_template);
     cJSON_AddStringToObject(command, "template_source", d->has_control_template ? "learned" :
                            d->has_saved_template ? "saved" : "missing");

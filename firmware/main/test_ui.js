@@ -52,7 +52,7 @@ async function main() {
   });
   vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
   await new Promise(setImmediate);
-  assert.match(fields.templateStatus.textContent, /No controller state learned/);
+  assert.match(fields.templateStatus.textContent, /Generated Touch E3 profile/);
   data.ready=false; data.health='initializing'; data.retry_in_ms=null; data.retry_allowed=false;
   await vm.runInContext('refreshRadio()',context);
   assert.match(fields.radioStatus.textContent,/setup attempt in progress/);
@@ -64,27 +64,34 @@ async function main() {
   assert.equal(fields.retryRadio.disabled,false);
   data.ready=true; data.health='ready'; data.retry_allowed=false;
 
+  await vm.runInContext('refreshRadio()',context);
+  assert.equal(fields.sendTarget.disabled, false); // No template gate.
+  assert.match(html, /<details><summary>Deprecated template diagnostics: storage and preview/);
+  assert.match(html, /<details><summary>Deprecated template diagnostics: retained captures/);
   assert.equal(fields.simulationPanel.hidden, true);
   fields.mode.value = '3'; fields.temperature.value = '15.5';
   await fields.sendTarget.handlers.click();
   assert.deepEqual(lastRequest, {url: '/api/command', body: {id: 1, mode: 3, centi_c: 1550}});
   assert.match(fields.commandAction.textContent, /delivery is not yet established/);
+  fields.mode.value='1'; await fields.sendTarget.handlers.click();
+  assert.equal(lastRequest.body.centi_c,0);
+  fields.mode.value='3';
   fields.state.value = '  explicit-import  ';
   await fields.sendTarget.handlers.click();
-  assert.equal(lastRequest.body.state, 'explicit-import');
+  assert.equal(lastRequest.body.state, undefined);
   await buttons.find(button => button.dataset.command === 'target').click();
   assert.equal(lastRequest.url, '/api/preview');
   assert.equal(lastRequest.body.state, 'explicit-import');
   data.command.template_available = true; data.command.template_age_ms = 2500;
   await vm.runInContext('refreshRadio()', context);
-  assert.match(fields.templateStatus.textContent, /learned 2.5 s ago \(RAM only\)/);
+  assert.match(fields.templateStatus.textContent, /no template required/);
   data.command.learned_available = true;
   data.command.saved_available = true;
   data.command.template_source = 'saved';
   delete data.command.template_age_ms;
   data.command.save_status = 'succeeded';
   await vm.runInContext('refreshRadio()', context);
-  assert.match(fields.templateStatus.textContent, /Capture age unknown/);
+  assert.match(fields.templateStatus.textContent, /no template required/);
   assert.match(fields.stateStorageStatus.textContent, /Latest explicit save: succeeded/);
   await fields.saveState.handlers.click();
   assert.deepEqual(lastRequest, {url: '/api/controller-state', body: {action: 'save', id: 1}});
@@ -96,7 +103,7 @@ async function main() {
   data.command.save_status = 'failed'; data.command.state_store_error = 3;
   await vm.runInContext('refreshRadio()', context);
   assert.match(fields.stateStorageStatus.textContent, /Latest explicit save: failed/);
-  assert.match(fields.stateStorageStatus.textContent, /previous usable state retained/);
+  assert.match(fields.stateStorageStatus.textContent, /previous legacy data retained/);
   data.command.state_load_error = 2;
   await vm.runInContext('refreshRadio()', context);
   assert.match(fields.stateStorageStatus.textContent, /could not be loaded/);
@@ -127,7 +134,7 @@ async function main() {
   await new Promise(setImmediate);
   assert.equal(fields.state.value,'');
   assert.match(fields.pairedReport.textContent,/No report/);
-  assert.match(fields.templateStatus.textContent,/No controller state/);
+  assert.match(fields.templateStatus.textContent,/Generated Touch E3 profile/);
   await fields.sendTarget.handlers.click(); assert.equal(lastRequest.body.id,2); assert.equal(lastRequest.body.state,undefined);
   await fields.clearState.handlers.click(); assert.equal(lastRequest.body.id,2);
   await fields.removeRadiator.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/radiators',body:{action:'remove',id:2}});
@@ -275,7 +282,7 @@ async function main() {
   assert.equal(fields.sendTarget.disabled,true); assert.equal(fields.pairStart.disabled,true);
   assert.match(fields.passiveObservations.textContent,/F1040506 → F10A0B0C.*STALE/);
   assert.match(fields.passiveObservations.textContent,/Measured: unavailable/);
-  assert.match(fields.passiveObservations.textContent,/Candidate: F10A0B0C/);
+  assert.doesNotMatch(fields.passiveObservations.textContent,/Candidate|template/);
   assert.equal(fields.adoptCandidate.disabled,false);
   fields.replaceCandidate.checked=true;
   await fields.adoptCandidate.handlers.click();

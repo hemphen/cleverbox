@@ -64,7 +64,7 @@ is neither HTTP authentication nor a network firewall.
 | `GET /api/radiators` | – | Same response as `/api/radio` |
 | `POST /api/radiators` | 255 B | Select, rename, remove |
 | `POST /api/pairing` | 255 B | Start, cancel, save pairing |
-| `POST /api/controller-state` | 767 B | Save, import, clear template |
+| `POST /api/controller-state` | 767 B | Deprecated legacy template diagnostics |
 | `POST /api/command` | 511 B | Send target and mode |
 | `POST /api/preview` | 1023 B | Build a frame without sending it |
 | `GET /api/network`, `POST /api/network` | 767 B | Wi-Fi status and setup |
@@ -132,24 +132,25 @@ global switch: selection persists while disabled, but passive snapshots/configs
 publish only while enabled. Removing or disabling discovery schedules durable
 cleanup. Use [MQTT status](#mqtt) to track completion/errors.
 
-The page shows reports and candidate metadata, including matching pair/template
-status. Candidate choices are explicit snapshots: refresh choices after capture
-or pairing. Automatic status updates never substitute a newer capture into a
-selection. A replaced or evicted selection is disabled and rejected by the API.
-Adoption returns `202`; inspect `adoption.id`, `version`, `status` and `error`.
-Only one registry mutation is pending, and the endpoint retains the latest
-adoption outcome; it is not a history service.
+The ordinary page shows reports and monitoring selections. Legacy candidate
+choices/adoption are hidden under a closed, deprecated diagnostic section.
+Candidates are explicit snapshots; status refreshes never substitute a newer
+capture into a selection. Adoption still correlates its ID/version/save outcome.
+It writes legacy data only and cannot change generated commands.
 
-Practical sequence:
+Normal control sequence:
 
-1. Leave Touch E3 operating and select listen-only (upgrades preserve old control mode).
-2. Wait for reports and candidate frames; a target change on Touch E3 may help.
-3. Identify the intended radiator by RF source address.
-4. Disconnect Touch E3 before enabling control and pairing explicitly. Pairing can reset radiator settings.
-5. Refresh candidates, adopt the matching capture, set device time and send a normal command.
+1. Disconnect Touch E3 and explicitly enable control on STA.
+2. Put one radiator in pairing mode and pair with explicit addresses. Wait for
+   `inclusion.saved:true`; failed storage must be retried explicitly.
+3. Set device time (SNTP or manual UTC).
+4. Send a normal target and mode. Cleverbox polls, receives a fresh routed report,
+   sends a generated profile frame, then waits for matching observed readback.
 
-No step runs automatically. Observations/candidates clear at reboot. Mode,
-pairings and saved templates persist. See [cache and version rules](architecture.md#passive-commissioning).
+No capture, import, save or adoption is required. Listen-only passive monitoring
+is still available alongside Touch E3 and grants no pairing or command rights.
+No step runs automatically. Boot clears reports and commands, retains settings
+and sends nothing. See [context and retry policy](architecture.md#command-delivery).
 
 ## Radiators
 
@@ -184,7 +185,7 @@ observation.
 | --- | --- |
 | `health` | `initializing`, `ready`, `recovering`, `faulted` |
 | `ready` | Radio setup and entry to RX succeeded; independent of traffic |
-| `control_ready` | Global radio/mode/registry/pairing/mutation/clock gates permit commands; device busy/template checks still apply |
+| `control_ready` | Global radio/mode/registry/pairing/mutation/clock gates permit commands; device busy/relationship checks still apply |
 | `failure_stage`, `failure_code` | Last failure, retained after success: `none`, `initialize`, `receive`, `transmit`, `tx_start`, `tx_complete`, `rx_restore`, `resources` and underlying code |
 | `recovery_attempt`, `recovery_attempt_limit` | Current/last batch attempt and fixed limit 4 |
 | `recovery_attempts`, `recovery_successes` | Saturating lifetime setup-attempt and successful-recovery counters; initial success is not a recovery |
@@ -214,8 +215,9 @@ Reported observations keep their original ages during recovery. A global
 | `command.attempts`, `command.error` | State frames sent; last error code |
 | `command.requested_target_c`, `command.requested_mode` | Requested settings (absent when idle; Off shows 0) |
 | `command.match_age_ms` | Time since the matching report (when `matched`) |
-| `command.template_source` | `learned`, `saved` or `missing` |
-| `command.template_available`, `learned_available`, `saved_available` | Which templates exist |
+| `command.frame_source` | `generated-touch-e3`; normal frame construction |
+| `command.template_source` | Deprecated legacy diagnostic: `learned`, `saved` or `missing` |
+| `command.template_available`, `learned_available`, `saved_available` | Deprecated legacy data availability; no admission effect |
 | `command.template_age_ms` | Age of the learned template |
 | `command.save_status`, `command.clear_status` | Latest template save or clear: `not_attempted`, `pending`, `succeeded`, `failed` |
 | `command.state_store_error`, `command.state_load_error` | Storage error codes |
@@ -251,6 +253,9 @@ outstanding, at capacity, or if the radio is not ready. Track progress in
 
 ### `POST /api/controller-state`
 
+Deprecated compatibility/diagnostic endpoint. All actions retain their validation
+and storage behavior; none affects normal generated command output or transmits RF.
+
 | Request | Effect |
 | --- | --- |
 | `{"action":"save","id":1}` | Save the learned template; `409` if none |
@@ -273,15 +278,16 @@ explicit permission returns `409`; destination mismatch is `400`.
 | --- | --- | --- |
 | `id` | yes (see conventions) | Radiator |
 | `mode`, `centi_c` | yes | Requested settings |
-| `state` | no | Template for this command only (hex). Invalid values fail; they never fall back to another template. |
+| `state` | no | Deprecated and rejected with `400` whenever present, including null or valid hex. Use generated commands without this field. |
 | `clock_seconds` | forbidden on physical firmware | Presence returns `400`, including null or malformed values. Only host builds accept 0–86399 for tests. |
 
 Returns `{"status":"queued"}` with `202`. `409` cases: listen-only or mode change/storage error, clock not set, radiator
-busy, pairing or registry change running, radio not ready, no template.
+busy, pairing or registry change running, radio not ready or invalid saved relationship. No cached report or template is required at admission; a new routed report is required before each state transmission.
 Track `command.phase`; see [command delivery](architecture.md#command-delivery).
 
 ### `POST /api/preview`
 
+Deprecated template-target diagnostics (short-frame previews remain available).
 Builds a frame and returns it without transmitting:
 `{"status":"preview","transmitted":false,"frame":"<hex>"}`.
 

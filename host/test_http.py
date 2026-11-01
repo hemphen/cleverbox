@@ -90,7 +90,7 @@ def saved_state_workflow(directory):
         s = app.advance(1000)
         assert s['pairing']['saved'] and s['simulation_tx'] == []
         assert s['command']['template_source'] == 'missing'
-        app.http('/api/command', {'mode': 0, 'centi_c': 2050, 'clock_seconds': 0}, 409)
+        assert s['command']['frame_source'] == 'generated-touch-e3'
         app.http('/api/controller-state', {'action': 'save'}, 409)
         for data in ({}, {'action': 'import'}, {'action': 'import', 'state': None}):
             app.http('/api/controller-state', data, 400)
@@ -135,11 +135,12 @@ def saved_state_workflow(directory):
         matching = '23F1040506C6F1010203DF203000404B02A88A02B100E100641919DA000A000A0A47C783C11D'
         app.sim('inject', frame=matching)
         assert app.advance(1)['command']['phase'] == 'matched'
-        # A command owns its explicit override even when a new frame is learned
-        # while waiting for the fresh report. The override never reaches flash.
-        # 97 byte 1 (offset 32) is template-owned; byte 0 and byte 2 bit 0 echo DF.
+        # Per-command overrides are explicitly rejected. Learning different legacy
+        # bytes during delivery cannot change the generated profile or saved data.
         override = changed_frame(changed_frame(STATE, 32), 4)
-        app.command(state=override)
+        error = app.http('/api/command', {'mode':0,'centi_c':2050,'state':override}, 400)
+        assert 'deprecated' in error
+        app.command()
         app.advance(2)  # TX completion runs on the following owner tick.
         newer = changed_frame(STATE, 49)
         app.sim('inject', frame=newer)
@@ -147,18 +148,18 @@ def saved_state_workflow(directory):
         app.sim('inject', frame=REPORT)
         s = app.advance(2)
         sent = bytes.fromhex(s['simulation_tx'][-1])
-        assert sent[31:34] == bytes.fromhex(override)[31:34]
-        assert sent[49:51] == bytes.fromhex(override)[49:51]
+        assert sent[31:34] == bytes.fromhex('203004')
+        assert sent[49:51] == bytes.fromhex('0078')
         assert sent[1:5] == bytes.fromhex('F1010203')  # Manual source behavior retained.
         assert state_file.read_bytes() == saved
         app.sim('inject', frame=matching)
         app.advance(1)
-        # Next command selects newly learned RAM, without overwriting saved state.
+        # Later commands also ignore learned RAM, without overwriting saved data.
         app.command()
         app.advance(2)  # TX completion runs on the following owner tick.
         app.sim('inject', frame=REPORT)
         s = app.advance(2)
-        assert bytes.fromhex(s['simulation_tx'][-1])[49:51] == bytes.fromhex(newer)[49:51]
+        assert bytes.fromhex(s['simulation_tx'][-1])[49:51] == bytes.fromhex('0078')
         assert state_file.read_bytes() == saved
         assert s['command']['phase'] == 'waiting_readback'
     finally:
@@ -169,7 +170,9 @@ def saved_state_workflow(directory):
         assert s['command']['phase'] == 'idle' and s['command']['template_source'] == 'saved'
         assert s['simulation_tx'] == [] and 'observed' not in s
         # Import-and-save accepts the historic manual source policy, without RX/TX.
-        imported = changed_frame(changed_frame(STATE, 4), 32)  # 97 byte 1: template-owned
+        imported = changed_frame(STATE, 4)  # Unusual source and every opaque record.
+        for offset in (11,17,20,22,24,27,32,33,49,50):
+            imported = changed_frame(imported, offset)
         app.http('/api/controller-state', {'action': 'import', 'state': imported}, 202)
         s = app.advance(1)
         assert s['command']['save_status'] == 'succeeded' and s['simulation_tx'] == []
@@ -180,12 +183,14 @@ def saved_state_workflow(directory):
     app = App(storage)
     try:
         assert app.http()['command']['template_source'] == 'saved'
+        assert app.advance(600000)['simulation_tx'] == []  # Old legacy data grants no work.
         app.sim('scenario', name='silence')
         app.command()
         app.advance(2)  # TX completion runs on the following owner tick.
         app.sim('inject', frame=REPORT)
         s = app.advance(2)
-        assert bytes.fromhex(s['simulation_tx'][-1])[31:34] == bytes.fromhex(imported)[31:34]
+        assert s['simulation_tx'][-1] == COMFORT
+        assert bytes.fromhex(s['simulation_tx'][-1])[31:34] == bytes.fromhex('203004')
         assert bytes.fromhex(s['simulation_tx'][-1])[1:5] == bytes.fromhex('F1010203')
         app.sim('fixture')
         app.advance(1)
@@ -203,7 +208,8 @@ def saved_state_workflow(directory):
         s = app.advance(1000)
         assert s['pairing']['saved'] and s['command']['template_source'] == 'missing'
         assert s['simulation_tx'] == [] and s['command']['phase'] == 'idle'
-        app.http('/api/command', {'mode': 0, 'centi_c': 2050, 'clock_seconds': 0}, 409)
+        app.command()
+        assert app.advance(1000)['command']['phase'] == 'matched'
     finally:
         app.stop()
     # Unknown, malformed, CRC-corrupt and differently paired state remain visible
@@ -234,9 +240,54 @@ def saved_state_workflow(directory):
         app.stop()
 
 
+def generated_retry_context(directory):
+    storage = Path(directory) / 'generated-context.bin'
+    storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    app = App(storage)
+    try:
+        app.sim('scenario', name='silence')
+        # A cached report, even one received this boot, cannot answer a later poll.
+        app.sim('inject', frame=REPORT); app.advance(1)
+        app.advance(300000)
+        assert app.http()['observed']['stale']
+        app.command()
+        app.advance(2)
+        assert app.http()['command']['phase'] == 'waiting_report'
+        baseline = app.http()['simulation_tx']
+        # Bad CRC, other radiator, other controller and incompatible 0A context.
+        for frame in (REPORT[:-2]+'00', changed_frame(REPORT,4),
+                      changed_frame(REPORT,9), changed_frame(REPORT,33)):
+            app.sim('inject',frame=frame); app.advance(1)
+            assert app.http()['command']['phase']=='waiting_report'
+            assert app.http()['simulation_tx']==baseline
+        app.sim('inject',frame=REPORT); app.advance(2)
+        first = bytes.fromhex(app.http()['simulation_tx'][-1])
+        assert app.http()['command']['phase']=='waiting_readback'
+        # Retry uses new report echoes, preserving clock origin and exact deadline.
+        app.advance(2000)
+        newer = changed_frame(changed_frame(changed_frame(REPORT,16),13),24)
+        app.sim('inject',frame=newer); app.advance(2)
+        status = app.http(); second = bytes.fromhex(status['simulation_tx'][-1])
+        raw = bytes.fromhex(newer)
+        assert second[14:16] == raw[16:18] and second[39:43] == raw[23:27]
+        assert second[31:34] == bytes([raw[11],0x30,4|(raw[13]&1)])
+        assert second[49:51] == bytes.fromhex('0078')
+        assert first[52:55] == bytes([23,59,59]) and second[52:55] == bytes([0,0,1])
+        assert status['command']['attempts']==2 and status['command']['phase']=='waiting_readback'
+        tx = status['simulation_tx']
+        app.sim('inject',frame=newer); app.advance(2)
+        app.advance(149997)
+        assert app.http()['command']['phase']=='waiting_readback'
+        app.advance(1)
+        assert app.http()['command']['phase']=='timeout' and app.http()['simulation_tx']==tx
+    finally:
+        app.stop()
+
+
 def main():
     with tempfile.TemporaryDirectory() as directory:
         saved_state_workflow(directory)
+        generated_retry_context(directory)
         storage = Path(directory) / 'pairing.bin'
         app = App(storage)
         try:
@@ -262,19 +313,14 @@ def main():
             assert s['pairing']['saved'] and s['pairing']['radiator'] == 'F1040506'
             assert s['simulation_tx'][-2:] == [OFFER, BIND]
             assert Path(str(storage)+'.registry').exists()
-            response = app.http('/api/command', {'mode': 0, 'centi_c': 2050, 'clock_seconds': 0}, 409)
-            assert 'no learned controller state' in response
-            for f in (changed_frame(STATE, 4), changed_frame(STATE, 9), STATE[:-2] + '00'):
-                app.sim('inject', frame=f)
-                assert not app.advance(1)['command']['template_available']
-            tx = app.http()['simulation_tx']
-            app.sim('fixture')
-            s = app.advance(1)
-            assert s['command']['template_available'] and 'observed' not in s
-            assert s['command']['phase'] == 'idle' and s['simulation_tx'] == tx
+            assert not s['command']['template_available']
+            assert s['command']['frame_source'] == 'generated-touch-e3'
+            # No capture/import/save/adopt between pairing and command.
             # Command without imported hex: requested first, old decoded report,
             # state transmission, short ACK, then a later matching decoded report.
-            for target, mode, expected in ((2050, 0, COMFORT), (1550, 3, ECO)):
+            for target, mode, expected in ((2050, 0, COMFORT), (1550, 3, ECO),
+                (700, 2, '38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049401BE02E100641919DA000000005B0078B2173B3B9450290A'),
+                (0, 1, '38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494014001E100641919DA000000005B0078B2173B3B7DE8F50D')):
                 app.command(target, mode)
                 s = app.advance(2)
                 assert s['command']['phase'] == 'waiting_report'
@@ -336,9 +382,9 @@ def main():
             s = app.advance(1000)
             assert s['command']['phase'] == 'waiting_readback'
             assert app.advance(3000)['command']['phase'] == 'matched'
-            # Explicit invalid import cannot fall back; valid manual import still works.
+            # A deprecated override fails explicitly, then a normal command works.
             app.http('/api/command', {'mode': 0, 'centi_c': 2300, 'clock_seconds': 0, 'state': STATE[:-2] + '00'}, 400)
-            app.command(2400, state=STATE)
+            app.command(2400)
             assert app.advance(2)['command']['phase'] == 'waiting_report'
         finally:
             app.stop()
@@ -348,7 +394,7 @@ def main():
             assert s['pairing']['saved'] and not s['command']['template_available']
             assert s['command']['phase'] == 'idle' and s['simulation_tx'] == []
             assert 'observed' not in s
-            app.command(state=STATE)  # Same storage contract; manual import after restart.
+            app.command()  # Saved relationship, still no template after restart.
             assert app.advance(1000)['command']['phase'] == 'matched'
         finally:
             app.stop()
@@ -381,7 +427,7 @@ def main():
                 time.sleep(0.05)
         finally:
             app.stop()
-    print('HTTP simulation: saved state workflow/restarts/selection/clear/corruption, pairing, fixture learning, independent TX vectors, requested/readback, modes, silence, ACK-only, retry bound, delayed responses, invalid traffic, manual import and process restart: passed')
+    print('HTTP simulation: generated no-template pairing/control, all four full-byte mode vectors, retry context/freshness/deadlines, preserved legacy diagnostics/storage/restarts, requested/readback, silence/ACK-only and invalid traffic: passed')
 
 
 if __name__ == '__main__':

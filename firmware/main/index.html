@@ -73,13 +73,14 @@ MQTT state is separate from requested settings; commands require the current ses
 </section>
 <section id="simulationPanel" hidden>
 <h2>SIMULATION · no physical radio</h2>
-<p>Two invented radiators: F1040506 and F1040507. The fixture below stands in for an original controller;
-this does not establish capture-free setup. No heating or RF compatibility is tested.</p>
+<p>Two invented radiators: F1040506 and F1040507. Pair, set device time and command without a template.
+No heating or physical RF compatibility is tested.</p>
 <label>Inclusion / fixture device <select id="simulationDevice"><option value="0">F1040506</option><option value="1">F1040507</option></select></label>
 <button id="simulationChoose">Choose simulated device</button>
 <label>Responses <select id="simulationScenario"><option value="normal">Normal</option><option value="delayed">Delayed (2.5 seconds)</option><option value="silence">Silence</option><option value="ack_only">ACK only after state TX</option></select></label>
 <button id="simulationApply">Apply response scenario</button>
-<button id="simulationFixture">Inject synthetic controller-state fixture</button>
+<details><summary>Deprecated template diagnostics</summary>
+<button id="simulationFixture">Inject synthetic controller-state fixture</button></details>
 <p id="simulationAction" role="status"></p>
 </section>
 <section>
@@ -87,14 +88,10 @@ this does not establish capture-free setup. No heating or RF compatibility is te
 <p id="commissioningStatus" role="status">Checking operating mode…</p>
 <button id="listenOnly">Select listen-only</button><button id="enableControl">Enable control</button>
 <p id="modeAction" role="status"></p>
-<ol>
-<li>Leave Touch E3 running and select listen-only. Fresh installations start here.</li>
-<li>Wait for reports and controller-state candidates. A target change on Touch E3 may produce a candidate.</li>
-<li>Identify the intended radiator by its RF address below. Hearing a device never pairs or selects it for Home Assistant.</li>
-<li>Disconnect Touch E3 before enabling control and pairing explicitly. Pairing can reset radiator settings.</li>
-<li>Refresh candidates, select the matching capture and adopt it into the paired record. Then send a normal command below.</li>
-</ol>
-<small>No step runs automatically. Captures and observations clear on reboot; saved templates and operating mode persist.
+<p>For passive monitoring, leave Touch E3 running and select listen-only. Identify radiators by their RF addresses below.</p>
+<p>For control, disconnect Touch E3, explicitly enable control, pair a radiator and set device time.
+Then send a target and mode below. No capture, import or adoption is needed.</p>
+<small>Pairing can reset radiator settings. No step runs automatically. Observations clear on reboot; pairings and operating mode persist.
 Enabling control sends nothing. Listen-only is refused while pairing or RF commands are outstanding; let bounded work finish and retry.</small>
 <pre id="passiveObservations">No reports heard this boot.</pre>
 <h3>Read-only Home Assistant monitoring</h3>
@@ -105,6 +102,8 @@ Already paired addresses use their existing HA device. Remove monitoring before 
 <label>Monitoring name <input id="monitorName" maxlength="32"></label>
 <button id="monitorSelect">Select for monitoring</button><button id="monitorRename">Rename monitor</button><button id="monitorRemove">Remove monitor</button>
 <p id="monitorAction" role="status"></p><pre id="monitorStatus"></pre>
+<details><summary>Deprecated template diagnostics: retained captures</summary>
+<small>Legacy data only. Adoption never supplies normal commands.</small>
 <label>Captured controller-state candidate <select id="candidateSelect"></select></label>
 <button id="refreshCandidates">Refresh candidate choices</button>
 <p id="candidateDetails"></p>
@@ -113,6 +112,7 @@ Already paired addresses use their existing HA device. Remove monitoring before 
 <p id="adoptionAction" role="status"></p><p id="adoptionStatus" role="status"></p>
 <small>Adoption requires a matching paired radiator and station access. It writes a template; it sends no RF and is allowed in listen-only.
 Candidate choices name a specific capture. If it changes or is evicted, refresh and select again.</small>
+</details>
 </section>
 <section>
 <h2>Radio receiver</h2>
@@ -149,18 +149,17 @@ The radiator supplies its actual address in the reply. Capacity is shown below; 
 </section>
 <section>
 <h2>Set temperature and mode</h2>
-<p id="templateStatus" role="status">Checking learned controller state…</p>
-<small>Selection: per-command import, then latest learned RAM state, then saved state. A fresh radiator report is always required. Learning and storage actions send nothing. Saved opaque fields may drift; saving does not prove indefinite validity. Disconnect the original controller before command tests.</small>
+<p id="templateStatus" role="status">Commands use the generated controller profile.</p>
+<small>Needs explicit RF control, a saved pairing and usable device time. Each command polls for a fresh report.
+Requested settings and local transmission completion are separate from a later matching radiator report.</small>
+<details><summary>Deprecated template diagnostics: storage and preview</summary>
+<small>Legacy records remain readable. Saving, importing, clearing or previewing them never changes generated commands.</small>
 <button id="saveState" disabled>Save learned state / retry</button>
 <button id="clearState" disabled>Clear saved and learned state</button>
-<p id="stateStorageStatus" role="status"></p>
-<p id="stateAction" role="status"></p>
-<details><summary>Manual template import and preview</summary>
-<label>Controller-state frame <textarea id="state" spellcheck="false" placeholder="Optional for live control; required for target preview"></textarea></label>
-<small>Fallback: a complete CRC-valid 59-byte frame for this radiator. An entered template overrides the learned state. Opaque fields are preserved, not guessed.</small>
-<button data-command="target">Preview imported change</button>
+<p id="stateStorageStatus" role="status"></p><p id="stateAction" role="status"></p>
+<label>Legacy controller-state frame <textarea id="state" spellcheck="false" placeholder="Diagnostic import or preview only"></textarea></label>
+<button data-command="target">Preview legacy template change</button>
 <button id="importState" disabled>Import and save / retry</button>
-<small>Import-and-save retains the frame's source address; live transmission uses the paired controller address. Successful clear keeps pairing and drops RAM state; an already admitted command keeps its snapshot. Save/import never starts a command. Clear the input after saving to use automatic selection.</small>
 </details>
 <label>Mode <select id="mode"><option value="0">Comfort</option><option value="3">Eco</option><option value="2">Frost</option><option value="1">Off</option></select></label>
 <label>Target °C <input id="temperature" type="number" min="5" max="30" step="0.5" value="20"></label>
@@ -353,11 +352,9 @@ async function refreshCommissioning(refreshChoices=false){
     for(const id of ['monitorSelect','monitorRename','monitorRemove']) field(id).disabled=!httpControlAllowed||s.monitor_pending||!!s.monitor_storage_error;
     liveCandidates=s.candidates;
     field('passiveObservations').textContent=s.observations.map(o=>{
-      const c=s.candidates.find(c=>c.radiator===o.radiator);
       return o.radiator+' → '+o.controller+' · '+(o.stale?'STALE · ':'')+(o.age_ms/1000).toFixed(1)+' s ago'+
         '\nMeasured: '+(o.temperature_c===null?'unavailable':o.temperature_c+' °C')+' · Target: '+(o.target_c===null?'unavailable':o.target_c+' °C')+' · Mode: '+(modes[o.mode]??o.mode)+
-        '\nPaired: '+(o.paired?'ID '+o.paired_id:'no')+' · Saved template: '+(o.saved_template?'yes':'no')+
-        ' · Candidate: '+(c?c.controller+' · '+(c.age_ms/1000).toFixed(1)+' s ago':'none');
+        '\nPaired: '+(o.paired?'ID '+o.paired_id:'no');
     }).join('\n\n') || 'No reports heard this boot.';
     if(refreshChoices || !choicesLoaded){
       candidateChoices=s.candidates.map(c=>({...c})); choicesLoaded=true;
@@ -477,18 +474,14 @@ async function refreshRadio(){
     }
     const command=data.command;
     if(command){
-      const source=command.template_source??(command.template_available?'learned':'missing');
-      field('templateStatus').textContent=source==='learned'
-        ? 'Controller state learned '+(command.template_age_ms/1000).toFixed(1)+' s ago (RAM only).'+(command.saved_available?' Saved fallback also available.':'')
-        : source==='saved' ? 'Saved controller state available. Capture age unknown; no fresh observation since restart is implied.'
-        : 'No controller state learned or saved. Listen to the original controller using the saved addresses, or import a same-radiator template. Unresolved fields prevent template-free control.';
+      field('templateStatus').textContent='Generated Touch E3 profile · no template required.';
       field('saveState').disabled=!pair?.saved||!command.learned_available||command.save_status==='pending';
       field('importState').disabled=!pair?.saved||command.save_status==='pending';
       field('clearState').disabled=!pair?.saved||command.clear_status==='pending';
       field('stateStorageStatus').textContent='Latest explicit save: '+(command.save_status??'not_attempted')
         +' · clear: '+(command.clear_status??'not_attempted')
         +(command.state_load_error?' · Saved state could not be loaded: '+command.state_load_error:'')
-        +(command.state_store_error?' · Storage operation failed: '+command.state_store_error+'; previous usable state retained. Retry explicitly.':'');
+        +(command.state_store_error?' · Storage operation failed: '+command.state_store_error+'; previous legacy data retained. Retry explicitly.':'');
       const active=['poll','waiting_report','sending','waiting_readback'].includes(command.phase);
       field('sendTarget').disabled=!data.ready||!selectedId||!pair?.saved||active||!!command.pending||!!data.exchange_id;
       field('commandStatus').textContent=command.phase==='idle' ? 'No live command requested.'
@@ -561,8 +554,7 @@ field('sendTarget').addEventListener('click',async()=>{
   const button=field('sendTarget'); button.disabled=true;
   const body={id:selectedId,mode:Number(field('mode').value),
     centi_c:Math.round(Number(field('temperature').value)*100)};
-  const state=field('state').value.trim();
-  if(state) body.state=state;
+  if(body.mode===1) body.centi_c=0;
   try {
     const response=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!response.ok) throw new Error(await response.text());

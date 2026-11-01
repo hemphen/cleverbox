@@ -58,7 +58,7 @@ def run(directory):
         request(app, ap, '/api/network', {'action': 'configure', 'ssid': 'generated', 'password': 'testonly123'}, 202)
         connect(app)
         assert status(app)['configured']
-        app.http('/api/controller-state', {'action': 'import', 'state': STATE}, 202)
+        assert not app.http()['command']['template_available']
         app.advance(1)
         actions = [('/api/pairing', {'action': a, 'source': 'F1010203', 'destination': 'F1100001', 'id': 1})
                    for a in ('start', 'save', 'cancel')]
@@ -120,7 +120,7 @@ def run(directory):
         assert 'testonly123' not in str(request(app, ap, '/api/network'))
         request(app, ap, '/api/network', {'action': 'forget', 'confirm': True}, 202)
         assert not status(app)['configured'] and status(app)['recovery_ap']
-        assert app.http()['command']['saved_available']
+        assert app.http()['pairing']['saved'] and not app.http()['command']['template_available']
     finally:
         app.stop()
 

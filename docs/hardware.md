@@ -147,31 +147,34 @@ proves actual Wi-Fi or ESP/lwIP interface routing. All checks below remain pendi
 
 ### 5. Pairing and control
 
-Capture its genuine template first. Disconnect the Touch E3, explicitly enable
-control on STA, then put one radiator in pairing mode (`rF.bi`). Pairing
+Disconnect the Touch E3, explicitly enable control on STA, then put one
+radiator in pairing mode (`rF.bi`). No template is required. Pairing
 can reset the radiator's stored settings.
 
 - [ ] Pairing goes through `offer`, `waiting_reply`, `bind`, `waiting_ack`, `complete`, and `saved: true`.
 - [ ] Pairing with no radiator in pairing mode times out and saves nothing.
 - [ ] Cancelling during the bind delay saves nothing.
-- [ ] Adopt the matching captured candidate (or manually import a genuine template), verify persistence, and send Comfort, Off, Frost and Eco. Each reaches `matched`, and the radiator display agrees.
+- [ ] With no learned or saved template, send Comfort, Off, Frost and Eco. Each reaches `matched`, and the radiator display agrees.
 - [ ] Heating behaviour matches the setting (observe the radiator, not only reports).
 - [ ] With the radiator unpowered, a command reaches `timeout`; a later matching report changes it to `matched` without new transmissions.
 - [ ] Listen-only request during pairing/command work is refused clearly; after bounded completion retry it and independently verify silence. Control enable alone sends nothing.
-- [ ] Capture → Touch E3 disconnected → explicit enable → pair → adopt works with real equipment and genuine bytes; the transmitted controller source is Cleverbox’s paired identity.
+- [ ] Touch E3 disconnected → explicit enable → pair → set time → command works with real equipment; the transmitted controller source is Cleverbox’s paired identity.
 - [ ] Reboot with a command pending: the pairing and saved template remain, the command is not resumed and nothing is sent at boot.
 
-Open questions to answer here, using genuine captured templates only:
+Generated-profile acceptance remains unproven:
 
-- [ ] Does a template captured from the Touch E3 work after pairing under a new controller address?
-- [ ] Does a saved template stop working over days?
-- [ ] After a change made at the radiator itself, its next report has `DF` byte 1 bit 0 set. Does a command answering that report behave normally? The Touch E3 was never observed sending a state frame in reply to such a report.
+- [ ] Pair under a new explicit controller identity and capture on-air bytes with
+  an independent receiver. Compare addresses, all fixed records, report echoes,
+  `5B=0078`, local time and both CRCs against the generated output.
+- [ ] Confirm display and matching later report separately from local TX/ACK;
+  observe physical heating over time for all four modes.
+- [ ] Change a setting locally at the radiator, then answer its local-change-marked
+  report; check the profile's explicit `97` policy with capture and readback.
+- [ ] Check old installations with unusual legacy templates: data survives reboot
+  and bytes have no effect on generated commands. No RF at boot/enable/recovery.
 
-Do not substitute values for template fields during acceptance. A `matched`
-result would not show that a substitute is harmless. Building a frame without a
-template is a separate protocol investigation with a known-good baseline and a
-recovery procedure; its questions belong in clevertouch-protocol (see
-[AGENTS.md](../AGENTS.md#protocol)).
+Record contradictions in clevertouch-protocol. Host, simulator and HA tests do
+not prove identity acceptance, wire acceptance or physical regulation.
 
 ### 6. Two radiators and overlapping traffic
 

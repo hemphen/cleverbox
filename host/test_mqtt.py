@@ -91,8 +91,9 @@ def run(directory):
         assert app.http()['simulation_tx']==[]
         assert send(app,session,1)['reason']=='time_unavailable'
         app.http('/api/time',dict(action='manual',unix_seconds=1767268800))
-        assert send(app,session,2)['reason']=='busy_or_unavailable_or_missing_template'
-        app.http('/api/controller-state',dict(action='import',id=1,state=STATE),202); app.advance(1)
+        assert not app.http()['command']['template_available']
+        assert send(app,session,2)['accepted']
+        assert app.advance(1000)['command']['phase']=='matched'
         assert send(app,session,3,id=999)['reason']=='unknown_identity'
         for seq,body in enumerate((dict(session=session,request_id=4,mode=0),
                           dict(session=session,request_id=5,centi_c=2050),
@@ -102,7 +103,7 @@ def run(directory):
         assert send(app,session,8,retained=True)['reason']=='retained_command'
         assert send(app,session,8)['accepted']
         assert send(app,session,8)['reason']=='duplicate_or_out_of_order'
-        assert send(app,session,9)['reason']=='busy_or_unavailable_or_missing_template'
+        assert send(app,session,9)['reason']=='busy_or_unavailable'
         app.advance(1000)
         results=[r['payload'] for r in publications(app) if r['topic'].endswith('/result')]
         assert any(r['stage']=='delivery' and r['phase']=='matched' and r['request_id']==8 for r in results)
@@ -175,12 +176,11 @@ def run(directory):
         # Include another radiator and prove independent completion / same-device busy.
         app.sim('scenario',name='normal'); app.sim('device',index=1)
         app.http('/api/pairing',dict(action='start',source='F1010203',destination='F1100001'),202); app.advance(2000)
-        app.sim('fixture'); app.advance(1)
-        app.http('/api/controller-state',dict(action='save',id=2),202); app.advance(1)
+        assert not app.http('/api/radio?id=2')['command']['template_available']
         app.sim('scenario',name='silence_a')
         assert send(app,new_session,2)['accepted']
         assert send(app,new_session,3,id=2)['accepted']
-        assert send(app,new_session,4)['reason']=='busy_or_unavailable_or_missing_template'
+        assert send(app,new_session,4)['reason']=='busy_or_unavailable'
         app.advance(1000)
         radiators=app.http()['radiators']
         assert radiators[0]['command']['pending'] and radiators[1]['command']['phase']=='matched'

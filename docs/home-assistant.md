@@ -75,13 +75,15 @@ never converted into control automatically.
 
 ## Setup
 
-1. Pair and name the radiators on the Cleverbox web page.
+1. Disconnect Touch E3, explicitly enable control, then pair and name radiators
+   on the Cleverbox web page. Wait for successful pairing persistence.
 2. Configure the broker on the Cleverbox page and add Home Assistant's MQTT
    integration for the same broker. Keep the default discovery prefix
    `homeassistant` and birth message `homeassistant/status` = `online`.
 3. On the Cleverbox page, press **Enable HA discovery**. The devices appear.
-4. For controls, set the Cleverbox clock and save a template for each radiator
-   (see [templates](architecture.md#templates)).
+4. For controls, set the Cleverbox clock. No template capture/import/save/adoption
+   is needed. Apply uses [generated commands](controller-profile.md), a fresh
+   routed report and the saved pairing.
 5. Copy [`examples/home-assistant/cleverbox.yaml`](../examples/home-assistant/cleverbox.yaml)
    into Home Assistant's `packages` directory. Replace every `020000000001` with
    `bridge_id` from `GET /api/mqtt`, and the radiator IDs `1` and `2` with the IDs
@@ -116,7 +118,7 @@ Apply is available only while the bridge is ready and the radiator snapshot
 belongs to the current session. A second Apply before the next snapshot reuses
 the consumed token and is rejected with `invalid_command_token`. An Apply while
 the radiator is still busy is rejected with
-`busy_or_unavailable_or_missing_template`. Neither affects the command already
+`busy_or_unavailable`. Neither affects the command already
 running. Do not automate retries.
 
 Automations set the drafts and press Apply:

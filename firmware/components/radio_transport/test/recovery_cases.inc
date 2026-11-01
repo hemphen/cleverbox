@@ -60,7 +60,7 @@ static void test_radio_fault_observation_and_writes() {
     assert(status.valid_frames==valid);
 }
 static void test_fault_persistence_and_pairing() {
-    reset(); radio_worker w; command.state=state_frame();
+    reset(); radio_worker w;
     assert(radio_control_start(1,&command)==ESP_OK); test_step(w);
     assert(radio_state_save(2,&b_state)==ESP_OK);
     // Fault before the queued local write: preserve pending status and execute it once.
@@ -102,7 +102,7 @@ static void test_fault_persistence_and_pairing() {
     assert(!status.ready && registry.records[1].control.phase==RF_CONTROL_MATCHED && !registry.records[1].command_reserved);
     // A pre-TX failure has not submitted STX, so it is a confirmed
     // failure to attempt this frame, rather than uncertain physical delivery.
-    reset(); radio_worker pre_tx; command.state=state_frame();
+    reset(); radio_worker pre_tx;
     assert(radio_control_start(1,&command)==ESP_OK); standby_result=-83; test_step(pre_tx);
     assert(!transmit_count && registry.records[0].control_error==-83 && !status.ready);
     reset(); radio_worker pre_state; start_control(pre_state,1); test_step(pre_state);

@@ -49,7 +49,7 @@ static void hear(radio_worker &worker, const rf_frame &frame) {
 }
 static void during_dequeue() {
     assert(radio_control_start(1, &command) == ESP_ERR_INVALID_STATE);
-    command.state = b_state;
+
     assert(radio_control_start(2, &command) == ESP_OK); // Admission during A handoff.
     ++checks;
 }
@@ -75,7 +75,7 @@ static void test_queue_capacity() {
 static void test_fair_turns() {
     reset(); radio_worker worker;
     rf_control_request a = command, b = command;
-    a.state = state_frame(); b.state = b_state;
+
     assert(rf_control_start(&worker.controls[0], &a, registry.records[0].pair.controller,
                             registry.records[0].pair.radiator, test_now_us / 1000));
     assert(rf_control_start(&worker.controls[1], &b, registry.records[1].pair.controller,
@@ -90,7 +90,7 @@ static void test_fair_turns() {
     }
 }
 static void test_compaction() {
-    reset(); radio_worker worker; command.state = b_state;
+    reset(); radio_worker worker;
     assert(radio_control_start(2, &command) == ESP_OK); test_step(worker);
     assert(registry.records[1].control.phase == RF_CONTROL_WAIT_REPORT);
     assert(radio_device_remove(1) == ESP_OK); test_step(worker);
@@ -107,14 +107,10 @@ static void test_fatal_rx_failure() {
     registry.count = 3; registry.next_id = 4;
     registry.records[2] = registry.records[0]; registry.records[2].id = 3;
     registry.records[2].pair.radiator[3] = 8;
-    rf_frame cstate = {};
-    assert(rf_parse_hex("38F1010203C6F10405084500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0078B20C000045403973",
-                        cstate.bytes, sizeof(cstate.bytes), &cstate.size) && rf_valid(&cstate));
-    command.state = state_frame();
     assert(radio_control_start(1, &command) == ESP_OK); test_step(worker);
     assert(registry.records[0].control.phase == RF_CONTROL_WAIT_REPORT);
-    command.state = b_state; assert(radio_control_start(2, &command) == ESP_OK);
-    command.state = cstate; assert(radio_control_start(3, &command) == ESP_OK);
+    assert(radio_control_start(2, &command) == ESP_OK);
+    assert(radio_control_start(3, &command) == ESP_OK);
     assert(queue_count == 2 && registry.records[2].command_pending);
     receive_result = -77; test_step(worker); // B transmits; restoring RX fails while C is still queued.
     assert(!status.ready && status.error == -77 && queue_count == 0);
@@ -127,7 +123,7 @@ static void test_fatal_rx_failure() {
 }
 static void test_admission_clock_and_queue_delay() {
     reset(); radio_worker worker;
-    command.state = b_state; command.clock_seconds = 86399;
+    command.clock_seconds = 86399;
     assert(radio_control_start_device(2, &command) == RADIO_ERR_TIME_UNAVAILABLE);
     assert(!queue_count && !registry.records[1].command_reserved);
     assert(radio_control_start(2, &command) == ESP_OK);
@@ -149,7 +145,7 @@ static void load_fifo(const rf_frame &f, size_t size) {
 }
 static void start_control(radio_worker &worker, unsigned index) {
     auto &d = registry.records[index];
-    rf_control_request r = command; r.state = index ? b_state : state_frame();
+    rf_control_request r = command;
     assert(rf_control_start(&worker.controls[index], &r, d.pair.controller, d.pair.radiator, test_now_us / 1000));
     d.command_reserved = true;
 }
@@ -160,7 +156,7 @@ static void test_partial_and_fifo_only() {
         test_step(worker); // No outgoing work yet; leave the last live FIFO byte.
         assert(incoming_size - incoming_used == 1);
         assert(worker.frame.size == prefix - 1);
-        command.state = state_frame();
+
         assert(radio_control_start(1, &command) == ESP_OK);
         test_step(worker); // A's poll is ready while B's report is still incomplete.
         assert(!transmit_count && !receive_starts && incoming_size - incoming_used == 1);
@@ -178,7 +174,7 @@ static void test_partial_and_fifo_only() {
     }
     // FIFO-only bytes already present when outgoing work is handed off.
     reset(); radio_worker worker; load_fifo(report_b(false), 1);
-    command.state = state_frame(); assert(radio_control_start(1, &command) == ESP_OK);
+    assert(radio_control_start(1, &command) == ESP_OK);
     test_step(worker); assert(!transmit_count && !worker.frame.size && incoming_used == 0);
 }
 static void test_report_before_selection() {
@@ -280,7 +276,7 @@ static void test_deferred_state_and_results() {
     hear(failed, report_b(true)); assert(registry.records[1].control.phase == RF_CONTROL_MATCHED);
 }
 static void test_expired_handoffs_and_rx_failure() {
-    reset(); radio_worker command_worker; command.state = state_frame();
+    reset(); radio_worker command_worker;
     assert(radio_control_start(1, &command) == ESP_OK);
     test_now_us += RF_CONTROL_WAIT_MS * 1000LL; test_step(command_worker);
     assert(!transmit_count && registry.records[0].control.phase == RF_CONTROL_TIMEOUT);
@@ -343,19 +339,53 @@ static void test_sustained_input_deadlines() {
 #include "recovery_cases.inc"
 #include "tx_cases.inc"
 
+static void test_generated_relationships() {
+    reset(); radio_worker w;
+    auto &a=registry.records[0]; auto &b=registry.records[1];
+    b.pair.controller[3]=9;
+    b.has_saved_template=true;
+    memcpy(b.saved_template,b_state.bytes,CONTROLLER_STATE_BYTES);
+    const auto saved=b;
+    assert(!a.has_control_template && !a.has_saved_template);
+    assert(radio_control_start(1,&command)==ESP_OK);
+    assert(radio_control_start(2,&command)==ESP_OK);
+    test_step(w); test_step(w);
+    assert(transmit_count==2 && transmitted_bytes[4]==9 && transmitted_bytes[9]==7);
+    hear(w,report_b(false)); // Right radiator, wrong saved controller.
+    assert(b.control.phase==RF_CONTROL_WAIT_REPORT && transmit_count==2);
+    auto report=report_b(false); report.bytes[9]=9; reseal_test(report);
+    hear(w,report);
+    assert(transmit_count==3 && transmitted_size==59);
+    assert(transmitted_bytes[4]==9 && transmitted_bytes[9]==7);
+    assert(transmitted_bytes[32]==0x30 && transmitted_bytes[33]==4);
+    assert(transmitted_bytes[49]==0 && transmitted_bytes[50]==120);
+    assert(!memcmp(b.saved_template,saved.saved_template,CONTROLLER_STATE_BYTES));
+    assert(a.control.phase==RF_CONTROL_WAIT_REPORT && !a.has_paired_report);
+    report=report_b(false); report.bytes[4]=6; reseal_test(report);
+    hear(w,report);
+    assert(transmit_count==4 && transmitted_size==59);
+    assert(transmitted_bytes[4]==3 && transmitted_bytes[9]==6);
+    assert(a.control.attempts==1 && b.control.attempts==1);
+    // Invalid saved relationships fail before reservation or any physical work.
+    reset(); radio_worker invalid;
+    registry.records[0].pair.controller[0]=0xd0;
+    assert(radio_control_start(1,&command)==ESP_ERR_INVALID_ARG);
+    assert(!queue_count && !registry.records[0].command_reserved && !transmit_count);
+}
+
 int main() {
     command.mode = RF_COMFORT; command.centi_c = 2050; command.clock_seconds = 43200;
     reset(); radio_worker worker;
     rf_frame state = state_frame();
     assert(radio_control_start(0, &command) == ESP_ERR_INVALID_STATE);
-    assert(radio_control_start(1, &command) == ESP_ERR_INVALID_STATE);
+    // Learning remains diagnostic; no template gate on commands.
     hear(worker, state);
     assert(registry.records[0].has_control_template && !registry.records[1].has_control_template);
     rf_frame bstate = state;
     const char *bhex = "38F1010203C6F10405074500004B02A83B004C00008E000084CC00000000977182939402BA00E100641919DA000000005BABCDB20C00000CFC7F4B";
     assert(rf_parse_hex(bhex, bstate.bytes, sizeof(bstate.bytes), &bstate.size));
     hear(worker, bstate); b_state = bstate;
-    command.state = {};
+
     assert(radio_control_start(1, &command) == ESP_OK);
     assert(radio_control_start(1, &command) == ESP_ERR_INVALID_STATE);
     assert(radio_device_remove(1) == ESP_ERR_INVALID_STATE);
@@ -364,7 +394,7 @@ int main() {
     dequeue_hook = during_dequeue;
     worker.publish(); assert(registry.records[0].command_reserved && registry.records[0].command_pending);
     test_step(worker); assert(checks == 1 && registry.records[0].control.phase == RF_CONTROL_WAIT_REPORT);
-    dequeue_hook = nullptr; command.state = {};
+    dequeue_hook = nullptr;
     assert(registry.records[1].command_reserved && registry.records[1].command_pending);
     assert(radio_control_start(2, &command) == ESP_ERR_INVALID_STATE);
     // B was admitted during A handoff; one transmit per step.
@@ -386,6 +416,7 @@ int main() {
     assert(radio_pair_cancel(id) == ESP_OK); test_step(worker); assert(!exchange_id);
     queue_full = true; assert(radio_control_start(1, &command) == ESP_ERR_TIMEOUT);
     assert(!registry.records[0].command_reserved); queue_full = false;
+    test_generated_relationships();
     test_tx_lifecycle(); test_tx_signal_and_deadline(); test_tx_failures();
     test_tx_fairness_and_expiry(); test_tx_local_queue_and_identity(); test_tx_template_mutation(); test_tx_pair_cancel_and_silence();
     test_recovery_bounds(); test_radio_fault_observation_and_writes();

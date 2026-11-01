@@ -77,7 +77,7 @@ def run(directory):
         pump(lambda:any(t.endswith('/state') for t,p,r in messages))
         assert any(t.endswith('/state') and not p['available'] for t,p,r in messages)
         assert http()['simulation_tx']==[]
-        http('/api/controller-state',dict(action='import',id=1,state=STATE),202); lib.simulation_advance(1)
+        assert not http('/api/radio')['command']['template_available']
         http('/api/time',dict(action='manual',unix_seconds=1767268800))
         session=http('/api/mqtt')['session']
         payload=json.dumps(dict(session=session,request_id=1,mode=0,centi_c=2150))

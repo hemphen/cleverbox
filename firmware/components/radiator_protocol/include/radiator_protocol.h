@@ -30,7 +30,8 @@ typedef struct {
 } rf_report;
 // Decode only the documented radiator-report shape, after validating both CRCs.
 bool rf_decode_report(const rf_frame *frame, rf_report *report);
-// Build a live state from a same-radiator template and a newly received report.
+// Legacy diagnostic codec only; normal commands use rf_touch_e3_state.
+// Build from a same-radiator template and a newly received report.
 // Refresh addresses, measured temperature, E1, zero DA and local clock; keep opaque fields.
 bool rf_live_state(rf_frame *out, const rf_frame *state, const rf_frame *report,
                    const uint8_t controller[4], const uint8_t radiator[4],

@@ -25,7 +25,7 @@ def run(directory):
         assert not s['usable'] and s['source'] == 'unsynchronized'
         assert not s['synchronized_this_boot'] and s['sync_age_ms'] is None and 'utc' not in s
         assert s['timezone'] == 'UTC0'
-        app.http('/api/controller-state', {'action': 'import', 'state': STATE}, 202)
+        assert not app.http()['command']['template_available']
         app.advance(1)
         error = app.http('/api/command', {'mode': 0, 'centi_c': 2050}, 409)
         assert 'Device time unavailable' in error and 'Wi-Fi' in error and 'UTC' in error

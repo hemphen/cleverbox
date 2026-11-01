@@ -146,10 +146,9 @@ old-boot versions are rejected. Admission copies the exact selected bytes into
 the existing registry save request under the mutex; later traffic cannot alter
 the queued snapshot. The persistence result names its ID/version. On success,
 adoption saves that template and clears the learned RAM override so the selected
-bytes become the active saved template. On failure the previous templates remain.
-Adoption works in listen-only and sends nothing. Command construction still
-rewrites the source to the paired controller; captured sources grant no control.
-Manual hex import remains available.
+bytes become the saved legacy template. On failure the previous templates remain.
+Adoption works in listen-only and sends nothing. Generated commands ignore all candidate/learned/saved bytes; captured sources
+grant no control. Deprecated manual hex import remains diagnostic access only.
 
 ## Passive Home Assistant monitoring
 
@@ -229,57 +228,29 @@ Removing a record does not unpair the physical radiator.
 
 ## Templates
 
-A template is a CRC-valid 59-byte controller-state frame whose destination is
-the radiator's address. Production commands are built from it. The portable
-[explicit controller profile](controller-profile.md) is a separate codec entry
-point with no dispatch caller. It does not change the selection or admission
-rules below.
+Normal commands use only the [generated controller profile](controller-profile.md).
+Templates are deprecated diagnostic data. No template selection, fallback or
+missing-template gate exists in admission or delivery. Neither saved nor learned
+bytes can override addresses, constants, report echoes, duration, target or clock.
 
-**Selection** at command admission, first match wins:
+The registry wire format and migration are unchanged. Old templates, including
+unusual opaque values, stay readable and are never silently deleted. An invalid
+legacy record still reports its load error and stays on disk. Registry corruption
+and persistence failures retain their existing explicit gates; removing a template
+dependency does not repair storage or authorize RF.
 
-1. `state` supplied in the HTTP command (one command only; not persisted)
-2. Learned template (RAM)
-3. Saved template (NVS)
+**Learning.** The worker retains the latest CRC-valid controller-state frame
+whose source and destination match the saved relationship in RAM, for diagnostics
+only. Passive candidate capture remains independent. Neither writes flash.
 
-With none available the command is refused.
-
-**Learning.** The worker stores, in RAM, the latest controller-state frame
-whose source is the record's controller address and whose destination is its
-radiator address. Learning never writes flash and never sends anything.
-Cleverbox does not receive its own transmissions, so for a radiator paired by
-Cleverbox nothing ever sends a learnable frame. Import a template for those
-radiators (`/api/controller-state`, action `import`); the import checks
-structure, CRCs and destination, and accepts any source.
-
-**Saving.** `save` copies the learned template to NVS. `import` validates and
-saves a supplied frame. `clear` removes both saved and learned templates.
-
-**Frame construction.** Offsets include the length byte.
-
-| Bytes | Field | Value sent |
-| --- | --- | --- |
-| 0, 5 | Length `38`, marker `C6` | Fixed |
-| 1–4, 6–9 | Source, destination | Controller and radiator address from the pairing |
-| 11–12, 17, 19–20 | `45`, `3B`, `4C` | Template |
-| 14–15 | `4B` measured temperature | Copied from the fresh report, including `084C` (unavailable) |
-| 22–24, 26–29 | `8E`, `CC` | Template |
-| 31–33 | `97` | Echo of the fresh report's `DF`: byte 0 copied, and `DF` byte 2 bit 0 (heating now) into byte 2 bit 0. Byte 1 and the rest of byte 2 from the template |
-| 35–37 | `94` target and mode | Raw target `320 + 18 × °C` rounded (tenths of °F); Off sends raw 320. Mode byte 0 Comfort, 1 Off, 2 Frost, 3 Eco |
-| 39–42 | `E1` | Copied from the fresh report |
-| 44–47 | `DA` | Zero |
-| 49–50 | `5B` Boost time | Template. Minutes; the next Boost's duration, or the time left during a Boost |
-| 52–54 | `B2` clock | Local hour, minute, second (see [Time](#time)) |
-| 55–56 | Inner CRC | CRC-16/MODBUS over bytes 1–54, little-endian |
-| 57–58 | Outer CRC | CRC-16/CMS over bytes 0–56, big-endian |
-
-Non-Off targets must be 5–30 °C. Zeroing `DA` and echoing `DF` in `97` match
-the controller frames in the protocol reference. Copying `E1` from the report is
-an assumption. None of this is confirmed on hardware.
-
-The controller holds the Boost time and counts it down during a Boost.
-Production control has no Boost mode and never changes `5B`, so the template's value only
-sets the next Boost's duration. A template captured during a Boost carries the
-time then left.
+**Compatibility.** Deprecated `/api/controller-state` save/import/clear/adopt
+and template-target `/api/preview` remain available on STA with the same validation,
+persistence results and no-RF semantics. The page puts these under closed,
+explicitly deprecated diagnostic sections. `/api/command` rejects any `state`
+field with `400`, even a valid or null value, instead of ignoring a requested
+override or using a second command stack. HTTP template availability/source/age
+fields describe legacy data only; `command.frame_source` is `generated-touch-e3`.
+No stored format, IDs, names, pairings, operating mode or unrelated settings change.
 
 ## Pairing
 
@@ -309,11 +280,34 @@ radiators run independently.
 | --- | --- | --- |
 | `poll` | Poll queued | Sent → `waiting_report` |
 | `waiting_report` | Waiting for a report from the radiator | Report → `sending` |
-| `sending` | State frame queued, built from template and that report | Sent → `waiting_readback` |
+| `sending` | State frame queued, generated from the request and that report | Sent → `waiting_readback` |
 | `waiting_readback` | Waiting for a report showing the requested target and mode | Match → `matched`; mismatch after attempt 1 → `sending` |
 | `matched` | A report showed the requested target and mode | Terminal |
 | `timeout` | A wait expired | Terminal |
 | `error` | Transmit or radio failure | Terminal |
+
+Admission requires enabled RF with durable mode, ready radio, valid saved
+relationship, usable device time, available per-radiator reservation and the
+existing registry/pairing/queue gates. It does not require a cached report:
+only a report received after the command's poll completes can advance delivery.
+
+Context and retry policy:
+
+- Each `waiting_report` or eligible `waiting_readback` transition snapshots the
+  actual CRC-valid exact-layout report, both saved addresses and receipt time.
+  Require `0A=47`. Wrong-address, corrupt or incompatible reports do not make
+  a state ready. Cached observations, including young ones, are not inputs.
+- While `sending` waits for RX/fair scheduling, retain that answering report and
+  its original timestamp. Later mismatches do not extend or replace it. A later
+  matching report after a state attempt can still reconcile before retry TX.
+- Every selection rebuilds through `rf_touch_e3_state`. Context must have
+  nonnegative, ordered current-boot times and age strictly below five minutes.
+  The unchanged 150 s ready deadline normally expires first. No timestamp is
+  refreshed to make old data look new. Physical TX retains its already built
+  bytes through completion; it never rebuilds during an in-flight packet.
+- A second attempt requires a newly received mismatching report after the first
+  state completes and uses its new `4B`, `DF` and `E1`. No blind retry or template
+  fallback exists. Local time follows the admission snapshot described below.
 
 Rules:
 

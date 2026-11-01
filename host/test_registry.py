@@ -55,19 +55,19 @@ def two_devices(directory):
         assert app.advance(1000)['simulation_tx'] == []
         a = pair(app, 0)
         assert a > 0
-        app.http('/api/command', {'id': a, 'mode': 0, 'centi_c': 2050, 'clock_seconds': 0, 'state': STATE}, 409)
+        app.http('/api/command', {'id': a, 'mode': 0, 'centi_c': 2050, 'clock_seconds': 0}, 409)
         app.http('/api/pairing', {'action': 'start', 'source': 'F1010203', 'destination': 'F1100001'}, 409)
         app.http('/api/pairing', {'id': a + 1, 'action': 'cancel'}, 409)
         assert app.advance(2000)['pairing']['saved']
         mutate(app, a, 'rename', name='Living room')
-        save(app, a)
+        assert not selected(app,a)['command']['template_available']
         b = pair(app, 1)
         assert b != a
         app.http('/api/command', {'id': a, 'mode': 0, 'centi_c': 2050, 'clock_seconds': 0}, 409)
         s = app.advance(2000)
         assert s['inclusion']['saved'] and s['simulation_tx'][-1] == BIND_B
         mutate(app, b, 'rename', name='Bedroom')
-        save(app, b)
+        assert not selected(app,b)['command']['template_available']
         assert len(app.http('/api/radiators')['radiators']) == 2
         assert selected(app, a)['name'] == 'Living room' and selected(app, b)['name'] == 'Bedroom'
         saved = disk.read_bytes()
@@ -155,7 +155,7 @@ def two_devices(directory):
         app.advance(2)
         assert app.http()['simulation_tx'][-1] == COMFORT
         assert selected(app, a)['command']['phase'] == 'waiting_readback'
-        # A pending command retains its admitted opaque bytes despite later learning.
+        # A pending generated command ignores later legacy template learning.
         app.sim('inject', frame=changed_frame(STATE, 49))
         app.advance(1)
         assert disk.read_bytes() == saved
@@ -183,7 +183,7 @@ def two_devices(directory):
         assert s['simulation_tx'] == [] and len(s['radiators']) == 2
         for identity, name in ((a, 'Living room'), (b, 'Bedroom')):
             d = selected(app, identity)
-            assert d['name'] == name and d['command']['template_source'] == 'saved'
+            assert d['name'] == name and d['command']['template_source'] == 'missing'
             assert d['command']['phase'] == 'idle' and not d['command']['learned_available'] and 'observed' not in d
         # A storage commit failure must preserve old RAM/disk; explicit retry works.
         blocker = Path(str(disk) + '.tmp'); blocker.mkdir()
@@ -200,7 +200,7 @@ def two_devices(directory):
     app = App(path)
     try:
         assert len(app.http()['radiators']) == 1
-        assert selected(app, b)['name'] == 'Bedroom updated' and selected(app, b)['command']['saved_available']
+        assert selected(app, b)['name'] == 'Bedroom updated' and not selected(app, b)['command']['saved_available']
         assert app.advance(1000)['simulation_tx'] == []
         app.command(1550, 3, id=b)
         assert app.advance(1000)['command']['phase'] == 'matched'
@@ -281,6 +281,8 @@ def pairing_storage_failure(directory):
         app.http('/api/pairing', {'action':'start','source':'F1010203','destination':'F1100001'}, 409)
         app.http('/api/pairing', {'action':'save','id':identity+1}, 409)
         tx = s['simulation_tx']
+        app.http('/api/command', {'id':identity,'mode':0,'centi_c':2050,'clock_seconds':0}, 409)
+        assert app.advance(1000)['simulation_tx'] == tx
         blocker.rmdir()
         app.http('/api/pairing', {'action':'save','id':identity}, 202)
         s = app.advance(1)

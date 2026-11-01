@@ -17,13 +17,13 @@ static void reseal_test(rf_frame &f) {
 }
 static void mode_during_tx() { assert(radio_mode_set(false)==RADIO_ERR_MODE_BUSY); }
 static void test_passive_mode() {
-    reset(); radio_worker worker; command.state=state_frame();
+    reset(); radio_worker worker;
     assert(radio_mode_set(false)==ESP_OK && status.mode_pending && queue_count==1);
     assert(radio_control_start(1,&command)==RADIO_ERR_LISTEN_ONLY);
     const uint8_t c[]={0xf1,1,2,3}, dst[]={0xf1,0x10,0,1}; uint32_t id;
     assert(radio_pair_start(c,dst,&id)==RADIO_ERR_LISTEN_ONLY);
     test_step(worker); assert(!status.control_enabled && status.mode_save_result==RADIO_STORE_OK && !transmit_count);
-    worker.start_tx(command.state,false,1); assert(!transmit_count && !tx_in_progress);
+    worker.start_tx(state_frame(),false,1); assert(!transmit_count && !tx_in_progress);
     hear(worker,state_frame());
     assert(status.candidate_count==1); // receive and storage remain available without TX
     assert(radio_candidate_adopt(1,registry.records[0].pair.radiator,candidates[0].version,false)==ESP_OK);
@@ -44,7 +44,7 @@ static void test_passive_mode() {
     mode_store_result=0; assert(radio_mode_set(true)==ESP_OK); test_step(worker);
     assert(!status.mode_error && !status.mode_persistence_uncertain && status.control_enabled);
     transmit_hook=mode_during_tx;
-    worker.start_tx(command.state,false,1); assert(tx_in_progress); worker.step(); assert(!tx_in_progress);
+    worker.start_tx(state_frame(),false,1); assert(tx_in_progress); worker.step(); assert(!tx_in_progress);
     transmit_hook=nullptr;
     assert(radio_pair_start(c,dst,&id)==ESP_OK);
     assert(radio_mode_set(false)==RADIO_ERR_MODE_BUSY);
@@ -52,7 +52,7 @@ static void test_passive_mode() {
     assert(radio_mode_set(false)==ESP_OK); test_step(worker);
     // Real task mutex; contenders start together. Exactly one reserves admission.
     for(unsigned n=0;n<80;++n) {
-        reset(); command.state=state_frame(); std::atomic<unsigned> ready{0}; std::atomic<bool> go{false};
+        reset(); std::atomic<unsigned> ready{0}; std::atomic<bool> go{false};
         int mode_result=-1,command_result=-1;
         std::thread a([&]{++ready;while(!go.load()) std::this_thread::yield();mode_result=radio_mode_set(false);});
         std::thread b([&]{++ready;while(!go.load()) std::this_thread::yield();command_result=radio_control_start(1,&command);});
@@ -111,7 +111,7 @@ static void test_passive_capture() {
     assert(radio_candidate_adopt(1,registry.records[0].pair.radiator,selected.version,true)==RADIO_ERR_CANDIDATE_CHANGED);
     assert(!transmit_count);
     // A report to another controller cannot advance an actual paired command.
-    reset(); radio_worker strict; command.state=b_state;
+    reset(); radio_worker strict;
     assert(radio_control_start(2,&command)==ESP_OK); test_step(strict);
     report=report_b(false); report.bytes[9]^=1; reseal_test(report); hear(strict,report);
     assert(strict.controls[1].status.phase==RF_CONTROL_WAIT_REPORT && transmit_count==1 && !registry.records[1].has_paired_report);

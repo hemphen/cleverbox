@@ -112,7 +112,7 @@ static void test_tx_fairness_and_expiry() {
     tx_done(); w.step(); assert(w.next_device==1 && registry.records[0].control.attempts==1);
     // Fresh independent request may arrive while A is physically outstanding.
     reset(); radio_worker parallel; start_control(parallel,0); tx_busy(); parallel.step();
-    command.state=b_state;
+
     assert(control_start_at(2,&command,test_now_us/1000,222)==ESP_OK);
     for (unsigned i=0;i<3;++i) parallel.step();
     assert(queue_count==1 && registry.records[1].command_pending && transmit_count==1);
@@ -123,7 +123,7 @@ static void test_tx_fairness_and_expiry() {
     assert(registry.records[1].result_cookie==222 && registry.records[1].tracked_result.phase==RF_CONTROL_WAIT_REPORT);
     // A queued command expires from its admission time, rather than getting a
     // fresh allowance after waiting behind another transmission.
-    reset(); radio_worker queued; start_control(queued,0); tx_busy(); queued.step(); command.state=b_state;
+    reset(); test_now_us=200000000; radio_worker queued; start_control(queued,0); tx_busy(); queued.step();
     assert(control_start_at(2,&command,test_now_us/1000-RF_CONTROL_WAIT_MS+1,333)==ESP_OK);
     test_now_us+=2000; queued.step(); assert(registry.records[1].command_pending);
     tx_done(); queued.step(); queued.step();
@@ -131,7 +131,7 @@ static void test_tx_fairness_and_expiry() {
     assert(registry.records[1].result_cookie==333 && transmit_count==1);
 }
 static void test_tx_local_queue_and_identity() {
-    reset(); radio_worker w; command.state=b_state;
+    reset(); radio_worker w;
     assert(control_start_at(2,&command,test_now_us/1000,987)==ESP_OK); tx_busy(); w.step();
     assert(radio_device_remove(2)==ESP_ERR_INVALID_STATE);
     assert(radio_device_remove(1)==ESP_OK); // Compaction accepted during physical TX.
@@ -170,14 +170,14 @@ static void test_tx_local_queue_and_identity() {
     // command cannot overtake or discard a pending store.
     reset(); radio_worker ordered; assert(radio_device_rename(1,"First")==ESP_OK);
     ordered.step(); assert(store_calls==1 && !transmit_count);
-    command.state=b_state; assert(radio_control_start(2,&command)==ESP_OK);
+    assert(radio_control_start(2,&command)==ESP_OK);
     tx_busy(); ordered.step(); assert(radio_device_rename(1,"Second")==ESP_OK);
     ordered.step(); assert(store_calls==1 && queue_count==1);
     tx_done(); ordered.step(); ordered.step();
     assert(store_calls==2 && !strcmp(registry.records[0].name,"Second"));
 }
 static void test_tx_template_mutation() {
-    reset(); radio_worker w; command.state=b_state;
+    reset(); radio_worker w;
     assert(control_start_at(2,&command,test_now_us/1000,456)==ESP_OK);
     w.step(); w.step();
     rf_frame report=report_b(false); rf_control_receive(&w.controls[1],test_now_us/1000,&report);

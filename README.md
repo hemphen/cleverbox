@@ -42,24 +42,19 @@ polls the radiator, waits for a fresh report, then sends a controller-state
 frame with the new target and mode. A command counts as `matched` only when a
 later report shows the requested values.
 
-Each production controller-state frame is built from a **template**: a 59-byte frame for
-that radiator captured from real traffic. The fields with no known meaning
-(`45`, `3B`, `4C`, `8E`, `CC` and part of `97`) and the Boost time (`5B`) come
-from the template; the rest comes from the fresh report, the command and the
-clock. See [architecture](docs/architecture.md#templates).
-
-The portable codec also provides an explicit
-[Touch E3 replacement-controller profile](docs/controller-profile.md) that needs
-no captured template. It is tested in isolation and is not selected by production
-command dispatch.
+Normal commands use the [Touch E3 replacement-controller profile](docs/controller-profile.md).
+Addresses come from the saved pairing; target and mode come from the request;
+report echoes come from a newly received report; clock comes from device time.
+No capture, import, save or adoption is needed. Legacy templates remain readable
+for diagnostics and never affect normal output.
 
 ## Known limitations
 
 - No hardware testing yet. RF timing, transmit acceptance and heating behaviour
   are unverified.
-- Control needs a genuine same-radiator template. Capture one passively while
-  Touch E3 is operating, then adopt it after explicit pairing, or import hex.
-  New-controller acceptance still requires hardware validation.
+- New-controller pairing, generated on-air bytes, radiator display/readback and
+  physical heating still require hardware validation. Software tests prove
+  construction and delivery behavior only.
 - The HTTP interface has no login. The setup access point uses the fixed,
   published password `cleverbox`. After setup it opens only through deliberate
   recovery (BOOT or Wi-Fi forget), and permits Wi-Fi setup and diagnostics only.
@@ -91,8 +86,7 @@ against two invented radiators, `F1040506` and `F1040507`:
 1. Explicitly enable control in **Passive commissioning**, then choose a simulated device and start pairing. Inclusion completes in about
    two seconds.
 2. Under **Device time**, set a manual UTC time.
-3. Inject the synthetic controller-state fixture, then **Save learned state**.
-4. Send a target and mode. The requested values appear first, the readback
+3. Send a target and mode, without a template. The requested values appear first, the readback
    shortly after.
 
 Restart `make simulate` to check that pairings, names and saved templates
@@ -123,7 +117,7 @@ during reset. Then follow the
 
 | Document | Contents |
 | --- | --- |
-| [Controller profile](docs/controller-profile.md) | Isolated builder contract, byte layout, evidence and vectors |
+| [Controller profile](docs/controller-profile.md) | Normal generated profile, builder contract, evidence and vectors |
 | [Architecture](docs/architecture.md) | Components, tasks, state machines, storage, timing |
 | [HTTP API](docs/http-api.md) | Endpoints, payloads, status fields |
 | [MQTT](docs/mqtt.md) | Topics, command protocol, results, broker setup |

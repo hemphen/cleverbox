@@ -15,7 +15,7 @@ static rf_frame parse(const char *hex)
 }
 static rf_control_request request(void)
 {
-    rf_control_request r = {.state = parse(state_hex), .mode = RF_COMFORT,
+    rf_control_request r = {.mode = RF_COMFORT,
                             .centi_c = 2050, .clock_seconds = 86399};
     return r;
 }
@@ -87,10 +87,50 @@ static void complete_state_vectors(void)
     assert(!rf_live_state(&out, &state, &empty, controller, radiator, RF_COMFORT, 2000, 0));
     assert(!rf_live_state(&out, &state, &report, controller, radiator, RF_COMFORT, 3001, 0));
 }
+static void generated_context_contract(void)
+{
+    rf_control c; rf_frame out;
+    rf_frame report = parse(report_hex);
+    rf_frame newer = parse("23F1040506C6F1010203DF203000404B084C8A02BA00E100373764DA000A000A0A4705F7FAB5");
+    rf_frame incompatible = parse("23F1040506C6F1010203DF203000404B02A88A02BA00E100641919DA000A000A0A460C88C106");
+    start(&c);
+    rf_control_receive(&c, 999, &report); // Impossible earlier-boot context.
+    rf_control_receive(&c, 1100, &incompatible);
+    assert(c.status.phase == RF_CONTROL_WAIT_REPORT && !c.report_size);
+    rf_control_receive(&c, 1200, &report);
+    assert(c.report_received_ms == 1200 && c.deadline_ms == 151000);
+    assert(rf_control_next(&c, 2000, &out));
+    expect_frame(&out, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402B100E100641919DA000000005B0078B2000000C429F592");
+    assert(c.report_received_ms == 1200); // next() never refreshes age.
+    rf_control_receive(&c, 2100, &newer); // Ready attempt retains its answering report.
+    assert(c.report_received_ms == 1200);
+    assert(rf_control_next(&c, 2200, &out) && out.bytes[14] == 2);
+    rf_control snapshot = c;
+    // These injected corrupt machine timestamps cannot pass the builder gate,
+    // even if a future refactor were to widen the ready deadline.
+    c.report_received_ms = -1; assert(!rf_control_next(&c, 2200, &out));
+    c.report_received_ms = 2201; assert(!rf_control_next(&c, 2200, &out));
+    c.report_received_ms = 1200; c.deadline_ms = 400000;
+    assert(!rf_control_next(&c, 301200, &out));
+    c = snapshot;
+    rf_control_sent(&c, 2200, true);
+    rf_control_receive(&c, 3200, &newer);
+    assert(c.report_received_ms == 3200 && c.status.phase == RF_CONTROL_SEND);
+    assert(rf_control_next(&c, 4000, &out));
+    assert(out.bytes[14] == 8 && out.bytes[15] == 0x4c);
+    assert(!memcmp(out.bytes + 39, newer.bytes + 23, 4));
+    assert(out.bytes[49] == 0 && out.bytes[50] == 120 && out.bytes[54] == 2);
+    rf_control_sent(&c, 4000, true);
+    rf_control_receive(&c, 4100, &report);
+    assert(c.status.attempts == 2 && c.status.phase == RF_CONTROL_WAIT_READBACK);
+    assert(!rf_control_next(&c, 4200, &out));
+}
+
 int main(void)
 {
     complete_state_vectors();
-    rf_frame report = parse(report_hex), out;
+    generated_context_contract();
+    rf_frame state = parse(state_hex), report = parse(report_hex), out;
     rf_control_request r = request();
     rf_control c = {0};
     assert(!rf_control_next(&c, 0, &out));
@@ -118,7 +158,7 @@ int main(void)
     for (int i = 10; i < 55; ++i)
         if (!(i >= 14 && i <= 15) && !(i >= 35 && i <= 37) &&
             !(i >= 39 && i <= 42) && !(i >= 44 && i <= 47) && !(i >= 52 && i <= 54))
-            assert(out.bytes[i] == r.state.bytes[i]); // opaque fields survive
+            assert(out.bytes[i] == state.bytes[i]); // fixed generated profile fields
     rf_control_sent(&c, 4000, true);
     assert(c.status.phase == RF_CONTROL_WAIT_READBACK && c.status.attempts == 1);
     rf_control_receive(&c, 4500, &ack);
@@ -163,14 +203,14 @@ int main(void)
     rf_frame fresh = parse("23F1040506C6F1010203DF203000404B084C8A02BA00E100373764DA000A000A0A4705F7FAB5");
     rf_frame unavailable = parse("23F1040506C6F1010203DF203000404B084C8A084C00E100373764DA000A000A0A477906FA25");
     rf_frame updated;
-    assert(rf_live_state(&updated, &r.state, &fresh, controller, radiator, RF_OFF, 0, 12345));
+    assert(rf_live_state(&updated, &state, &fresh, controller, radiator, RF_OFF, 0, 12345));
     assert(updated.bytes[14] == 8 && updated.bytes[15] == 0x4c); // unavailable echo
     assert(updated.bytes[35] == 1 && updated.bytes[36] == 0x40 && updated.bytes[37] == 1);
     assert(!memcmp(updated.bytes + 39, fresh.bytes + 23, 4));
     assert(updated.bytes[52] == 3 && updated.bytes[53] == 25 && updated.bytes[54] == 45);
     expect_frame(&updated, "38F1010203C6F10405064500004B084C3B004C00008E000084CC000000009720300494014001E100373764DA000000005B0078B203192D3A8CFC68");
-    assert(!rf_live_state(&updated, &r.state, &fresh, controller, radiator, RF_ECO, 2000, 86400));
-    assert(!rf_live_state(&updated, &r.state, &wrong_dest, controller, radiator, RF_ECO, 2000, 0));
+    assert(!rf_live_state(&updated, &state, &fresh, controller, radiator, RF_ECO, 2000, 86400));
+    assert(!rf_live_state(&updated, &state, &wrong_dest, controller, radiator, RF_ECO, 2000, 0));
     start(&c); rf_control_receive(&c, 1100, &report); rf_control_sent(&c, 1200, true);
     rf_control_receive(&c, 1300, &unavailable); assert(c.status.phase != RF_CONTROL_MATCHED);
     c = (rf_control){0}; r.clock_seconds = 86400;
@@ -178,14 +218,16 @@ int main(void)
     r = request(); r.mode = (rf_mode)8; assert(!rf_control_start(&c, &r, controller, radiator, 0));
     r = request(); r.centi_c = 499; assert(!rf_control_start(&c, &r, controller, radiator, 0));
     uint8_t other[4] = {0xf1,4,5,7}; r = request();
-    assert(!rf_control_start(&c, &r, controller, other, 0));
+    assert(!rf_control_start(&c, &r, controller, controller, 0));
+    assert(rf_control_start(&c, &r, controller, other, 0));
+    c = (rf_control){0};
     r.centi_c = 2051; assert(rf_control_start(&c, &r, controller, radiator, 1000));
     rf_control_sent(&c, 1000, true); rf_control_receive(&c, 1100, &report);
     rf_control_sent(&c, 1200, true); rf_control_receive(&c, 1300, &match);
     assert(c.status.phase == RF_CONTROL_MATCHED); // Compare encoded target, not unrepresentable hundredths.
     rf_frame readdressed_report = parse("23F1040506C6F1070809DF203000404B02A88A02BA00E100641919DA000A000A0A47F4BE58B2");
     const uint8_t new_controller[4] = {0xf1,7,8,9}; r = request();
-    assert(rf_live_state(&updated, &r.state, &readdressed_report, new_controller, radiator, RF_COMFORT, 2050, 0));
+    assert(rf_live_state(&updated, &state, &readdressed_report, new_controller, radiator, RF_COMFORT, 2050, 0));
     assert(!memcmp(updated.bytes + 1, new_controller, 4) && !memcmp(updated.bytes + 6, radiator, 4));
     expect_frame(&updated, "38F1070809C6F10405064500004B02A83B004C00008E000084CC00000000972030049402B100E100641919DA000000005B0078B2000000B1BED423");
     static const char *mode_reports[] = {

@@ -22,8 +22,9 @@ ESP32-C6 + CC1101 board. Read [README.md](README.md) and
   permitted. Its constants must trace to observed protocol evidence, not to
   synthetic fixtures. Keep its reversible assumptions and input contract in
   [docs/controller-profile.md](docs/controller-profile.md). Captures are evidence,
-  not controller personalities or capability descriptions. Production dispatch
-  still requires templates; changing that admission is a separate milestone.
+  not controller personalities or capability descriptions. Normal commands use
+  only this generated profile, with explicit non-Boost duration 120 minutes.
+  Legacy templates are diagnostic data, never defaults or an automatic fallback.
 
 ## Scope
 
@@ -47,8 +48,9 @@ ESP32-C6 + CC1101 board. Read [README.md](README.md) and
   energy figures.
 - Radiator IDs are stable across restarts and never reused.
 - Nothing is sent at boot: no inclusion, polls or settings changes.
-- Templates reach flash only through the save and import actions. Passive learning
-  stays in RAM.
+- Legacy templates reach flash only through explicit diagnostic save, import or
+  adoption. Passive learning stays in RAM. Preserve old records; do not use them
+  for normal commands. No capture/import/adoption step belongs in ordinary setup.
 - Use bounded queues, timeouts and retries. Do not block network or event loops.
 - Do not add a thermostat or PID loop without an explicit requirement.
 - Take pin assignments from the board schematic or manufacturer firmware and
