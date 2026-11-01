@@ -99,7 +99,7 @@ def two_devices(directory):
         assert app.http()['active_commands'] == 1
         assert app.advance(149000)['active_commands'] == 1
         assert selected(app, a)['command']['phase'] == 'waiting_report'
-        app.advance(1)
+        app.advance(2)  # Reply deadline starts at physical completion.
         assert selected(app, a)['command']['phase'] == 'timeout'
         assert selected(app, b)['command']['phase'] == 'matched'
         app.sim('scenario', name='normal')
@@ -111,9 +111,9 @@ def two_devices(directory):
         # Interleaved reports drive separate state transmissions and retry bounds.
         app.sim('scenario', name='silence')
         app.command(id=a)
-        app.advance(1)
+        app.advance(2)  # Resolve the outstanding physical TX before injecting RX.
         app.command(1550, 3, id=b)
-        app.advance(1)
+        app.advance(2)  # Resolve the outstanding physical TX before injecting RX.
         app.sim('inject', frame=REPORT_B)
         app.advance(3)
         app.sim('inject', frame=REPORT)
@@ -139,7 +139,7 @@ def two_devices(directory):
         # distinct opaque controller bytes cannot contaminate another record.
         app.sim('scenario', name='silence')
         app.command(id=a)
-        app.advance(1)
+        app.advance(2)  # Resolve the outstanding physical TX before injecting RX.
         app.sim('inject', frame=REPORT_B)
         app.advance(1)
         assert selected(app, a)['command']['phase'] == 'waiting_report'

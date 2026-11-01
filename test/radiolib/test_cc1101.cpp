@@ -19,7 +19,8 @@ public:
     unsigned calibration_us = 200;
     int refuse_register = -1;
     bool calibrating = false, transmitting = false, no_start = false, no_end = false;
-    bool idle_failure = false;
+    bool idle_failure = false, stuck_high = false, underflow = false;
+    unsigned tx_strobes = 0, rx_strobes = 0;
     unsigned gdo_reads = 0;
     void reset() {
         regs.fill(0); regs[0x31] = 0x14; regs[0x35] = 1;
@@ -30,6 +31,7 @@ public:
     uint32_t digitalRead(uint32_t pin) override {
         // Same Module mapping as production: CS18, IRQ/GDO0=15, GPIO/GDO2=14.
         assert(pin == 14); ++gdo_reads; us += 100;
+        if (stuck_high) return 1;
         if (!transmitting || no_start) return 0;
         return no_end || us - tx_at < 2000;
     }
@@ -54,7 +56,7 @@ public:
             switch (addr) {
                 case 0x30: reset(); break;
                 case 0x31: fstxon_at = us; calibrating = true; regs[0x35] = 8; break;
-                case 0x34: regs[0x35] = 0x0d; break;
+                case 0x34: ++rx_strobes; regs[0x35] = 0x0d; break;
                 case 0x36:
                     if (!idle_failure) { regs[0x35] = 1; calibrating = transmitting = false; }
                     break;
@@ -62,6 +64,7 @@ public:
                     assert((regs[8] & 7) == 0); // fixed TX, hardware CRC off
                     assert(regs[6] == fifo.size());
                     assert((regs[0] & 0x3f) == 6); // GDO2 sync sent / packet end
+                    ++tx_strobes; regs[0x3a] = fifo.size();
                     sent = fifo; tx_at = us; transmitting = true; calibrating = false; regs[0x35] = 0x13; break;
                 case 0x3b: fifo.clear(); break;
             }
@@ -71,7 +74,8 @@ public:
             unsigned reg = addr == 0x3f ? addr : (addr + i - 1);
             if (out[0] & 0x80) {
                 if (reg == 0x35 && calibrating && us - fstxon_at >= calibration_us) regs[reg] = 0x12;
-                if (reg == 0x35 && transmitting && !no_end && us - tx_at >= 2000) regs[reg] = 1;
+                if (transmitting && underflow) { regs[0x35]=0x16; regs[0x3a]=0x80; }
+                else if (transmitting && !no_end && us - tx_at >= 2000) { regs[0x35]=1; regs[0x3a]=0; }
                 in[i] = regs[reg];
             } else if (reg == 0x3f) fifo.push_back(out[i]);
             else if (static_cast<int>(reg) != refuse_register) regs[reg] = out[i];
@@ -94,6 +98,7 @@ static void configure(CC1101& radio, Module& module, float bandwidth) {
 }
 static void restore(CC1101& radio, Module& module, RegisterHal& hal) {
     assert(radio.standby() == 0);
+    assert(module.SPIsetRegValue(0x00, 0x2e, 5, 0) == 0);
     assert(module.SPIsetRegValue(0x08, 2, 1, 0) == 0);
     assert(radio.startReceive() == 0);
     assert((hal.regs[0x08] & 7) == 2); // infinite RX, CRC off
@@ -142,6 +147,69 @@ int main() {
         for (unsigned reg=3; reg<=0x2e; ++reg)
             if (reg != 6) assert(hal.regs[reg] == profile[reg]); // PKTLEN retains TX length
     }
+    // Worker-style short TX: real start does no GDO completion polling and
+    // retains packet mode. Deterministic time advances between bounded samples.
+    auto start = [&](const uint8_t *bytes, size_t length) {
+        assert(radio.standby()==0);
+        assert(radio.fixedPacketLengthMode(length)==0);
+        auto reads=hal.gdo_reads;
+        int result=radio.startTransmit(bytes,length);
+        assert(hal.gdo_reads==reads);
+        return result;
+    };
+    auto complete = [&]() {
+        bool high=hal.digitalRead(14)!=0;
+        auto a=module.SPIreadRegister(0x3a | 0x40);
+        auto b=module.SPIreadRegister(0x3a | 0x40);
+        auto marc=module.SPIreadRegister(0x35 | 0x40)&0x1f;
+        return !high && a==0 && b==a && marc==1;
+    };
+    for (size_t length : {size_t(14),size_t(59),size_t(64)}) {
+        for (bool missed_pulse : {false,true}) {
+            std::vector<uint8_t> bytes(length,0x42);
+            hal.no_start=missed_pulse;
+            auto strobes=hal.tx_strobes, receives=hal.rx_strobes;
+            assert(start(bytes.data(),length)==0 && hal.tx_strobes==strobes+1);
+            assert(hal.sent==bytes && (hal.regs[0]&0x3f)==6 && !complete());
+            assert(hal.rx_strobes==receives); // No RX operation during the wait.
+            hal.us+=3000;
+            assert(complete()); // No rising edge required if IDLE/FIFO prove completion.
+            assert(radio.finishTransmit()==0 && (hal.regs[0]&0x3f)==0x2e);
+            restore(radio,module,hal);
+            assert(hal.rx_strobes==receives+1);
+            for (unsigned reg=3;reg<=0x2e;++reg)
+                if (reg!=6) assert(hal.regs[reg]==profile[reg]);
+        }
+    }
+    hal.no_start=false;
+    for (unsigned fault=0;fault<3;++fault) {
+        assert(start(packet,sizeof(packet))==0);
+        if (fault==0) hal.no_end=true;
+        if (fault==1) hal.stuck_high=true;
+        if (fault==2) hal.underflow=true;
+        hal.us+=100000;
+        assert(!complete());
+        if (fault==2) assert(hal.regs[0x3a]==0x80 && hal.regs[0x35]==0x16);
+        hal.no_end=hal.stuck_high=hal.underflow=false;
+        restore(radio,module,hal); // Deadline/fault path must force IDLE before RX.
+    }
+    // Real start mapping/calibration failures occur before STX. This verifies
+    // the production HAL's pre-STX classification against the pinned sequence.
+    auto strobes=hal.tx_strobes;
+    hal.refuse_register=0;
+    assert(start(packet,sizeof(packet))==RADIOLIB_ERR_SPI_WRITE_FAILED);
+    assert(hal.tx_strobes==strobes);
+    hal.refuse_register=-1; restore(radio,module,hal);
+    hal.calibration_us=100000;
+    auto before=hal.us;
+    assert(start(packet,sizeof(packet))==RADIOLIB_ERR_TX_TIMEOUT);
+    assert(hal.tx_strobes==strobes && hal.us-before<10000);
+    hal.calibration_us=200; restore(radio,module,hal);
+    // Real finishTransmit cleanup errors, separately from asynchronous start.
+    assert(start(packet,sizeof(packet))==0); hal.us+=3000; assert(complete());
+    hal.refuse_register=0;
+    assert(radio.finishTransmit()==(candidate ? RADIOLIB_ERR_SPI_WRITE_FAILED : 0));
+    hal.refuse_register=-1; restore(radio,module,hal);
     // Slow calibration is accepted by the new 1600 us guard, old 800 us fails.
     hal.calibration_us = 1100;
     assert(transmit(packet, sizeof(packet)) == (candidate ? 0 : RADIOLIB_ERR_TX_TIMEOUT));

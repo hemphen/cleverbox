@@ -82,7 +82,7 @@ def run(directory):
         assert app.http()['inclusion']['phase'] == 'complete'
         # A silent A command remains admitted while recovery and DHCP run. Release
         # normal replies afterwards: its single poll is followed by one state TX.
-        app.sim('scenario', name='silence'); app.command(); app.advance(1)
+        app.sim('scenario', name='silence'); app.command(); app.advance(2)
         assert app.http()['command']['phase'] == 'waiting_report'
         poll_count = len(app.http()['simulation_tx']); hold(app)
         assert len(app.http()['simulation_tx']) == poll_count
@@ -115,7 +115,7 @@ def run(directory):
         for suffix, data in unrelated.items():
             assert Path(str(storage) + suffix).read_bytes() == data
         # Restart during admitted delivery restores config only, no pending work.
-        app.sim('scenario', name='silence'); app.command(target=2100); app.advance(1)
+        app.sim('scenario', name='silence'); app.command(target=2100); app.advance(2)
         assert app.http()['command']['phase'] == 'waiting_report'
         hold(app); assert status(app)['manual_recovery']
     finally:

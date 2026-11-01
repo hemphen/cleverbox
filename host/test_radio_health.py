@@ -90,7 +90,7 @@ def run(directory):
         app.sim('scenario',name='silence'); fault(app,'transmit',-99)
         app.command(); s=app.advance(1)
         assert s['command']['phase']=='error' and s['command']['error']==0x730A
-        assert s['failure_stage']=='transmit' and s['failure_code']==-99 and not s['active_commands']
+        assert s['failure_stage']=='tx_start' and s['failure_code']==-99 and not s['active_commands']
         fault(app,'transmit',0); app.advance(1000); tx=app.http()['simulation_tx']; app.advance(10000)
         assert len(tx)==1 and app.http()['simulation_tx']==tx and app.http()['ready']
         old_session=app.http('/api/mqtt')['session']

@@ -56,14 +56,25 @@ inline int xQueueReceive(QueueHandle_t, void *item, int) {
 
 using RadioLibTime_t = uint64_t;
 constexpr uint32_t RADIOLIB_NC = UINT32_MAX;
+constexpr int RADIOLIB_ERR_TX_TIMEOUT = -5;
+constexpr int RADIOLIB_CC1101_CMD_TX = 0x35;
 constexpr int RADIOLIB_ERR_NONE = 0, RADIOLIB_ENCODING_NRZ = 0;
 constexpr int RADIOLIB_CC1101_REG_PKTCTRL0 = 0, RADIOLIB_CC1101_REG_RXBYTES = 1,
               RADIOLIB_CC1101_REG_FIFO = 2, RADIOLIB_CC1101_REG_MDMCFG2 = 3,
-              RADIOLIB_CC1101_REG_PKTCTRL1 = 4;
+              RADIOLIB_CC1101_REG_PKTCTRL1 = 4, RADIOLIB_CC1101_REG_TXBYTES = 5, RADIOLIB_CC1101_REG_MARCSTATE = 6, RADIOLIB_CC1101_REG_IOCFG2 = 7;
+constexpr int RADIOLIB_CC1101_MARC_STATE_IDLE = 1, RADIOLIB_CC1101_MARC_STATE_TXFIFO_UNDERFLOW = 0x16;
+constexpr int RADIOLIB_CC1101_GDOX_HIGH_Z = 0x2e;
 inline void (*transmit_hook)() = nullptr;
 inline int transmit_result;
 inline int receive_result, begin_result, standby_result;
 inline unsigned begin_count;
+inline bool tx_strobe = true, tx_gpio_high;
+inline uint8_t tx_fifo_count = 0, tx_marc = 1;
+inline unsigned finish_count;
+inline int finish_result;
+inline void (*poll_hook)() = nullptr;
+inline unsigned tx_status_reads;
+inline int gdo_mapping = 0x2e;
 inline uint8_t transmitted_bytes[64];
 inline size_t transmitted_size;
 inline unsigned transmit_count;
@@ -98,14 +109,22 @@ public:
     virtual void spiEndTransaction() = 0;
     virtual void spiEnd() = 0;
 };
+inline RadioLibHal *test_hal;
 class Module {
 public:
-    Module(RadioLibHal *, int, int, uint32_t, int) {}
+    Module(RadioLibHal *h, int, int, uint32_t, int) { test_hal=h; }
     int SPIsetRegValue(int reg, int value, int, int) {
+        if (reg == RADIOLIB_CC1101_REG_IOCFG2) gdo_mapping = value;
         if (reg == RADIOLIB_CC1101_REG_PKTCTRL0) packet_mode = value;
         return 0;
     }
     uint8_t SPIreadRegister(int reg) {
+        if (reg == (RADIOLIB_CC1101_REG_TXBYTES | 0x40)) {
+            ++tx_status_reads;
+            if (poll_hook) poll_hook();
+            return tx_fifo_count;
+        }
+        if (reg == (RADIOLIB_CC1101_REG_MARCSTATE | 0x40)) return tx_marc;
         if (reg == (RADIOLIB_CC1101_REG_RXBYTES | 0x40)) {
             ++count_reads;
             uint8_t count = incoming_size - incoming_used;
@@ -126,13 +145,16 @@ public:
     explicit CC1101(Module *) {}
     int standby() { receiving = false; return standby_result; }
     int fixedPacketLengthMode(size_t size) { packet_mode = 0; fixed_length = size; return 0; }
-    int transmit(const uint8_t *bytes, size_t size) {
+    int startTransmit(const uint8_t *bytes, size_t size) {
+        if (tx_strobe) { uint8_t stx = 0x35, in; test_hal->spiBegin(); test_hal->spiTransfer(&stx, 1, &in); }
+        gdo_mapping = 6;
         assert(size <= sizeof(transmitted_bytes) && packet_mode == 0 && size == fixed_length);
         memcpy(transmitted_bytes, bytes, size); transmitted_size = size;
         ++transmit_count;
         if (transmit_hook) transmit_hook();
         return transmit_result;
     }
+    int finishTransmit() { ++finish_count; if (!finish_result) gdo_mapping = 0x2e; return finish_result; }
     int startReceive() {
         ++receive_starts; incoming_size = incoming_used = 0;
         receiving = receive_result == 0; return receive_result;
@@ -155,7 +177,7 @@ struct spi_device_interface_config_t { int clock_speed_hz, spics_io_num, queue_s
 struct spi_transaction_t { size_t length; const void *tx_buffer; void *rx_buffer; };
 inline void gpio_set_direction(int, int) {}
 inline void gpio_set_level(int, uint32_t) {}
-inline uint32_t gpio_get_level(int) { return 0; }
+inline uint32_t gpio_get_level(int pin) { assert(pin == 14); return tx_gpio_high; }
 inline void esp_rom_delay_us(RadioLibTime_t) {}
 inline int spi_bus_initialize(int, const spi_bus_config_t *, int) { return 0; }
 inline int spi_bus_add_device(int, const spi_device_interface_config_t *, void **p) { *p=(void *)1; return 0; }

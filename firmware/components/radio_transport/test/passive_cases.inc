@@ -22,34 +22,34 @@ static void test_passive_mode() {
     assert(radio_control_start(1,&command)==RADIO_ERR_LISTEN_ONLY);
     const uint8_t c[]={0xf1,1,2,3}, dst[]={0xf1,0x10,0,1}; uint32_t id;
     assert(radio_pair_start(c,dst,&id)==RADIO_ERR_LISTEN_ONLY);
-    worker.step(); assert(!status.control_enabled && status.mode_save_result==RADIO_STORE_OK && !transmit_count);
-    int rx=-1; bool uncertain; assert(transmit_frame(command.state,rx,uncertain)==RADIO_ERR_LISTEN_ONLY && !transmit_count && rx==0);
+    test_step(worker); assert(!status.control_enabled && status.mode_save_result==RADIO_STORE_OK && !transmit_count);
+    worker.start_tx(command.state,false,1); assert(!transmit_count && !tx_in_progress);
     hear(worker,state_frame());
     assert(status.candidate_count==1); // receive and storage remain available without TX
     assert(radio_candidate_adopt(1,registry.records[0].pair.radiator,candidates[0].version,false)==ESP_OK);
-    worker.step(); assert(registry.records[0].has_saved_template && !transmit_count);
-    assert(radio_mode_set(true)==ESP_OK); worker.step(); assert(status.control_enabled && !transmit_count);
+    test_step(worker); assert(registry.records[0].has_saved_template && !transmit_count);
+    assert(radio_mode_set(true)==ESP_OK); test_step(worker); assert(status.control_enabled && !transmit_count);
     assert(radio_control_start(1,&command)==ESP_OK);
-    assert(radio_mode_set(false)==RADIO_ERR_MODE_BUSY); worker.step(); assert(transmit_count==1);
+    assert(radio_mode_set(false)==RADIO_ERR_MODE_BUSY); test_step(worker); assert(transmit_count==1);
     assert(radio_mode_set(false)==RADIO_ERR_MODE_BUSY);
-    test_now_us += RF_CONTROL_WAIT_MS*1000LL; worker.step();
+    test_now_us += RF_CONTROL_WAIT_MS*1000LL; test_step(worker);
     assert(!registry.records[0].command_reserved);
-    assert(radio_mode_set(false)==ESP_OK); worker.step();
+    assert(radio_mode_set(false)==ESP_OK); test_step(worker);
     assert(!status.control_enabled && transmit_count==1);
     for(int error : {ESP_ERR_INVALID_STATE,ESP_ERR_TIMEOUT}) {
-        mode_store_result=error; assert(radio_mode_set(true)==ESP_OK); worker.step();
+        mode_store_result=error; assert(radio_mode_set(true)==ESP_OK); test_step(worker);
         assert(!status.control_enabled && status.mode_error==error && status.mode_persistence_uncertain);
         assert(status.mode_save_result==RADIO_STORE_FAILED && radio_control_start(1,&command)==RADIO_ERR_LISTEN_ONLY);
     }
-    mode_store_result=0; assert(radio_mode_set(true)==ESP_OK); worker.step();
+    mode_store_result=0; assert(radio_mode_set(true)==ESP_OK); test_step(worker);
     assert(!status.mode_error && !status.mode_persistence_uncertain && status.control_enabled);
     transmit_hook=mode_during_tx;
-    assert(transmit_frame(command.state,rx,uncertain)==ESP_OK && !tx_in_progress);
+    worker.start_tx(command.state,false,1); assert(tx_in_progress); worker.step(); assert(!tx_in_progress);
     transmit_hook=nullptr;
     assert(radio_pair_start(c,dst,&id)==ESP_OK);
     assert(radio_mode_set(false)==RADIO_ERR_MODE_BUSY);
-    assert(radio_pair_cancel(id)==ESP_OK); worker.step(); worker.step();
-    assert(radio_mode_set(false)==ESP_OK); worker.step();
+    assert(radio_pair_cancel(id)==ESP_OK); test_step(worker); test_step(worker);
+    assert(radio_mode_set(false)==ESP_OK); test_step(worker);
     // Real task mutex; contenders start together. Exactly one reserves admission.
     for(unsigned n=0;n<80;++n) {
         reset(); command.state=state_frame(); std::atomic<unsigned> ready{0}; std::atomic<bool> go{false};
@@ -63,12 +63,12 @@ static void test_passive_mode() {
         assert(queue_count==1);
     }
     reset(); radio_worker guarded; status.control_enabled=false;
-    start_control(guarded,0); guarded.step(); // bypass admission deliberately
+    start_control(guarded,0); test_step(guarded); // bypass admission deliberately
     assert(!transmit_count && registry.records[0].control.phase==RF_CONTROL_ERROR);
     assert(registry.records[0].control_error==RADIO_ERR_LISTEN_ONLY);
     reset(); radio_worker pair_guard; status.control_enabled=false;
     assert(rf_pair_start(&pair_guard.pair,c,dst,test_now_us/1000));
-    pair_guard.step(); assert(!transmit_count && pair_guard.pair.phase==RF_PAIR_ERROR);
+    test_step(pair_guard); assert(!transmit_count && pair_guard.pair.phase==RF_PAIR_ERROR);
     puts("Listen-only admission, final TX boundary, busy/failed transitions, no replay and concurrent ordering: passed");
 }
 static void test_passive_capture() {
@@ -99,7 +99,7 @@ static void test_passive_capture() {
     assert(radio_candidate_adopt(1,registry.records[0].pair.radiator,candidates[0].version,false)==RADIO_ERR_REPLACE_REQUIRED);
     store_result=ESP_ERR_TIMEOUT;
     assert(radio_candidate_adopt(1,registry.records[0].pair.radiator,candidates[0].version,true)==ESP_OK);
-    worker.step(); assert(status.adoption_result==RADIO_STORE_FAILED && status.adoption_error==ESP_ERR_TIMEOUT);
+    test_step(worker); assert(status.adoption_result==RADIO_STORE_FAILED && status.adoption_error==ESP_ERR_TIMEOUT);
     assert(!memcmp(registry.records[0].saved_template,selected.state,59)); store_result=0;
     // Independent bounds, least-recent capture/report, low-slot tie break.
     for(size_t i=0;i<RADIO_PASSIVE_CAPACITY+1;++i) {
@@ -112,7 +112,7 @@ static void test_passive_capture() {
     assert(!transmit_count);
     // A report to another controller cannot advance an actual paired command.
     reset(); radio_worker strict; command.state=b_state;
-    assert(radio_control_start(2,&command)==ESP_OK); strict.step();
+    assert(radio_control_start(2,&command)==ESP_OK); test_step(strict);
     report=report_b(false); report.bytes[9]^=1; reseal_test(report); hear(strict,report);
     assert(strict.controls[1].status.phase==RF_CONTROL_WAIT_REPORT && transmit_count==1 && !registry.records[1].has_paired_report);
     puts("Passive production receive: separate cache bounds, strict paired isolation, candidate versions, exact snapshots and adoption errors: passed");

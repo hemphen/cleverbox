@@ -77,6 +77,8 @@ def run(directory):
         app.sim('inject', frame=REPORT) # mismatching report permits second state, not a blind retry
         app.advance(1)  # injected report and ready state TX share this receive-first iteration
         assert clock(states(app)[-1]) == 9, (clock(states(app)[-1]), app.http()['command'], [clock(f) for f in states(app)])
+        assert app.http()['command']['attempts'] == 1  # Physical state TX is still outstanding.
+        app.advance(1)  # Resolve TX before starting the readback deadline.
         assert app.http()['command']['attempts'] == 2
         before = app.http()['simulation_tx']
         app.http('/api/time', {'action': 'manual', 'unix_seconds': 1767225600})
