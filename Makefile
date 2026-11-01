@@ -2,6 +2,12 @@ BUILD_DIR ?= build
 .PHONY: test
 test:
 	@mkdir -p $(BUILD_DIR)
+	python3 firmware/components/radiator_protocol/test/profile_vectors.py --check
+	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
+	  -Ifirmware/components/radiator_protocol/include \
+	  firmware/components/radiator_protocol/radiator_protocol.c \
+	  firmware/components/radiator_protocol/test/test_profile.c -o $(BUILD_DIR)/test_profile
+	./$(BUILD_DIR)/test_profile
 	$(CC) $(CPPFLAGS) -std=c11 -Wall -Wextra -Werror -pedantic -g \
 	  -Ifirmware/components/radiator_protocol/include \
 	  firmware/components/radiator_protocol/radiator_protocol.c \

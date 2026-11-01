@@ -18,6 +18,12 @@ ESP32-C6 + CC1101 board. Read [README.md](README.md) and
   the protocol question to clevertouch-protocol.
 - Never use the synthetic fixture's template values (such as `5B`) as defaults
   in physical firmware.
+- The explicitly selected Touch E3 replacement-controller codec profile is
+  permitted. Its constants must trace to observed protocol evidence, not to
+  synthetic fixtures. Keep its reversible assumptions and input contract in
+  [docs/controller-profile.md](docs/controller-profile.md). Captures are evidence,
+  not controller personalities or capability descriptions. Production dispatch
+  still requires templates; changing that admission is a separate milestone.
 
 ## Scope
 
