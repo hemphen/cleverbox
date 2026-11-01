@@ -17,6 +17,7 @@ static bool valid_record(const radiator_record *r) {
     if (!r->id || !r->name[0] || !memchr(r->name, 0, sizeof(r->name)) ||
         (r->pair.controller[0] != 0xf1 && r->pair.controller[0] != 0xd0) ||
         r->pair.controller[0] != r->pair.radiator[0] ||
+        !(r->pair.controller[1] | r->pair.controller[2] | r->pair.controller[3]) ||
         !memcmp(r->pair.controller, r->pair.radiator, 4)) return false;
     for (const char *c = r->name; *c; ++c) if ((unsigned char)*c < 32 || *c == 127) return false;
     return true;

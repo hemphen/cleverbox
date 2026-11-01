@@ -58,6 +58,19 @@ int main(void)
     assert(device_registry_save_record(&r,&first,0) == ESP_OK);
     assert(device_registry_load(&r) == ESP_OK && r.count==1 && r.next_id==2);
     assert(sizes[0]==REGISTRY_HEADER_BYTES+REGISTRY_RECORD_BYTES && disk[0][0]==2);
+    // The generated controller profile rejects a zero controller identity suffix.
+    // The registry must reject it both before saving and when loading stored bytes.
+    radiator_record invalid = r.records[0];
+    memset(invalid.pair.controller + 1, 0, 3);
+    assert(device_registry_save_record(&r, &invalid, 0) == ESP_ERR_INVALID_ARG);
+    assert(device_registry_load(&loaded_registry) == ESP_OK && loaded_registry.count == 1);
+    const size_t controller_offset = REGISTRY_HEADER_BYTES + 4 + RADIATOR_NAME_BYTES + 1;
+    memset(disk[0] + controller_offset + 1, 0, 3);
+    assert(device_registry_load(&loaded_registry) == ESP_ERR_INVALID_STATE && !loaded_registry.count);
+    assert(disk[0][controller_offset + 1] == 0 && disk[0][controller_offset + 2] == 0 &&
+           disk[0][controller_offset + 3] == 0); // Invalid NVS data was not modified.
+    memcpy(disk[0] + controller_offset + 1, first.pair.controller + 1, 3);
+    assert(device_registry_load(&loaded_registry) == ESP_OK && loaded_registry.count == 1);
     // Full-capacity generated records; no path is special to eight or to two.
     while (r.count < CLEVERBOX_RADIATOR_CAPACITY) {
         radiator_record *d = &r.records[r.count++]; *d = r.records[0];
