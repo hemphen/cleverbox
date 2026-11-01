@@ -163,3 +163,56 @@ bool rf_live_state(rf_frame *out, const rf_frame *state, const rf_frame *report,
     *out = f;
     return true;
 }
+
+bool rf_touch_e3_state(rf_frame *out, const rf_touch_e3_request *request,
+                       const rf_report_context *context, int64_t now_ms)
+{
+    rf_report decoded;
+    if (!out) return false;
+    if (!request || !context || context->received_ms < 0 || now_ms < context->received_ms ||
+        now_ms - context->received_ms >= RF_REPORT_STALE_MS ||
+        request->mode < RF_COMFORT || request->mode > RF_ECO ||
+        (request->mode == RF_OFF ? request->centi_c != 0 :
+         (request->centi_c < 500 || request->centi_c > 3000)) ||
+        request->clock_seconds >= 86400 ||
+        request->boost_minutes < 1 || request->boost_minutes > 1439 ||
+        (request->controller[0] != 0xf1 && request->controller[0] != 0xd0) ||
+        request->controller[0] != request->radiator[0] ||
+        !(request->controller[1] | request->controller[2] | request->controller[3]) ||
+        !memcmp(request->controller, request->radiator, 4) ||
+        !rf_decode_report(context->frame, &decoded) || context->frame->bytes[33] != 0x47 ||
+        memcmp(decoded.source, request->radiator, 4) ||
+        memcmp(decoded.destination, request->controller, 4)) {
+        *out = (rf_frame){0};
+        return false;
+    }
+
+    // Reversible Touch E3 profile assumptions, NOT synthetic-fixture defaults.
+    // Observed constants and DF echo: protocol 2da47dd, backed by the captures
+    // and state_fields.py in clevertouch-radio b951a717. See docs/controller-profile.md.
+    // Every index includes the length byte. Unspecified value bytes are zero.
+    rf_frame f = {.size = 59, .bytes = {
+        [0] = 0x38, [5] = 0xc6,
+        [10] = 0x45, [13] = 0x4b, [16] = 0x3b, [18] = 0x4c,
+        [21] = 0x8e, [24] = 0x84, [25] = 0xcc,
+        [30] = 0x97, [32] = 0x30, [33] = 0x04,
+        [34] = 0x94, [38] = 0xe1, [43] = 0xda, [48] = 0x5b, [51] = 0xb2
+    }};
+    const rf_frame *report = context->frame;
+    memcpy(f.bytes + 1, request->controller, 4);
+    memcpy(f.bytes + 6, request->radiator, 4);
+    memcpy(f.bytes + 14, report->bytes + 16, 2); // Exact 4B, including 084C.
+    f.bytes[31] = report->bytes[11];
+    // DF byte 1's local-change bit is deliberately not echoed by this profile.
+    f.bytes[33] |= report->bytes[13] & 1;
+    unsigned raw = request->mode == RF_OFF ? 320 : (18 * request->centi_c + 50) / 100 + 320;
+    f.bytes[35] = raw >> 8; f.bytes[36] = raw & 255; f.bytes[37] = request->mode;
+    memcpy(f.bytes + 39, report->bytes + 23, 4); // Exact E1; DA remains zero.
+    f.bytes[49] = request->boost_minutes >> 8; f.bytes[50] = request->boost_minutes & 255;
+    f.bytes[52] = request->clock_seconds / 3600;
+    f.bytes[53] = request->clock_seconds / 60 % 60;
+    f.bytes[54] = request->clock_seconds % 60;
+    seal(&f);
+    *out = f;
+    return true;
+}

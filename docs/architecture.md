@@ -230,7 +230,10 @@ Removing a record does not unpair the physical radiator.
 ## Templates
 
 A template is a CRC-valid 59-byte controller-state frame whose destination is
-the radiator's address. Commands are built from it.
+the radiator's address. Production commands are built from it. The portable
+[explicit controller profile](controller-profile.md) is a separate codec entry
+point with no dispatch caller. It does not change the selection or admission
+rules below.
 
 **Selection** at command admission, first match wins:
 
@@ -274,7 +277,7 @@ the controller frames in the protocol reference. Copying `E1` from the report is
 an assumption. None of this is confirmed on hardware.
 
 The controller holds the Boost time and counts it down during a Boost.
-Cleverbox has no Boost mode and never changes `5B`, so the template's value only
+Production control has no Boost mode and never changes `5B`, so the template's value only
 sets the next Boost's duration. A template captured during a Boost carries the
 time then left.
 

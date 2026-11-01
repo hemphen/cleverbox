@@ -42,11 +42,16 @@ polls the radiator, waits for a fresh report, then sends a controller-state
 frame with the new target and mode. A command counts as `matched` only when a
 later report shows the requested values.
 
-Each controller-state frame is built from a **template**: a 59-byte frame for
+Each production controller-state frame is built from a **template**: a 59-byte frame for
 that radiator captured from real traffic. The fields with no known meaning
 (`45`, `3B`, `4C`, `8E`, `CC` and part of `97`) and the Boost time (`5B`) come
 from the template; the rest comes from the fresh report, the command and the
 clock. See [architecture](docs/architecture.md#templates).
+
+The portable codec also provides an explicit
+[Touch E3 replacement-controller profile](docs/controller-profile.md) that needs
+no captured template. It is tested in isolation and is not selected by production
+command dispatch.
 
 ## Known limitations
 
@@ -118,6 +123,7 @@ during reset. Then follow the
 
 | Document | Contents |
 | --- | --- |
+| [Controller profile](docs/controller-profile.md) | Isolated builder contract, byte layout, evidence and vectors |
 | [Architecture](docs/architecture.md) | Components, tasks, state machines, storage, timing |
 | [HTTP API](docs/http-api.md) | Endpoints, payloads, status fields |
 | [MQTT](docs/mqtt.md) | Topics, command protocol, results, broker setup |
