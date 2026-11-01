@@ -32,7 +32,7 @@ After normal startup, hold BOOT/IO9 for at least five seconds, then release: rec
 EN restarts without erasing setup. Configured boots and router outages never open the AP. Do not hold BOOT during reset: this can enter download mode.
 BOOT access through the supplied enclosure is unverified; opening it or a verified access hole may be necessary.
 Failed Wi-Fi trials keep an already open session. Finish recovery closes it after 60 seconds, even offline; BOOT opens it again.
-Forgetting Wi-Fi preserves radiators, templates, MQTT, timezone, discovery cleanup and admitted commands. Local HTTP has no login; use a trusted network.</small>
+Forgetting Wi-Fi preserves radiators, MQTT, timezone, discovery cleanup and admitted commands. Local HTTP has no login; use a trusted network.</small>
 </section>
 <section>
 <h2>Device time</h2>
@@ -65,7 +65,7 @@ Time setup never transmits radiator settings. Admitted commands keep their clock
 <button id="mqttDiscoveryEnable">Enable HA discovery</button><button id="mqttDiscoveryDisable">Disable HA discovery and remove entities</button>
 <button id="mqttForget">Forget MQTT only</button>
 <p id="mqttAction" role="status"></p>
-<p><a href="https://github.com/hemphen/cleverbox/blob/main/docs/home-assistant.md">Home Assistant setup and migration guide</a></p>
+<p><a href="https://github.com/hemphen/cleverbox/blob/main/docs/home-assistant.md">Home Assistant setup guide</a></p>
 <small>Local TCP broker; no TLS. Use a trusted LAN and broker topic ACLs. HTTP and NVS are unencrypted.
 Each configuration save replaces all fields; re-enter the password when saving. Stored passwords are never returned.
 Disable/enable keeps credentials. Forget preserves radiators, Wi-Fi, time and admitted RF commands.
@@ -75,12 +75,10 @@ MQTT state is separate from requested settings; commands require the current ses
 <h2>SIMULATION · no physical radio</h2>
 <p>Two invented radiators: F1040506 and F1040507. Pair, set device time and command without a template.
 No heating or physical RF compatibility is tested.</p>
-<label>Inclusion / fixture device <select id="simulationDevice"><option value="0">F1040506</option><option value="1">F1040507</option></select></label>
+<label>Inclusion device <select id="simulationDevice"><option value="0">F1040506</option><option value="1">F1040507</option></select></label>
 <button id="simulationChoose">Choose simulated device</button>
 <label>Responses <select id="simulationScenario"><option value="normal">Normal</option><option value="delayed">Delayed (2.5 seconds)</option><option value="silence">Silence</option><option value="ack_only">ACK only after state TX</option></select></label>
 <button id="simulationApply">Apply response scenario</button>
-<details><summary>Deprecated template diagnostics</summary>
-<button id="simulationFixture">Inject synthetic controller-state fixture</button></details>
 <p id="simulationAction" role="status"></p>
 </section>
 <section>
@@ -90,7 +88,7 @@ No heating or physical RF compatibility is tested.</p>
 <p id="modeAction" role="status"></p>
 <p>For passive monitoring, leave Touch E3 running and select listen-only. Identify radiators by their RF addresses below.</p>
 <p>For control, disconnect Touch E3, explicitly enable control, pair a radiator and set device time.
-Then send a target and mode below. No capture, import or adoption is needed.</p>
+Then send a target and mode below.</p>
 <small>Pairing can reset radiator settings. No step runs automatically. Observations clear on reboot; pairings and operating mode persist.
 Enabling control sends nothing. Listen-only is refused while pairing or RF commands are outstanding; let bounded work finish and retry.</small>
 <pre id="passiveObservations">No reports heard this boot.</pre>
@@ -102,17 +100,6 @@ Already paired addresses use their existing HA device. Remove monitoring before 
 <label>Monitoring name <input id="monitorName" maxlength="32"></label>
 <button id="monitorSelect">Select for monitoring</button><button id="monitorRename">Rename monitor</button><button id="monitorRemove">Remove monitor</button>
 <p id="monitorAction" role="status"></p><pre id="monitorStatus"></pre>
-<details><summary>Deprecated template diagnostics: retained captures</summary>
-<small>Legacy data only. Adoption never supplies normal commands.</small>
-<label>Captured controller-state candidate <select id="candidateSelect"></select></label>
-<button id="refreshCandidates">Refresh candidate choices</button>
-<p id="candidateDetails"></p>
-<label><input id="replaceCandidate" type="checkbox" style="width:auto"> Explicitly replace an existing saved template</label>
-<button id="adoptCandidate">Adopt selected capture</button>
-<p id="adoptionAction" role="status"></p><p id="adoptionStatus" role="status"></p>
-<small>Adoption requires a matching paired radiator and station access. It writes a template; it sends no RF and is allowed in listen-only.
-Candidate choices name a specific capture. If it changes or is evicted, refresh and select again.</small>
-</details>
 </section>
 <section>
 <h2>Radio receiver</h2>
@@ -149,18 +136,9 @@ The radiator supplies its actual address in the reply. Capacity is shown below; 
 </section>
 <section>
 <h2>Set temperature and mode</h2>
-<p id="templateStatus" role="status">Commands use the generated controller profile.</p>
+<p id="profileStatus" role="status">Commands use the generated controller profile.</p>
 <small>Needs explicit RF control, a saved pairing and usable device time. Each command polls for a fresh report.
 Requested settings and local transmission completion are separate from a later matching radiator report.</small>
-<details><summary>Deprecated template diagnostics: storage and preview</summary>
-<small>Legacy records remain readable. Saving, importing, clearing or previewing them never changes generated commands.</small>
-<button id="saveState" disabled>Save learned state / retry</button>
-<button id="clearState" disabled>Clear saved and learned state</button>
-<p id="stateStorageStatus" role="status"></p><p id="stateAction" role="status"></p>
-<label>Legacy controller-state frame <textarea id="state" spellcheck="false" placeholder="Diagnostic import or preview only"></textarea></label>
-<button data-command="target">Preview legacy template change</button>
-<button id="importState" disabled>Import and save / retry</button>
-</details>
 <label>Mode <select id="mode"><option value="0">Comfort</option><option value="3">Eco</option><option value="2">Frost</option><option value="1">Off</option></select></label>
 <label>Target °C <input id="temperature" type="number" min="5" max="30" step="0.5" value="20"></label>
 <button id="sendTarget" disabled>Send to paired radiator</button>
@@ -172,7 +150,7 @@ Requested settings and local transmission completion are separate from a later m
 <script>
 const field=id=>document.getElementById(id);
 let networkTimer, httpControlAllowed=false, rfControlAllowed=false;
-const controlButtons=['renameRadiator','removeRadiator','pairStart','pairCancel','pairSave','sendTarget','saveState','importState','clearState','saveTimezone','setManualTime','mqttSave','mqttEnable','mqttDisable','mqttForget','mqttDiscoveryEnable','mqttDiscoveryDisable','listenOnly','enableControl','adoptCandidate','monitorSelect','monitorRename','monitorRemove'];
+const controlButtons=['renameRadiator','removeRadiator','pairStart','pairCancel','pairSave','sendTarget','saveTimezone','setManualTime','mqttSave','mqttEnable','mqttDisable','mqttForget','mqttDiscoveryEnable','mqttDiscoveryDisable','listenOnly','enableControl','monitorSelect','monitorRename','monitorRemove'];
 function restrictControls(){
   if(!rfControlAllowed) for(const id of ['pairStart','sendTarget']) field(id).disabled=true;
   if(!httpControlAllowed){
@@ -216,7 +194,7 @@ async function networkAction(action){
   const body={action};
   if(action==='finish_recovery' && !confirm('Close setup/recovery access in 60 seconds? If you are using the AP, this page will disconnect even if home Wi-Fi is unavailable. Hold BOOT for five seconds and release to reopen it.')) return;
   if(action==='forget'){
-    if(!confirm('Forget home Wi-Fi only? This disconnects home Wi-Fi and erases only its saved credentials. Radiators, templates, MQTT, timezone and discovery cleanup are preserved.')) return;
+    if(!confirm('Forget home Wi-Fi only? This disconnects home Wi-Fi and erases only its saved credentials. Radiators, MQTT, timezone and discovery cleanup are preserved.')) return;
     body.confirm=true;
   }
   if(action==='configure'){
@@ -322,16 +300,8 @@ async function mqttAction(action){
 for(const [id,action] of [['mqttDiscoveryEnable','discovery_enable'],['mqttDiscoveryDisable','discovery_disable'],['mqttSave','configure'],['mqttEnable','enable'],['mqttDisable','disable'],['mqttForget','forget']])
   field(id).addEventListener('click',()=>mqttAction(action));
 refreshMqtt();
-let commissioningTimer, candidateChoices=[], choicesLoaded=false, liveCandidates=[];
-function candidateDetails(){
-  const c=candidateChoices.find(c=>c.version===field('candidateSelect').value);
-  const live=c && liveCandidates.some(x=>x.version===c.version);
-  field('candidateDetails').textContent=c
-    ? c.radiator+' ← '+c.controller+' · Capture '+c.version+(live?'':' · Replaced or evicted; refresh choices.')
-    : 'Choose a capture. Candidate availability is independent of radiator reports.';
-  field('adoptCandidate').disabled=!httpControlAllowed||!live||!c?.paired;
-}
-async function refreshCommissioning(refreshChoices=false){
+let commissioningTimer;
+async function refreshCommissioning(){
   clearTimeout(commissioningTimer);
   try{
     const response=await fetch('/api/commissioning',{cache:'no-store'});
@@ -342,33 +312,20 @@ async function refreshCommissioning(refreshChoices=false){
       (s.pending?' · Change queued; wait for persistence outcome.':'')+
       (s.storage_error?' · Storage error '+s.storage_error+'; RF disabled.':'')+
       (s.persistence_uncertain?' · Persistence uncertain; inspect after reboot or retry explicitly.':'')+
-      ' · Cache capacity: '+s.capacity+(s.observations_full?' · Observation bound reached':'')+(s.candidates_full?' · Candidate bound reached':'')+
-      ' · Evictions: reports '+s.observation_evictions+', candidates '+s.candidate_evictions;
+      ' · Cache capacity: '+s.capacity+(s.observations_full?' · Observation bound reached':'')+
+      ' · Report evictions: '+s.observation_evictions;
     field('listenOnly').disabled=field('enableControl').disabled=s.pending||!httpControlAllowed;
     field('monitorStatus').textContent='Global discovery: '+(s.discovery_enabled?'enabled':'disabled')+' · Monitor capacity: '+s.monitor_capacity+
       ' · Save: '+s.monitor_save_status+(s.monitor_pending?' · pending':'')+(s.monitor_storage_error?' · Storage error '+s.monitor_storage_error:'')+
       (s.monitor_persistence_uncertain?' · Persistence uncertain; reboot to inspect saved selections.':'')+'\n'+
       (s.monitors??[]).map(m=>m.radiator+' · '+m.name+' · '+(!m.available?'No report this boot':(m.stale?'STALE · ':'')+(m.age_ms/1000).toFixed(1)+' s ago')).join('\n');
     for(const id of ['monitorSelect','monitorRename','monitorRemove']) field(id).disabled=!httpControlAllowed||s.monitor_pending||!!s.monitor_storage_error;
-    liveCandidates=s.candidates;
     field('passiveObservations').textContent=s.observations.map(o=>{
       return o.radiator+' → '+o.controller+' · '+(o.stale?'STALE · ':'')+(o.age_ms/1000).toFixed(1)+' s ago'+
         '\nMeasured: '+(o.temperature_c===null?'unavailable':o.temperature_c+' °C')+' · Target: '+(o.target_c===null?'unavailable':o.target_c+' °C')+' · Mode: '+(modes[o.mode]??o.mode)+
         '\nPaired: '+(o.paired?'ID '+o.paired_id:'no');
     }).join('\n\n') || 'No reports heard this boot.';
-    if(refreshChoices || !choicesLoaded){
-      candidateChoices=s.candidates.map(c=>({...c})); choicesLoaded=true;
-      field('candidateSelect').replaceChildren(...candidateChoices.map(c=>{
-        const option=document.createElement('option');option.value=c.version;
-        option.textContent=c.radiator+' ← '+c.controller+' · '+(c.age_ms/1000).toFixed(1)+' s ago · '+(c.paired?'paired ID '+c.paired_id:'unpaired');return option;
-      }));
-      field('candidateSelect').value=candidateChoices[0]?.version??'';
-      field('replaceCandidate').checked=false;
-    }
-    candidateDetails();
-    const a=s.adoption;
-    field('adoptionStatus').textContent='Latest adoption: '+a.status+(a.id?' · ID '+a.id+' · '+a.version:'')+(a.error?' · Storage error '+a.error+'; previous template retained. Retry explicitly.':'');
-  }catch(error){rfControlAllowed=false;field('commissioningStatus').textContent=error.message;for(const id of ['adoptCandidate','monitorSelect','monitorRename','monitorRemove']) field(id).disabled=true;}
+  }catch(error){rfControlAllowed=false;field('commissioningStatus').textContent=error.message;for(const id of ['monitorSelect','monitorRename','monitorRemove']) field(id).disabled=true;}
   finally{restrictControls();commissioningTimer=setTimeout(refreshCommissioning,2000);}
 }
 async function changeMode(mode){
@@ -394,27 +351,13 @@ for(const [id,action] of [['monitorSelect','select'],['monitorRename','rename'],
   });
 field('listenOnly').addEventListener('click',()=>changeMode('listen-only'));
 field('enableControl').addEventListener('click',()=>changeMode('control-enabled'));
-field('refreshCandidates').addEventListener('click',()=>refreshCommissioning(true));
-field('candidateSelect').addEventListener('change',candidateDetails);
-field('adoptCandidate').addEventListener('click',async()=>{
-  if(!requireControl('adoptionAction')) return;
-  const c=candidateChoices.find(c=>c.version===field('candidateSelect').value);
-  if(!c?.paired) return;
-  try{
-    const response=await fetch('/api/controller-state',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action:'adopt',id:c.paired_id,radiator:c.radiator,version:c.version,replace:field('replaceCandidate').checked===true})});
-    if(!response.ok) throw new Error(await response.text());
-    field('adoptionAction').textContent='Adoption queued. Check the matching ID/version persistence outcome. No RF requested.';
-    await refreshCommissioning();
-  }catch(error){field('adoptionAction').textContent=error.message;}
-});
 let simulationConfigured=false, selectedId=0, pairingId=0, selectionEpoch=0, refreshTimer;
 function resetSelection(id){
   selectedId=id; selectionEpoch++;
-  field('state').value=''; field('radiatorName').value=''; field('pairedReport').textContent='Waiting for selected radiator status.';
-  field('templateStatus').textContent='Checking selected radiator…';
-  for(const id of ['sendTarget','saveState','importState','clearState']) field(id).disabled=true;
-  for(const id of ['commandAction','stateAction','commandStatus','stateStorageStatus']) field(id).textContent='';
+  field('radiatorName').value=''; field('pairedReport').textContent='Waiting for selected radiator status.';
+  field('profileStatus').textContent='Checking selected radiator…';
+  for(const id of ['sendTarget']) field(id).disabled=true;
+  for(const id of ['commandAction','commandStatus']) field(id).textContent='';
 }
 field('radiatorSelect').addEventListener('change',()=>{resetSelection(Number(field('radiatorSelect').value)); refreshRadio();});
 const modes={0:'Comfort',1:'Off',2:'Frost',3:'Eco',4:'Boost',8:'Program Comfort',11:'Program Eco'};
@@ -474,14 +417,7 @@ async function refreshRadio(){
     }
     const command=data.command;
     if(command){
-      field('templateStatus').textContent='Generated Touch E3 profile · no template required.';
-      field('saveState').disabled=!pair?.saved||!command.learned_available||command.save_status==='pending';
-      field('importState').disabled=!pair?.saved||command.save_status==='pending';
-      field('clearState').disabled=!pair?.saved||command.clear_status==='pending';
-      field('stateStorageStatus').textContent='Latest explicit save: '+(command.save_status??'not_attempted')
-        +' · clear: '+(command.clear_status??'not_attempted')
-        +(command.state_load_error?' · Saved state could not be loaded: '+command.state_load_error:'')
-        +(command.state_store_error?' · Storage operation failed: '+command.state_store_error+'; previous legacy data retained. Retry explicitly.':'');
+      field('profileStatus').textContent='Generated Touch E3 profile · no template required.';
       const active=['poll','waiting_report','sending','waiting_readback'].includes(command.phase);
       field('sendTarget').disabled=!data.ready||!selectedId||!pair?.saved||active||!!command.pending||!!data.exchange_id;
       field('commandStatus').textContent=command.phase==='idle' ? 'No live command requested.'
@@ -515,13 +451,10 @@ async function simulationAction(body){
   try {
     const response=await fetch('/api/simulation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!response.ok) throw new Error(await response.text());
-    field('simulationAction').textContent=body.action==='fixture'
-      ? 'Synthetic controller-state fixture queued through reception. This is original-controller stand-in traffic, not a radiator report.'
-      : 'Response scenario applied. Queued simulated responses cleared.';
+    field('simulationAction').textContent='Response scenario applied. Queued simulated responses cleared.';
   } catch(error){field('simulationAction').textContent=error.message;}
 }
 field('simulationChoose').addEventListener('click',()=>simulationAction({action:'device',index:Number(field('simulationDevice').value)}));
-field('simulationFixture').addEventListener('click',()=>simulationAction({action:'fixture'}));
 field('simulationApply').addEventListener('click',()=>simulationAction({action:'scenario',name:field('simulationScenario').value}));
 async function registryAction(action){
   if(!requireControl('registryAction')) return;
@@ -536,19 +469,6 @@ async function registryAction(action){
 }
 field('renameRadiator').addEventListener('click',()=>registryAction('rename'));
 field('removeRadiator').addEventListener('click',()=>registryAction('remove'));
-async function controllerStateAction(action){
-  if(!requireControl('stateAction')) return;
-  const body={action,id:selectedId};
-  if(action==='import') body.state=field('state').value.trim();
-  try {
-    const response=await fetch('/api/controller-state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!response.ok) throw new Error(await response.text());
-    field('stateAction').textContent='Storage action queued; check latest save/clear result. No command requested.';
-  } catch(error){field('stateAction').textContent=error.message;}
-}
-field('saveState').addEventListener('click',()=>controllerStateAction('save'));
-field('importState').addEventListener('click',()=>controllerStateAction('import'));
-field('clearState').addEventListener('click',()=>controllerStateAction('clear'));
 field('sendTarget').addEventListener('click',async()=>{
   if(!requireControl('commandAction') || !rfControlAllowed) return;
   const button=field('sendTarget'); button.disabled=true;
@@ -592,9 +512,7 @@ field('retryRadio').addEventListener('click',async()=>{
 document.querySelectorAll('button[data-command]').forEach(button=>button.addEventListener('click',async()=>{
   if(!requireControl('result')) return;
   const command=button.dataset.command;
-  const body=command==='target'
-    ? {command,state:field('state').value.trim(),mode:Number(field('mode').value),centi_c:Math.round(Number(field('temperature').value)*100)}
-    : {command,source:field('source').value.trim(),destination:field('destination').value.trim()};
+  const body={command,source:field('source').value.trim(),destination:field('destination').value.trim()};
   button.disabled=true;
   try {
     const response=await fetch('/api/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});

@@ -80,12 +80,6 @@ def render():
                   f'     "{envelope(radiator, controller, report)}",',
                   f'     "{envelope(controller, radiator, state)}"}},']
     lines += ['};']
-    # A deliberately different legacy template proves that path keeps opaque
-    # values, 97 bits, and 5B rather than adopting the new profile's constants.
-    template = '45a1b24b02a83b7f4c33448e112233cc55667788971155a09402ba00e100641919da000000005b0081b20c0000'
-    legacy = '45a1b24b02a83b7f4c33448e112233cc55667788972055a094025703e100641919da000000005b0081b2000000'
-    lines += [f'static const char *legacy_template = "{envelope("f1010203", "f1040506", template)}";',
-              f'static const char *legacy_expected = "{envelope("f1010203", "f1040506", legacy)}";']
     # CRC-valid shape corruption: the report decoder's historical tolerance is
     # left alone, but the profile requires 0A=47 and the exact documented tags.
     for name, payload in [('bad_tail', BASE[:-2] + '46'), ('bad_tag', BASE.replace('4b02a8', '4c02a8'))]:

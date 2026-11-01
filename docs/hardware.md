@@ -77,7 +77,7 @@ flash from its `build` directory:
 python -m esptool --chip esp32c6 --port PORT write_flash @flash_args
 ```
 
-Flashing a new build keeps NVS (pairings, templates, settings).
+Flashing a new build keeps NVS (pairings and settings).
 
 **Do not hold BOOT while resetting or powering on.** GPIO9 is a strapping pin
 and the chip may enter ROM download mode.
@@ -85,7 +85,7 @@ and the chip may enter ROM download mode.
 ## Bring-up checklist
 
 Run the stages in order. Record results per stage, separately from software
-test results. Keep household addresses, templates and captures out of the
+test results. Keep household addresses and captures out of the
 repository.
 
 ### 1. Board and radio
@@ -102,12 +102,10 @@ Leave the existing Touch E3 system running.
 - [ ] `valid_frames` increases.
 - [ ] `report` shows plausible temperature, target and mode.
 - [ ] After changing a target on the Touch E3, the next report shows it and `report.age_ms` resets.
-- [ ] Capture a 59-byte controller-state frame (hex starting `38`) from the Touch E3 to each radiator. These are candidate templates for stage 5.
 
-Select **listen-only** on an upgraded device; fresh installations default to it.
-Use **Passive commissioning** on the local page. It retains observations from
-any controller and genuine controller-state candidates separately. Refresh
-candidate choices after capture. Neither receiving nor adopting sends RF.
+Devices without a saved RF mode default to **listen-only**. Use **Passive
+commissioning** on the local page to inspect reports from any controller.
+Receiving and selecting read-only monitoring never sends RF.
 An SDR with the [reference decoder](https://github.com/hemphen/clevertouch-radio)
 provides independent on-air verification; software counters alone cannot prove
 that the device is silent.
@@ -115,7 +113,6 @@ that the device is silent.
 - [ ] Independently capture RF through boot, sustained receive, HTTP/MQTT command rejection, network/broker reconnects and reboot: no TX in listen-only.
 - [ ] Identify several radiator RF addresses reporting to Touch E3 or other controllers without pairing them.
 - [ ] Verify temperature, target, mode, destination, monotonic age and stale indication; unavailable values stay unavailable.
-- [ ] Retain genuine 59-byte candidates before pairing. Subsequent reports/acks/noise cannot replace them. Check source, destination and capture age against independent capture.
 - [ ] Mode survives reboot. Corrupt/unreadable mode reports an error and closes RF without erasure.
 - [ ] During sustained reception, measure heap/stack high-water marks and HTTP/MQTT responsiveness; exercise cache bounds and eviction indicators.
 
@@ -133,9 +130,9 @@ proves actual Wi-Fi or ESP/lwIP interface routing. All checks below remain pendi
 - [ ] Wrong replacement password and storage failures keep an already authorised AP open, including after the old STA reconnects. No new AP opens for a failed station-only configuration attempt.
 - [ ] GPIO9 reads high released and low pressed. Hold BOOT 5 s and release while connected and while offline: AP opens, station/admitted commands remain intact. Short press and bounce do nothing.
 - [ ] **Finish recovery** warns before submission and closes AP after 60 s both with and without STA, also while persistence is uncertain. BOOT can reopen it without serial.
-- [ ] AP and STA active together: AP permits diagnostics and Wi-Fi setup only; pairing, commands, templates, removal, time and MQTT changes return `403`. Those changes work on STA. Check an AP client targeting the station IP, changed DHCP addresses, overlapping subnets, IPv6 and spoofed Host/Origin/forwarding headers. No denied request queues work or transmits RF.
+- [ ] AP and STA active together: AP permits diagnostics and Wi-Fi setup only; pairing, commands, removal, time and MQTT changes return `403`. Those changes work on STA. Check an AP client targeting the station IP, changed DHCP addresses, overlapping subnets, IPv6 and spoofed Host/Origin/forwarding headers. No denied request queues work or transmits RF.
 - [ ] Physical `clock_seconds` presence returns `400`; normal commands require SNTP or manual device time on STA.
-- [ ] **Forget home Wi-Fi only** retains AP access and all radiators, identities, names, templates, MQTT credentials, timezone and discovery cleanup, including across power cycles.
+- [ ] **Forget home Wi-Fi only** retains AP access and all radiators, identities, names, MQTT credentials, timezone and discovery cleanup, including across power cycles.
 - [ ] EN and power cycles retain settings and send no RF. BOOT/recovery and reconnection neither initiate pairing nor replay commands; an already admitted command continues once only.
 - [ ] Check BOOT accessibility through the supplied enclosure. EN is reset only. Do not hold BOOT during reset or power-on: verify GPIO9 strapping behaviour before proposing an access hole.
 
@@ -159,7 +156,7 @@ can reset the radiator's stored settings.
 - [ ] With the radiator unpowered, a command reaches `timeout`; a later matching report changes it to `matched` without new transmissions.
 - [ ] Listen-only request during pairing/command work is refused clearly; after bounded completion retry it and independently verify silence. Control enable alone sends nothing.
 - [ ] Touch E3 disconnected → explicit enable → pair → set time → command works with real equipment; the transmitted controller source is Cleverbox’s paired identity.
-- [ ] Reboot with a command pending: the pairing and saved template remain, the command is not resumed and nothing is sent at boot.
+- [ ] Reboot with a command pending: the pairing remains, the command is not resumed and nothing is sent at boot.
 
 Generated-profile acceptance remains unproven:
 
@@ -170,8 +167,7 @@ Generated-profile acceptance remains unproven:
   observe physical heating over time for all four modes.
 - [ ] Change a setting locally at the radiator, then answer its local-change-marked
   report; check the profile's explicit `97` policy with capture and readback.
-- [ ] Check old installations with unusual legacy templates: data survives reboot
-  and bytes have no effect on generated commands. No RF at boot/enable/recovery.
+- [ ] Check persisted current-format identities/names and no RF at boot/enable/recovery.
 
 Record contradictions in clevertouch-protocol. Host, simulator and HA tests do
 not prove identity acceptance, wire acceptance or physical regulation.
@@ -225,7 +221,7 @@ not establish electrical fault recovery.
 - [ ] Run sustained multi-radiator reception alongside HTTP, MQTT and HA traffic and repeated independent faults. Measure packet loss, network latency and recovery timing.
 - [ ] Check paired and passive HA readings unavailable on radio failure, increasing original report age, stable identities, old expired readings still unavailable after recovery and genuine new reports restoring freshness.
 - [ ] Measure heap/free-block minima, radio/HTTP/MQTT stack high-water marks and watchdog behavior during setup failures, driver timeouts and sustained RX/TX traffic. Confirm the retained SPI transaction buffers are never reused while in flight.
-- [ ] Check no replay or pairing after recovery, HA/bridge/broker restart. Pairings, IDs, templates, passive selections, RF mode and unrelated NVS settings survive.
+- [ ] Check no replay or pairing after recovery, HA/bridge/broker restart. Pairings, IDs, passive selections, RF mode and unrelated NVS settings survive.
 
 A silently wrong SPI response or failed RF front end without an observable error
 is not guaranteed detectable. Driver/internal assertion deadlocks are not
@@ -240,6 +236,6 @@ antenna, radiators and workload for baseline and candidate comparisons.
 - [ ] Independently capture offer/bind/poll/state packets; compare exact envelopes/CRCs and TX count with original request results. Local completion is not acceptance; verify radiator readback and display separately.
 - [ ] Measure TX-to-RX turnaround and missed incoming frames before, during and after TX. Dump fixed/infinite packet mode, GDO mappings, threshold and the full RF profile after success, timeout and recovery. No reception gain is assumed.
 - [ ] Safely exercise stuck/absent GDO, failed start, underflow, SPI/finalizer/restoration failures and exhausted retry, using controlled fixtures or diagnostic hooks. Compare actual RF with confirmed-pre-STX versus uncertain-delivery results. Never hot-plug powered wires.
-- [ ] Exercise multiple radiators (including a silent one), ready/queued deadline expiry, queued removal/rename/template writes and pair cancel during TX. Check fairness, single physical TX, exact attempt counts, original HTTP/MQTT request attribution and honest persistence outcomes.
+- [ ] Exercise multiple radiators (including a silent one), ready/queued deadline expiry, queued removal/rename writes and pair cancel during TX. Check fairness, single physical TX, exact attempt counts, original HTTP/MQTT request attribution and honest persistence outcomes.
 - [ ] Measure HTTP/MQTT latency during TX, queue backlog and simultaneous independent NVS settings writes. Record watchdog behavior, minimum heap/largest free block, and radio/HTTP/MQTT stack high-water marks. No CPU, scheduling or heap improvement is claimed from host tests.
 - [ ] Independently verify exact RF silence in listen-only through faults, exhaustion/retry, reconnect, HA birth and reboot. Verify failed RF work is never replayed; accepted local writes retain their outcomes and ordering.

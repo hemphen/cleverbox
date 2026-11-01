@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
-// Only the NVS boundary is fake. Mode migration/format/writes are production.
+// Only the NVS boundary is fake. Mode format/writes are production.
 #include "device_store.h"
 #include "nvs.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-static const char *keys[] = {"rf_mode", "registry", "pairing", "control_state", "wifi", "timezone", "mqtt", "ha_discovery"};
-static unsigned char disk[8][16];
-static size_t sizes[8];
+static const char *keys[] = {"rf_mode", "registry", "wifi", "timezone", "mqtt", "ha_discovery", "ha_monitors"};
+static unsigned char disk[7][16];
+static size_t sizes[7];
 static int open_error, read_key = -1, write_error, commit_error;
 static unsigned writes;
 static unsigned index_of(const char *key) {
-    for (unsigned i=0; i<8; ++i) if (!strcmp(key, keys[i])) return i;
+    for (unsigned i=0; i<7; ++i) if (!strcmp(key, keys[i])) return i;
     assert(0); return 0;
 }
 esp_err_t nvs_open(const char *ns, int mode, nvs_handle_t *h) {
@@ -41,12 +41,12 @@ int main(void) {
     open_error=ESP_ERR_NVS_NOT_FOUND;
     assert(device_mode_load(&enabled,&stored)==ESP_OK && !enabled && !stored);
     open_error=0;
-    for (unsigned i=1; i<8; ++i) {
+    for (unsigned i=1; i<7; ++i) {
         memset(sizes,0,sizeof(sizes)); sizes[i]=1; disk[i][0]=255;
-        assert(device_mode_load(&enabled,&stored)==ESP_OK && enabled && !stored);
+        assert(device_mode_load(&enabled,&stored)==ESP_OK && !enabled && !stored);
     }
     memset(sizes,0,sizeof(sizes));
-    for (int i=0; i<8; ++i) {
+    for (int i=0; i<1; ++i) {
         read_key=i;
         assert(device_mode_load(&enabled,&stored)==ESP_FAIL && !enabled && !stored);
     }
@@ -74,5 +74,5 @@ int main(void) {
     }
     sizes[0]=2; disk[0][0]=1; disk[0][1]=2;
     assert(device_mode_load(&enabled,&stored)!=ESP_OK && !enabled);
-    puts("Operating-mode store: fresh/migration, restart, malformed/read failures, eager writes, commit/readback failures and no erasure: passed");
+    puts("Operating-mode store: fresh defaults, restart, malformed/read failures, eager writes, commit/readback failures and no erasure: passed");
 }

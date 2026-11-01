@@ -2,9 +2,8 @@
 
 `rf_touch_e3_state` builds one Cleverbox replacement-controller profile from
 explicit inputs and a fresh radiator report. It needs no controller-state
-capture or per-radiator template. Production `rf_control_next` uses this builder as its sole normal state-frame
-path. See [delivery and context policy](architecture.md#command-delivery) and
-[legacy compatibility](architecture.md#templates).
+capture or per-radiator template. Production `rf_control_next` uses this builder
+as its sole state-frame path. See [delivery and context policy](architecture.md#command-delivery).
 The builder creates bytes, never RF work. It adds no transmission trigger.
 
 ## Contract
@@ -20,8 +19,8 @@ mode, local seconds since midnight and Boost minutes. There are no defaults.
 - Modes are Comfort (0), Off (1), Frost (2) and Eco (3). Non-Off targets are
   500–3000 centidegrees Celsius, inclusive. Encoding is
   `320 + floor((18 * centi_c + 50) / 100)`, matching the existing codec's rounding.
-  Off requires input 0 and sends raw 320. This stricter input contract does not
-  change the legacy builder's Off normalization.
+  Off requires input 0 and sends raw 320. Normal command admission normalizes
+  Off targets to zero before construction.
 - Local clock is 0–86399 seconds, inclusive. The caller supplies a usable local
   time; this codec neither obtains time nor validates SNTP synchronization.
 - Boost minutes are explicitly 1–1439, inclusive, encoded as a big-endian u16.
@@ -62,7 +61,7 @@ The pinned [Boost evidence](https://github.com/hemphen/clevertouch-radio/blob/b9
 records 120 as the ordinary default, a re-pairing reset from 116 to 120, and a
 return from 117 to 120 after cancelling Boost. The observed configured 1439 and
 remainders 116/117 do not conflict with selecting this one non-Boost profile.
-They are not per-radiator capabilities. Saved template `5B` values are ignored.
+They are not per-radiator capabilities.
 Physical behavior under this profile still requires acceptance testing.
 
 ## Complete wire layout
@@ -134,7 +133,7 @@ personalities or capability descriptions. There is no thermostat or PID inferenc
 report and expected output bytes with invented identities. The first pair equals
 the public protocol's synthetic example, anchoring envelope and CRC conventions.
 The other payloads are manually written record sequences in `profile_vectors.py`;
-they are not emitted by this builder, `rf_live_state`, or another product builder.
+they are not emitted by any product builder.
 Raw targets used include 410 (5 C), 446 (7 C), 599 (15.5 C), 689 (20.51 C rounded),
 690 (20.53 C rounded), 698 (21 C), 860 (30 C), and 320 (Off).
 
@@ -150,15 +149,13 @@ multiple F1/D0 identity pairs, complete echoes, unavailable and arbitrary raw
 values, known DF variants and an explicit local-change/heating combination,
 clock/minute/target rounding boundaries, invalid identities and relationships,
 bad inner/outer CRCs separately, malformed/truncated reports, unsupported modes,
-missing/future/negative/stale timestamps and signed timestamp limits. A deliberately
-different legacy template proves opaque values, `97` bits and `5B` stay preserved
-in the retained legacy diagnostic codec. Normal delivery never calls it. Existing state-machine and host regressions still apply.
+missing/future/negative/stale timestamps and signed timestamp limits. Existing state-machine and host regressions still apply.
 
 The normal Build workflow also runs host/HTTP, capacity, discovery-limit, real
 broker and pinned RadioLib tests and an ESP-IDF 5.5.1 ESP32-C6 firmware build.
 Actual HA integration on the final affected revision is required for normal
 command-path changes, including no-template draft-and-Apply control. Host/worker
-suites also exercise generated command routing, retry context, legacy preservation,
+suites also exercise generated command routing, retry context, format rejection,
 time, recovery, replay protection and listen-only silence.
 
 Software vectors establish construction correctness only. Independent on-air

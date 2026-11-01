@@ -5,14 +5,14 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from test_http import App, REPORT, changed_frame
+from test_http import seed_pairing, App, REPORT, changed_frame
 from test_mqtt import connect, publications
 from test_registry import registry_blob
 
 
 def run(directory):
     storage=Path(directory)/'discovery.bin'
-    storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    seed_pairing(storage)
     app=App(storage)
     def restart(fail=0):
         nonlocal app
@@ -108,7 +108,7 @@ def run(directory):
 
 def disconnect_outbox(directory, fast_reconnect=False):
     storage=Path(directory)/('fast-outbox.bin' if fast_reconnect else 'outbox.bin')
-    storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    seed_pairing(storage)
     app=App(storage)
     try:
         app.http('/api/mqtt',dict(action='configure',host='broker.test',port=1883,username='',password='',enabled=True),202)
@@ -149,7 +149,7 @@ def disconnect_outbox(directory, fast_reconnect=False):
 
 
 def payload_limit(directory):
-    path=Path(directory)/'limit.bin'; path.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    path=Path(directory)/'limit.bin'; seed_pairing(path)
     app=App(path)
     try:
         app.http('/api/mqtt',dict(action='configure',host='broker.test',port=1883,username='',password='',enabled=True),202)

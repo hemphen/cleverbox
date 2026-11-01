@@ -168,28 +168,10 @@ static void report_validity_and_routing(void)
     memcpy(request.radiator, request.controller, 4); rejected(&request, &context, 0);
 }
 
-static void legacy_stays_template_based(void)
-{
-    rf_frame state = parse(legacy_template), report = parse(vectors[0].report), out;
-    assert(rf_live_state(&out, &state, &report, vectors[0].request.controller,
-                         vectors[0].request.radiator, RF_ECO, 1550, 0));
-    matches(&out, legacy_expected);
-    assert(rf_set_target(&out, &state, RF_ECO, 1550));
-    for (size_t b = 0; b < 55; ++b)
-        if (b < 35 || b > 37) assert(out.bytes[b] == state.bytes[b]);
-    // Existing Off normalization and empty-template rejection stay unchanged.
-    assert(rf_set_target(&out, &state, RF_OFF, INT_MIN));
-    assert(out.bytes[35] == 1 && out.bytes[36] == 0x40);
-    state = (rf_frame){0};
-    assert(!rf_live_state(&out, &state, &report, vectors[0].request.controller,
-                          vectors[0].request.radiator, RF_ECO, 1550, 0));
-}
-
 int main(void)
 {
     complete_vectors();
     inputs_and_freshness();
     report_validity_and_routing();
-    legacy_stays_template_based();
-    puts("Explicit Touch E3 profile full bytes, context, bounds and legacy isolation: passed");
+    puts("Explicit Touch E3 profile full bytes, context, bounds and routing: passed");
 }

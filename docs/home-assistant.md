@@ -70,7 +70,7 @@ An already paired address cannot be selected. If explicitly pairing later
 reveals a selected address, the attempt stops before bind (`0x7306`); remove its
 monitor selection and explicitly restart pairing after disconnecting Touch E3.
 The initial inclusion offer may already have been sent. Removing either kind
-of record never creates/removes the other or changes templates. Selection is
+of record never creates/removes the other. Selection is
 never converted into control automatically.
 
 ## Setup

@@ -14,7 +14,7 @@ tested on the board.
 
 | Feature | Software | Hardware |
 | --- | --- | --- |
-| Listen-only mode, passive inventory and retained template capture | Tested | Not tested |
+| Listen-only mode and passive report inventory | Tested | Not tested |
 | Receive and decode radiator reports | Tested | Not tested |
 | Bounded radio recovery and health diagnostics | Tested | Not tested |
 | Worker-polled CC1101 TX completion | Tested | Not tested |
@@ -29,9 +29,8 @@ tested on the board.
 
 ## How it works
 
-Fresh installations start listen-only. Upgrades without a saved mode preserve
-control behavior. The local passive view identifies reports from any controller
-and retains genuine template candidates without pairing or transmitting.
+Installations without a saved RF mode start listen-only. The local passive view identifies reports from any controller
+without pairing or transmitting.
 Select observed RF addresses for read-only Home Assistant monitoring without pairing,
 then enable global discovery. Follow the [commissioning workflow](docs/http-api.md#passive-commissioning).
 Disconnect Touch E3 before explicitly enabling control and pairing.
@@ -45,8 +44,7 @@ later report shows the requested values.
 Normal commands use the [Touch E3 replacement-controller profile](docs/controller-profile.md).
 Addresses come from the saved pairing; target and mode come from the request;
 report echoes come from a newly received report; clock comes from device time.
-No capture, import, save or adoption is needed. Legacy templates remain readable
-for diagnostics and never affect normal output.
+No template code or storage is present.
 
 ## Known limitations
 
@@ -89,7 +87,7 @@ against two invented radiators, `F1040506` and `F1040507`:
 3. Send a target and mode, without a template. The requested values appear first, the readback
    shortly after.
 
-Restart `make simulate` to check that pairings, names and saved templates
+Restart `make simulate` to check that pairings and names
 persist while commands and observations do not. Simulation-only controls are
 listed in the [HTTP API](docs/http-api.md#simulation-only).
 

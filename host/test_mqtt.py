@@ -5,7 +5,7 @@ import json
 import secrets
 import tempfile
 from pathlib import Path
-from test_http import App, STATE, REPORT
+from test_http import seed_pairing, App, STATE, REPORT
 
 BASE='cleverbox/v1/020000000001'
 
@@ -31,7 +31,7 @@ def send(app, session, seq, id=1, retained=False, payload=None, **fields):
 
 
 def run(directory):
-    storage=Path(directory)/'mqtt.bin'; storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    storage=Path(directory)/'mqtt.bin'; seed_pairing(storage)
     app=App(storage)
     secret=secrets.token_hex(16)
     config=dict(action='configure',host='broker.test',port=1883,username='bench',password=secret,enabled=True)
@@ -91,7 +91,7 @@ def run(directory):
         assert app.http()['simulation_tx']==[]
         assert send(app,session,1)['reason']=='time_unavailable'
         app.http('/api/time',dict(action='manual',unix_seconds=1767268800))
-        assert not app.http()['command']['template_available']
+        assert 'template_available' not in app.http()['command']
         assert send(app,session,2)['accepted']
         assert app.advance(1000)['command']['phase']=='matched'
         assert send(app,session,3,id=999)['reason']=='unknown_identity'
@@ -169,14 +169,14 @@ def run(directory):
         rows=publications(app)
         assert any(isinstance(r['payload'],dict) and r['payload'].get('phase')=='matched' and r['payload']['request_id']==1 for r in rows)
         app.advance(1000)
-        # Publication staleness grows from reception; restored templates never substitute.
+        # Publication staleness grows from reception; missing snapshots never substitute for reception.
         app.advance(305000); rows=publications(app)
         last=[r['payload'] for r in rows if r['topic'].endswith('/state')][-1]
         assert last['stale'] and last['age_ms']>=300000 and not any(r['retain'] for r in rows if r['topic'].endswith('/state'))
         # Include another radiator and prove independent completion / same-device busy.
         app.sim('scenario',name='normal'); app.sim('device',index=1)
         app.http('/api/pairing',dict(action='start',source='F1010203',destination='F1100001'),202); app.advance(2000)
-        assert not app.http('/api/radio?id=2')['command']['template_available']
+        assert 'template_available' not in app.http('/api/radio?id=2')['command']
         app.sim('scenario',name='silence_a')
         assert send(app,new_session,2)['accepted']
         assert send(app,new_session,3,id=2)['accepted']

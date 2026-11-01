@@ -4,13 +4,13 @@
 import json
 from pathlib import Path
 import tempfile
-from test_http import App
+from test_http import seed_pairing, App
 from test_mqtt import BASE, connect, publications, send
 
 
 def run(directory):
     storage = Path(directory) / 'tokens.bin'
-    storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    seed_pairing(storage)
     app = App(storage)
     try:
         app.http('/api/mqtt', dict(action='configure', host='broker.test', port=1883,
@@ -39,7 +39,7 @@ def run(directory):
         assert command(token)['reason'] == 'invalid_command_token'
         token = snapshot()['command_token']
         assert app.http()['command']['phase']=='matched'
-        assert not app.http()['command']['template_available']
+        assert 'template_available' not in app.http()['command']
         # Numeric clients and token clients share ONE atomic sequence. Floor is
         # never an allocator: a token allocates at consumption, after numeric 100.
         assert send(app, session, 100)['accepted']; app.advance(1000)

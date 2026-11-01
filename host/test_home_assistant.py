@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 import paho.mqtt.client as mqtt
-from test_http import App, ROOT, REPORT, changed_frame
+from test_http import seed_pairing, App, ROOT, REPORT, changed_frame
 from test_registry import REPORT_B
 from test_passive import seal
 from test_mqtt import BASE
@@ -109,7 +109,7 @@ http:
                 assert process.poll() is None and time.monotonic() < until
                 time.sleep(.02)
     broker = start_broker()
-    storage = directory / 'bridge.bin'; storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    storage = directory / 'bridge.bin'; seed_pairing(storage)
     app = App(storage, real_mqtt=True); ha = None
     observer = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id='ha-test-observer', clean_session=True)
     messages = []
@@ -196,7 +196,7 @@ http:
         apply(1,22,'Comfort'); pump(lambda:admitted(1,'time_unavailable'))
         assert app.http()['simulation_tx'] == tx
         app.http('/api/time',dict(action='manual',unix_seconds=1767268800)); snapshots()
-        assert all(not d['command']['template_available'] for d in app.http()['radiators'])
+        assert all('template_available' not in d['command'] for d in app.http()['radiators'])
         # Actual HA draft-and-Apply flow requires no template on either radiator.
         apply(1,22,'Comfort'); pump(lambda:phase(1,'matched'))
         snapshots(); pump(lambda:state_is('sensor.cleverbox_020000000001_1_observed_target','22.0'))

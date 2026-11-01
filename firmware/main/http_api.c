@@ -47,17 +47,7 @@ static esp_err_t preview(httpd_req_t *r)
     cJSON *j = cJSON_ParseWithOpts(body, NULL, true);
     rf_frame f = {0}; bool ok = false;
     const char *op = string(j, "command");
-    if (op && strcmp(op, "target") == 0) {
-        rf_frame state = {0};
-        cJSON *mode = cJSON_GetObjectItemCaseSensitive(j, "mode");
-        cJSON *temp = cJSON_GetObjectItemCaseSensitive(j, "centi_c");
-        if (cJSON_IsNumber(mode) && mode->valuedouble >= 0 && mode->valuedouble <= 3 &&
-            mode->valuedouble == mode->valueint && cJSON_IsNumber(temp) &&
-            isfinite(temp->valuedouble) && temp->valuedouble >= 0 && temp->valuedouble <= 3000 &&
-            temp->valuedouble == temp->valueint &&
-            rf_parse_hex(string(j, "state"), state.bytes, sizeof(state.bytes), &state.size))
-            ok = rf_set_target(&f, &state, (rf_mode)mode->valueint, temp->valueint);
-    } else if (op) {
+    if (op) {
         uint8_t src[4], dst[4];
         rf_command command;
         bool known = true;
@@ -79,7 +69,7 @@ static esp_err_t preview(httpd_req_t *r)
     return httpd_resp_sendstr(r, response);
 }
 
-// Missing identity is legacy single-radiator resolution only; malformed identity
+// Missing identity uses single-radiator resolution only; malformed identity
 // never falls back. No server-side browser selection exists.
 static bool identity(cJSON *j, uint32_t *id) {
     cJSON *v = cJSON_GetObjectItemCaseSensitive(j, "id"); *id = 0;
@@ -166,13 +156,8 @@ static esp_err_t live_command(httpd_req_t *r)
 #endif
     bool valid = identity(j, &id) && integer(j, "mode", 0, 3, &mode) && integer(j, "centi_c", 0, 3000, &target) &&
                  (!override || integer(j, "clock_seconds", 0, 86399, &clock));
-    // Deprecated per-command template overrides must fail explicitly. Retained
-    // diagnostic import/preview APIs never supply normal command bytes.
-    if (cJSON_GetObjectItemCaseSensitive(j, "state")) {
-        cJSON_Delete(j);
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST,
-            "state override is deprecated; commands use the generated controller profile");
-    }
+    int fields = 2 + (cJSON_GetObjectItemCaseSensitive(j, "id") != NULL) + override;
+    valid = valid && cJSON_IsObject(j) && cJSON_GetArraySize(j) == fields;
     if (valid) {
         command.mode = (rf_mode)mode; command.centi_c = target; command.clock_seconds = clock;
     }
@@ -204,55 +189,6 @@ static esp_err_t live_command(httpd_req_t *r)
     return httpd_resp_sendstr(r, "{\"status\":\"queued\"}");
 }
 
-static esp_err_t controller_state_action(httpd_req_t *r)
-{
-    char body[768], type[40];
-    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
-        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
-    size_t used = 0;
-    while (used < r->content_len) {
-        int n = httpd_req_recv(r, body + used, r->content_len - used);
-        if (n <= 0) return ESP_FAIL;
-        used += (size_t)n;
-    }
-    body[used] = 0;
-    cJSON *j = cJSON_ParseWithOpts(body, NULL, true);
-    const char *action = string(j, "action");
-    esp_err_t result = ESP_ERR_INVALID_ARG; uint32_t id = 0;
-    bool valid_id = identity(j, &id);
-    if (valid_id && action && !strcmp(action, "save")) result = radio_state_save(id, NULL);
-    else if (valid_id && action && !strcmp(action, "clear")) result = radio_state_clear(id);
-    else if (valid_id && action && !strcmp(action, "adopt")) {
-        uint8_t radiator[4];
-        cJSON *replace = cJSON_GetObjectItemCaseSensitive(j, "replace");
-        if (cJSON_IsObject(j) && cJSON_GetArraySize(j) == 5 && id &&
-            address(j, "radiator", radiator) && cJSON_IsBool(replace))
-            result = radio_candidate_adopt(id, radiator, string(j, "version"), cJSON_IsTrue(replace));
-    }
-    else if (valid_id && action && !strcmp(action, "import")) {
-        rf_frame frame = {0};
-        if (rf_parse_hex(string(j, "state"), frame.bytes, sizeof(frame.bytes), &frame.size))
-            result = radio_state_save(id, &frame);
-    }
-    cJSON_Delete(j);
-    if (result == RADIO_ERR_CANDIDATE_CHANGED || result == RADIO_ERR_REPLACE_REQUIRED) {
-        httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, result == RADIO_ERR_CANDIDATE_CHANGED ?
-            "Candidate replaced, evicted or from another boot. Refresh and select again." :
-            "Saved template already exists. Explicit replace:true required.");
-    }
-    if (result == ESP_ERR_INVALID_ARG)
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid action or same-radiator controller-state frame");
-    if (result != ESP_OK) {
-        httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, "No saved pair, no learned state, or action busy; check radio status");
-    }
-    httpd_resp_set_status(r, "202 Accepted");
-    httpd_resp_set_type(r, "application/json");
-    return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");
-}
-
 static const char *store_result(radio_store_result result)
 {
     switch (result) {
@@ -281,18 +217,6 @@ static void device_json(cJSON *j, const radiator_record *d, int64_t now) {
     cJSON_AddNumberToObject(command, "attempts", d->control.attempts);
     cJSON_AddBoolToObject(command, "pending", d->command_reserved);
     cJSON_AddStringToObject(command, "frame_source", "generated-touch-e3");
-    // Deprecated legacy-data diagnostics, never command prerequisites.
-    cJSON_AddBoolToObject(command, "template_available", d->has_control_template || d->has_saved_template);
-    cJSON_AddStringToObject(command, "template_source", d->has_control_template ? "learned" :
-                           d->has_saved_template ? "saved" : "missing");
-    cJSON_AddBoolToObject(command, "learned_available", d->has_control_template);
-    cJSON_AddBoolToObject(command, "saved_available", d->has_saved_template);
-    cJSON_AddNumberToObject(command, "state_load_error", d->state_load_error);
-    cJSON_AddNumberToObject(command, "state_store_error", d->state_store_error);
-    cJSON_AddStringToObject(command, "save_status", store_result(d->state_save_result));
-    cJSON_AddStringToObject(command, "clear_status", store_result(d->state_clear_result));
-    if (d->has_control_template)
-        cJSON_AddNumberToObject(command, "template_age_ms", (now - d->control_template_time_us) / 1000);
     if (d->control.phase != RF_CONTROL_IDLE) {
         cJSON_AddNumberToObject(command, "requested_target_c", d->control.centi_c / 100.0);
         cJSON_AddNumberToObject(command, "requested_mode", d->control.mode);
@@ -360,13 +284,12 @@ static esp_err_t radio_action(httpd_req_t *r) {
     return json_response(r,cJSON_Parse("{\"accepted\":true,\"transmitted\":false}"));
 }
 // Passive diagnostics deliberately have the same AP/unknown read exposure as
-// existing RF diagnostics. Candidate bytes remain internal; mutations need STA.
+// existing RF diagnostics. Mutations need STA.
 static void matching_pair(cJSON *j, const uint8_t radiator[4]) {
     radiator_record d; bool found = false;
     for (size_t i = 0; radio_device_at(i, &d) == ESP_OK; ++i)
         if (!memcmp(d.pair.radiator, radiator, 4)) { found = true; break; }
     cJSON_AddBoolToObject(j, "paired", found);
-    cJSON_AddBoolToObject(j, "saved_template", found && d.has_saved_template);
     if (found) cJSON_AddNumberToObject(j, "paired_id", d.id);
 }
 static esp_err_t commissioning_status(httpd_req_t *r) {
@@ -379,9 +302,7 @@ static esp_err_t commissioning_status(httpd_req_t *r) {
     cJSON_AddBoolToObject(j, "persistence_uncertain", s.mode_persistence_uncertain);
     cJSON_AddNumberToObject(j, "capacity", RADIO_PASSIVE_CAPACITY);
     cJSON_AddBoolToObject(j, "observations_full", s.observation_count == RADIO_PASSIVE_CAPACITY);
-    cJSON_AddBoolToObject(j, "candidates_full", s.candidate_count == RADIO_PASSIVE_CAPACITY);
     cJSON_AddNumberToObject(j, "observation_evictions", s.observation_evictions);
-    cJSON_AddNumberToObject(j, "candidate_evictions", s.candidate_evictions);
     cJSON_AddNumberToObject(j,"monitor_capacity",RADIO_MONITOR_CAPACITY);
     cJSON_AddBoolToObject(j,"monitor_pending",s.monitor_pending);
     cJSON_AddStringToObject(j,"monitor_save_status",store_result(s.monitor_result));
@@ -417,21 +338,6 @@ static esp_err_t commissioning_status(httpd_req_t *r) {
         else cJSON_AddNullToObject(row, "target_c");
         matching_pair(row, o.report.source); cJSON_AddItemToArray(observed, row);
     }
-    cJSON *captured = cJSON_AddArrayToObject(j, "candidates");
-    radio_candidate c;
-    for (size_t i = 0; radio_candidate_at(i, &c) == ESP_OK; ++i) {
-        cJSON *row = cJSON_CreateObject(); char a[9], b[9];
-        address_text(c.state + 6, a); address_text(c.state + 1, b);
-        cJSON_AddStringToObject(row, "radiator", a); cJSON_AddStringToObject(row, "controller", b);
-        cJSON_AddStringToObject(row, "version", c.version);
-        cJSON_AddNumberToObject(row, "age_ms", now > c.time_us ? (now - c.time_us) / 1000 : 0);
-        matching_pair(row, c.state + 6); cJSON_AddItemToArray(captured, row);
-    }
-    cJSON *adoption = cJSON_AddObjectToObject(j, "adoption");
-    cJSON_AddNumberToObject(adoption, "id", s.adoption_id);
-    cJSON_AddStringToObject(adoption, "version", s.adoption_version);
-    cJSON_AddStringToObject(adoption, "status", store_result(s.adoption_result));
-    cJSON_AddNumberToObject(adoption, "error", s.adoption_error);
     return json_response(r, j);
 }
 static esp_err_t commissioning_action(httpd_req_t *r) {
@@ -496,7 +402,7 @@ static esp_err_t radio_status_page(httpd_req_t *r) {
     cJSON_AddNumberToObject(j, "receive_errors", s.receive_errors);
     cJSON_AddNumberToObject(j, "capacity", s.capacity); cJSON_AddNumberToObject(j, "registry_error", s.registry_error);
     cJSON_AddStringToObject(j, "registry_problem", s.registry_error == DEVICE_STORE_ERR_CAPACITY ?
-        "stored_registry_exceeds_capacity" : s.registry_error ? "load_or_migration_failed" : "none");
+        "stored_registry_exceeds_capacity" : s.registry_error ? "load_failed" : "none");
     cJSON_AddNumberToObject(j, "exchange_id", s.exchange_id);
     cJSON_AddBoolToObject(j, "mutation_pending", s.mutation_pending); cJSON_AddNumberToObject(j, "mutation_error", s.mutation_error);
     cJSON *devices = cJSON_AddArrayToObject(j, "radiators"); radiator_record d;
@@ -789,7 +695,6 @@ static const api_route routes[] = {
     {"/api/radio", HTTP_POST, radio_action, false},
     {"/api/pairing", HTTP_POST, pairing_action, false},
     {"/api/command", HTTP_POST, live_command, false},
-    {"/api/controller-state", HTTP_POST, controller_state_action, false},
 };
 static esp_err_t dispatch(httpd_req_t *r) {
     const api_route *route = r->user_ctx;

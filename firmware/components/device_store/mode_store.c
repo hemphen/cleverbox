@@ -15,7 +15,7 @@ static esp_err_t save_record(bool enabled, bool retry_initial) {
     uint8_t data[2] = {1, enabled ? 1 : 0}, check[2] = {0};
     // Only a failed initial bootstrap is retried this way. Settings have not
     // been allowed through the gate yet, so temporary absence cannot turn a
-    // fresh installation into a legacy one. Force a physical rewrite rather
+    // failed bootstrap into implicit control. Force a physical rewrite rather
     // than trusting a same-value NVS cache left by the failed first attempt.
     if (retry_initial) {
         e = nvs_erase_key(h, "rf_mode");
@@ -42,23 +42,14 @@ esp_err_t device_mode_load(bool *enabled, bool *stored) {
         if (n != sizeof(data) || data[0] != 1 || data[1] > 1) e = ESP_ERR_INVALID_STATE;
         else { *enabled = data[1] != 0; *stored = true; }
     } else if (e == ESP_ERR_NVS_NOT_FOUND) {
-        // Presence, even an empty registry or invalid older key, identifies an
-        // installation. Read errors are not evidence of a fresh installation.
-        static const char *keys[] = {"registry", "pairing", "control_state", "wifi", "timezone", "mqtt", "ha_discovery"};
-        bool existing = false;
-        for (size_t i = 0; i < sizeof(keys)/sizeof(keys[0]); ++i) {
-            n = 0; e = nvs_get_blob(h, keys[i], NULL, &n);
-            if (e == ESP_OK) existing = true;
-            else if (e != ESP_ERR_NVS_NOT_FOUND) break;
-        }
-        if (e == ESP_ERR_NVS_NOT_FOUND || e == ESP_OK) { e = ESP_OK; *enabled = existing; }
+        e = ESP_OK; // Missing mode always starts listen-only, regardless of other settings.
     }
     nvs_close(h);
     return e;
 }
 
 // Start once before any settings owner. Retain the decision even when its first
-// write fails: settings created in this boot must never become migration evidence.
+// write fails: settings created in this boot must never enable RF implicitly.
 static SemaphoreHandle_t mode_mutex;
 static bool started, initial_enabled, decision_valid, initial_pending;
 static esp_err_t initial_result = ESP_ERR_INVALID_STATE;
@@ -79,15 +70,14 @@ esp_err_t device_mode_start(bool *enabled) {
         }
     }
     // Repeated startup consumers see the same boot decision/result, never a
-    // second migration scan after another task has configured the device.
+    // second startup decision after another task has configured the device.
     *enabled = initial_result == ESP_OK && initial_enabled;
     return initial_result;
 }
 
 static bool mode_record_present(void) {
-    // A known existing (even invalid) mode record cannot become absent-key
-    // migration evidence. Allow Wi-Fi/settings repair without overwriting it;
-    // RF remains closed by the latched load error. Unknown presence blocks writes.
+    // A known-present invalid mode record permits other-key repair without
+    // overwriting it. RF stays closed; unknown record presence blocks writes.
     nvs_handle_t h;
     if (nvs_open("cleverbox", NVS_READONLY, &h) != ESP_OK) return false;
     size_t n = 0;

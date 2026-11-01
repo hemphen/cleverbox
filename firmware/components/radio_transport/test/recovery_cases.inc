@@ -62,11 +62,11 @@ static void test_radio_fault_observation_and_writes() {
 static void test_fault_persistence_and_pairing() {
     reset(); radio_worker w;
     assert(radio_control_start(1,&command)==ESP_OK); test_step(w);
-    assert(radio_state_save(2,&b_state)==ESP_OK);
+    assert(radio_device_rename(2,"Queued rename")==ESP_OK);
     // Fault before the queued local write: preserve pending status and execute it once.
-    w.fail(-77); assert(mutation_pending && registry.records[1].state_save_result==RADIO_STORE_PENDING);
-    test_step(w); assert(!mutation_pending && registry.records[1].state_save_result==RADIO_STORE_OK);
-    assert(registry.records[1].has_saved_template && !registry.records[0].command_reserved);
+    w.fail(-77); assert(mutation_pending && status.mutation_pending);
+    test_step(w); assert(!mutation_pending && !status.mutation_error);
+    assert(!strcmp(registry.records[1].name,"Queued rename") && !registry.records[0].command_reserved);
     test_now_us=status.retry_at_ms*1000; test_step(w);
     unsigned tx=transmit_count; test_step(w); assert(transmit_count==tx);
     assert(radio_device_rename(1,"Committed")==ESP_OK);

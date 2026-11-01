@@ -42,7 +42,7 @@ def changed_frame(hex_frame, offset):
 class App:
     def __init__(self, storage, test_clock=True, real_mqtt=False, interfaces=False, operating_mode="control-enabled", mode_storage_fault=0, radio_init_fault=0):
         # Existing control suites explicitly provision their operating-mode fixture.
-        # Passive/fresh/migration tests pass None and exercise production defaults.
+        # Passive/fresh tests pass None and exercise production defaults.
         mode_file = Path(str(storage) + '.rf_mode')
         if operating_mode is not None and not mode_file.exists():
             mode_file.write_bytes(bytes([1, operating_mode == 'control-enabled']))
@@ -80,169 +80,38 @@ class App:
         return self.http('/api/command', {'mode': mode, 'centi_c': target, 'clock_seconds': 86399, **kw}, 202)
 
 
-def saved_state_workflow(directory):
-    storage = Path(directory) / 'saved-pair.bin'
-    legacy_pair = bytes.fromhex('01F1010203F1040506')
-    storage.write_bytes(legacy_pair)  # Exact existing pairing-only v1 format.
-    state_file = Path(str(storage) + '.registry')
-    app = App(storage)
+def seed_pairing(storage):
+    # Explicit current-format fixture. No production migration or simulator alias.
+    record = (1).to_bytes(4,'little') + b'Radiator'.ljust(33,b'\0') + bytes.fromhex('F1010203F1040506')
+    Path(str(storage)+'.registry').write_bytes(bytes([2,1,0,2,0,0,0])+record)
+
+
+def registry_format_and_removed_api(directory):
+    storage=Path(directory)/'format.bin'
+    disk=Path(str(storage)+'.registry')
+    seed_pairing(storage); original=disk.read_bytes()
+    app=App(storage)
     try:
-        s = app.advance(1000)
-        assert s['pairing']['saved'] and s['simulation_tx'] == []
-        assert s['command']['template_source'] == 'missing'
-        assert s['command']['frame_source'] == 'generated-touch-e3'
-        app.http('/api/controller-state', {'action': 'save'}, 409)
-        for data in ({}, {'action': 'import'}, {'action': 'import', 'state': None}):
-            app.http('/api/controller-state', data, 400)
-        app.sim('fixture')
-        app.advance(1)
-        app.http('/api/controller-state', {'action': 'save'}, 202)
-        s = app.advance(1)
-        assert s['command']['save_status'] == 'succeeded'
-        assert s['command']['template_source'] == 'learned' and s['command']['saved_available']
-        assert 'observed' not in s and s['simulation_tx'] == []
-        saved = state_file.read_bytes()
-        assert saved[0] == 1 and int.from_bytes(saved[1:3], 'little') == 1 and saved.endswith(bytes.fromhex(STATE))
-        assert storage.read_bytes() == legacy_pair
-        # Passive learning cannot write flash; every invalid import preserves it.
-        newer = changed_frame(STATE, 49)
-        app.sim('inject', frame=newer)
-        app.advance(1)
-        assert state_file.read_bytes() == saved
-        for frame in ('zz', STATE[:-2], STATE[:-2] + '00', changed_frame(STATE, 30),
-                      changed_frame(STATE, 9), REPORT):
-            app.http('/api/controller-state', {'action': 'import', 'state': frame}, 400)
-            assert state_file.read_bytes() == saved
-        assert app.http()['simulation_tx'] == []
-    finally:
-        app.stop()
-    app = App(storage)
-    try:
-        s = app.advance(1000)
-        c = s['command']
-        assert c['template_source'] == 'saved' and c['template_available']
-        assert not c['learned_available'] and 'template_age_ms' not in c
-        assert c['save_status'] == 'not_attempted' and c['phase'] == 'idle'
-        assert 'observed' not in s and s['simulation_tx'] == []
-        app.sim('scenario', name='silence')
-        app.command()
-        s = app.advance(100)
-        assert s['command']['phase'] == 'waiting_report' and s['simulation_tx'] == [POLL]
-        app.sim('inject', frame=REPORT)
-        s = app.advance(2)
-        assert s['command']['phase'] == 'waiting_readback' and s['simulation_tx'][-1] == COMFORT
-        assert app.advance(100)['command']['phase'] == 'waiting_readback'
-        matching = '23F1040506C6F1010203DF203000404B02A88A02B100E100641919DA000A000A0A47C783C11D'
-        app.sim('inject', frame=matching)
-        assert app.advance(1)['command']['phase'] == 'matched'
-        # Per-command overrides are explicitly rejected. Learning different legacy
-        # bytes during delivery cannot change the generated profile or saved data.
-        override = changed_frame(changed_frame(STATE, 32), 4)
-        error = app.http('/api/command', {'mode':0,'centi_c':2050,'state':override}, 400)
-        assert 'deprecated' in error
-        app.command()
-        app.advance(2)  # TX completion runs on the following owner tick.
-        newer = changed_frame(STATE, 49)
-        app.sim('inject', frame=newer)
-        app.advance(1)
-        app.sim('inject', frame=REPORT)
-        s = app.advance(2)
-        sent = bytes.fromhex(s['simulation_tx'][-1])
-        assert sent[31:34] == bytes.fromhex('203004')
-        assert sent[49:51] == bytes.fromhex('0078')
-        assert sent[1:5] == bytes.fromhex('F1010203')  # Manual source behavior retained.
-        assert state_file.read_bytes() == saved
-        app.sim('inject', frame=matching)
-        app.advance(1)
-        # Later commands also ignore learned RAM, without overwriting saved data.
-        app.command()
-        app.advance(2)  # TX completion runs on the following owner tick.
-        app.sim('inject', frame=REPORT)
-        s = app.advance(2)
-        assert bytes.fromhex(s['simulation_tx'][-1])[49:51] == bytes.fromhex('0078')
-        assert state_file.read_bytes() == saved
-        assert s['command']['phase'] == 'waiting_readback'
-    finally:
-        app.stop()  # Restart during delivery must not replay it.
-    app = App(storage)
-    try:
-        s = app.advance(600000)
-        assert s['command']['phase'] == 'idle' and s['command']['template_source'] == 'saved'
-        assert s['simulation_tx'] == [] and 'observed' not in s
-        # Import-and-save accepts the historic manual source policy, without RX/TX.
-        imported = changed_frame(STATE, 4)  # Unusual source and every opaque record.
-        for offset in (11,17,20,22,24,27,32,33,49,50):
-            imported = changed_frame(imported, offset)
-        app.http('/api/controller-state', {'action': 'import', 'state': imported}, 202)
-        s = app.advance(1)
-        assert s['command']['save_status'] == 'succeeded' and s['simulation_tx'] == []
-        assert not s['command']['learned_available'] and 'observed' not in s
-        assert state_file.read_bytes().endswith(bytes.fromhex(imported))
-    finally:
-        app.stop()
-    app = App(storage)
-    try:
-        assert app.http()['command']['template_source'] == 'saved'
-        assert app.advance(600000)['simulation_tx'] == []  # Old legacy data grants no work.
-        app.sim('scenario', name='silence')
-        app.command()
-        app.advance(2)  # TX completion runs on the following owner tick.
-        app.sim('inject', frame=REPORT)
-        s = app.advance(2)
-        assert s['simulation_tx'][-1] == COMFORT
-        assert bytes.fromhex(s['simulation_tx'][-1])[31:34] == bytes.fromhex('203004')
-        assert bytes.fromhex(s['simulation_tx'][-1])[1:5] == bytes.fromhex('F1010203')
-        app.sim('fixture')
-        app.advance(1)
-        tx = app.http()['simulation_tx']
-        app.http('/api/controller-state', {'action': 'clear'}, 202)
-        s = app.advance(1)
-        assert s['command']['clear_status'] == 'succeeded'
-        assert s['command']['template_source'] == 'missing' and s['pairing']['saved']
-        assert s['command']['phase'] == 'waiting_readback'  # Active snapshot unchanged.
-        assert s['simulation_tx'] == tx and storage.read_bytes() == legacy_pair
-    finally:
-        app.stop()
-    app = App(storage)
-    try:
-        s = app.advance(1000)
-        assert s['pairing']['saved'] and s['command']['template_source'] == 'missing'
-        assert s['simulation_tx'] == [] and s['command']['phase'] == 'idle'
-        app.command()
-        assert app.advance(1000)['command']['phase'] == 'matched'
-    finally:
-        app.stop()
-    # Unknown, malformed, CRC-corrupt and differently paired state remain visible
-    # on disk. The separate pairing record still loads and is never rewritten.
-    legacy_saved=legacy_pair + bytes.fromhex(STATE)
-    for bad in (b'\x63' + legacy_saved[1:], legacy_saved[:-1], legacy_saved[:-1] + bytes([legacy_saved[-1] ^ 1]),
-                legacy_saved[:4] + bytes([legacy_saved[4] ^ 1]) + legacy_saved[5:]):
-        Path(str(storage)+'.registry').unlink(missing_ok=True)
-        state_file=Path(str(storage)+'.state')
-        state_file.write_bytes(bad)
-        app = App(storage)
+        assert app.advance(600000)['simulation_tx']==[]
+        assert disk.read_bytes()==original and app.http()['pairing']['saved']
+        for action in ('save','import','adopt','clear'):
+            app.http('/api/controller-state',{'action':action,'state':STATE},404)
+        app.http('/api/preview',{'command':'target','state':STATE,'mode':0,'centi_c':2050},400)
+        app.http('/api/command',{'state':STATE,'mode':0,'centi_c':2050,'clock_seconds':0},400)
+        app.command(); assert app.advance(1000)['command']['phase']=='matched'
+    finally: app.stop()
+    for bad in (b'\1'+original[1:], b'\x63'+original[1:], original[:-1]):
+        disk.write_bytes(bad); app=App(storage)
         try:
-            s = app.advance(1000)
-            assert s['pairing']['saved'] and s['command']['state_load_error']
-            assert s['command']['template_source'] == 'missing' and s['simulation_tx'] == []
-            assert storage.read_bytes() == legacy_pair and state_file.read_bytes() == bad
-        finally:
-            app.stop()
-    Path(str(storage)+'.registry').unlink(missing_ok=True)
-    storage.write_bytes(b'\x63' + legacy_pair[1:])
-    app = App(storage)
-    try:
-        s = app.advance(1000)
-        assert not s['pairing']['saved'] and s['pairing']['error'] and s['simulation_tx'] == []
-        app.http('/api/pairing', {'action': 'start', 'source': 'F1010203', 'destination': 'F1100001'}, 409)
-        assert storage.read_bytes() == b'\x63' + legacy_pair[1:]
-    finally:
-        app.stop()
+            assert app.http()['registry_error'] and not app.http()['radiators']
+            app.http('/api/command',{'id':1,'mode':0,'centi_c':2050,'clock_seconds':0},409)
+            assert app.advance(1000)['simulation_tx']==[] and disk.read_bytes()==bad
+        finally: app.stop()
 
 
 def generated_retry_context(directory):
     storage = Path(directory) / 'generated-context.bin'
-    storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    seed_pairing(storage)
     app = App(storage)
     try:
         app.sim('scenario', name='silence')
@@ -286,14 +155,14 @@ def generated_retry_context(directory):
 
 def main():
     with tempfile.TemporaryDirectory() as directory:
-        saved_state_workflow(directory)
+        registry_format_and_removed_api(directory)
         generated_retry_context(directory)
         storage = Path(directory) / 'pairing.bin'
         app = App(storage)
         try:
             page = app.http('/')
             assert page == (ROOT / 'firmware/main/index.html').read_text()
-            assert 'SIMULATION' in page and 'synthetic controller-state fixture' in page
+            assert 'SIMULATION' in page and 'simulationFixture' not in page
             s = app.advance(10000)
             assert s['simulation'] and s['simulation_tx'] == []
             assert not s['pairing']['saved'] and s['command']['phase'] == 'idle'
@@ -313,7 +182,7 @@ def main():
             assert s['pairing']['saved'] and s['pairing']['radiator'] == 'F1040506'
             assert s['simulation_tx'][-2:] == [OFFER, BIND]
             assert Path(str(storage)+'.registry').exists()
-            assert not s['command']['template_available']
+            assert 'template_available' not in s['command']
             assert s['command']['frame_source'] == 'generated-touch-e3'
             # No capture/import/save/adopt between pairing and command.
             # Command without imported hex: requested first, old decoded report,
@@ -382,7 +251,7 @@ def main():
             s = app.advance(1000)
             assert s['command']['phase'] == 'waiting_readback'
             assert app.advance(3000)['command']['phase'] == 'matched'
-            # A deprecated override fails explicitly, then a normal command works.
+            # An unknown command field fails explicitly, then a normal command works.
             app.http('/api/command', {'mode': 0, 'centi_c': 2300, 'clock_seconds': 0, 'state': STATE[:-2] + '00'}, 400)
             app.command(2400)
             assert app.advance(2)['command']['phase'] == 'waiting_report'
@@ -391,7 +260,7 @@ def main():
         app = App(storage)
         try:
             s = app.advance(600000)
-            assert s['pairing']['saved'] and not s['command']['template_available']
+            assert s['pairing']['saved'] and 'template_available' not in s['command']
             assert s['command']['phase'] == 'idle' and s['simulation_tx'] == []
             assert 'observed' not in s
             app.command()  # Saved relationship, still no template after restart.
@@ -427,7 +296,7 @@ def main():
                 time.sleep(0.05)
         finally:
             app.stop()
-    print('HTTP simulation: generated no-template pairing/control, all four full-byte mode vectors, retry context/freshness/deadlines, preserved legacy diagnostics/storage/restarts, requested/readback, silence/ACK-only and invalid traffic: passed')
+    print('HTTP simulation: generated no-template pairing/control, all four full-byte mode vectors, retry context/freshness/deadlines, current storage/restarts and removed APIs, requested/readback, silence/ACK-only and invalid traffic: passed')
 
 
 if __name__ == '__main__':

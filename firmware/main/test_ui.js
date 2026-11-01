@@ -16,14 +16,14 @@ async function main() {
   }));
   let data = {ready: true, valid_frames: 1,
     pairing: {saved: true, phase: 'complete', controller: 'F1010203', radiator: 'F1040506'},
-    command: {phase: 'idle', attempts: 0, template_available: false}};
+    command: {phase: 'idle', attempts: 0, frame_source:'generated-touch-e3'}};
   data.radiators=[{id:1,name:'Living room',pairing:data.pairing,command:data.command}];
   data.capacity=8; data.exchange_id=0;
   let network = {http_interface:'sta',http_control_allowed:true,state:'disconnected',configured:false,recovery_ap:true,attempts:0,setup_result:'none',error:'none',ip:''};
   let networkReadsFail=false, confirmResult=true;
   let clock={usable:false,source:'unsynchronized',timezone:'UTC0',synchronized_this_boot:false,sync_age_ms:null};
   let commissioning={mode:'control-enabled',pending:false,save_status:'succeeded',storage_error:0,capacity:16,
-    observations:[],candidates:[],observation_evictions:0,candidate_evictions:0,adoption:{status:'not_attempted'}};
+    observations:[],observation_evictions:0};
   let mqtt={configured:true,enabled:true,connected:false,bridge_id:'020000000001'};
   let lastRequest, responseOK = true, deferredStatus;
   const context = vm.createContext({
@@ -47,12 +47,12 @@ async function main() {
       if (url.startsWith('/api/radio') && deferredStatus) { const next=deferredStatus;deferredStatus=undefined;return next; }
       if (url.startsWith('/api/radio')) return {ok: true, json: async () => data};
       lastRequest = {url, body: JSON.parse(options.body)};
-      return {ok: responseOK, text: async () => 'No learned controller state', json: async () => ({frame: 'preview'})};
+      return {ok: responseOK, text: async () => 'Command unavailable', json: async () => ({frame: 'preview'})};
     }
   });
   vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
   await new Promise(setImmediate);
-  assert.match(fields.templateStatus.textContent, /Generated Touch E3 profile/);
+  assert.match(fields.profileStatus.textContent, /Generated Touch E3 profile/);
   data.ready=false; data.health='initializing'; data.retry_in_ms=null; data.retry_allowed=false;
   await vm.runInContext('refreshRadio()',context);
   assert.match(fields.radioStatus.textContent,/setup attempt in progress/);
@@ -65,9 +65,8 @@ async function main() {
   data.ready=true; data.health='ready'; data.retry_allowed=false;
 
   await vm.runInContext('refreshRadio()',context);
-  assert.equal(fields.sendTarget.disabled, false); // No template gate.
-  assert.match(html, /<details><summary>Deprecated template diagnostics: storage and preview/);
-  assert.match(html, /<details><summary>Deprecated template diagnostics: retained captures/);
+  assert.equal(fields.sendTarget.disabled, false);
+  for(const id of ['state','saveState','importState','clearState','adoptCandidate','simulationFixture']) assert.equal(fields[id],undefined);
   assert.equal(fields.simulationPanel.hidden, true);
   fields.mode.value = '3'; fields.temperature.value = '15.5';
   await fields.sendTarget.handlers.click();
@@ -76,37 +75,7 @@ async function main() {
   fields.mode.value='1'; await fields.sendTarget.handlers.click();
   assert.equal(lastRequest.body.centi_c,0);
   fields.mode.value='3';
-  fields.state.value = '  explicit-import  ';
-  await fields.sendTarget.handlers.click();
-  assert.equal(lastRequest.body.state, undefined);
-  await buttons.find(button => button.dataset.command === 'target').click();
-  assert.equal(lastRequest.url, '/api/preview');
-  assert.equal(lastRequest.body.state, 'explicit-import');
-  data.command.template_available = true; data.command.template_age_ms = 2500;
-  await vm.runInContext('refreshRadio()', context);
-  assert.match(fields.templateStatus.textContent, /no template required/);
-  data.command.learned_available = true;
-  data.command.saved_available = true;
-  data.command.template_source = 'saved';
-  delete data.command.template_age_ms;
-  data.command.save_status = 'succeeded';
-  await vm.runInContext('refreshRadio()', context);
-  assert.match(fields.templateStatus.textContent, /no template required/);
-  assert.match(fields.stateStorageStatus.textContent, /Latest explicit save: succeeded/);
-  await fields.saveState.handlers.click();
-  assert.deepEqual(lastRequest, {url: '/api/controller-state', body: {action: 'save', id: 1}});
-  assert.match(fields.stateAction.textContent, /queued/);
-  await fields.importState.handlers.click();
-  assert.deepEqual(lastRequest, {url: '/api/controller-state', body: {action: 'import', id: 1, state: 'explicit-import'}});
-  await fields.clearState.handlers.click();
-  assert.deepEqual(lastRequest, {url: '/api/controller-state', body: {action: 'clear', id: 1}});
-  data.command.save_status = 'failed'; data.command.state_store_error = 3;
-  await vm.runInContext('refreshRadio()', context);
-  assert.match(fields.stateStorageStatus.textContent, /Latest explicit save: failed/);
-  assert.match(fields.stateStorageStatus.textContent, /previous legacy data retained/);
-  data.command.state_load_error = 2;
-  await vm.runInContext('refreshRadio()', context);
-  assert.match(fields.stateStorageStatus.textContent, /could not be loaded/);
+  assert.equal(lastRequest.body.state,undefined);
   data.command.phase = 'waiting_report';
   await vm.runInContext('refreshRadio()', context);
   assert.equal(fields.sendTarget.disabled, true);
@@ -115,7 +84,7 @@ async function main() {
   assert.equal(fields.sendTarget.disabled, true);
   responseOK = false;
   await fields.sendTarget.handlers.click();
-  assert.equal(fields.commandAction.textContent, 'No learned controller state');
+  assert.equal(fields.commandAction.textContent, 'Command unavailable');
   data.simulation = true; data.scenario = 'delayed';
   await vm.runInContext('refreshRadio()', context);
   assert.equal(fields.simulationPanel.hidden, false);
@@ -123,20 +92,14 @@ async function main() {
   assert.equal(fields.source.value, 'F1010203');
   assert.equal(fields.destination.value, 'F1100001');
   responseOK = true;
-  await fields.simulationFixture.handlers.click();
-  assert.deepEqual(lastRequest, {url: '/api/simulation', body: {action: 'fixture'}});
-  assert.match(fields.simulationAction.textContent, /not a radiator report/);
   await fields.simulationApply.handlers.click();
   assert.deepEqual(lastRequest, {url: '/api/simulation', body: {action: 'scenario', name: 'delayed'}});
-  data.radiators.push({id:2,name:'Bedroom',pairing:{saved:true,phase:'complete',radiator:'F1040507'},command:{phase:'idle',template_source:'missing'}});
-  fields.state.value='device-A-template';
+  data.radiators.push({id:2,name:'Bedroom',pairing:{saved:true,phase:'complete',radiator:'F1040507'},command:{phase:'idle',frame_source:'generated-touch-e3'}});
   fields.radiatorSelect.value='2'; fields.radiatorSelect.handlers.change();
   await new Promise(setImmediate);
-  assert.equal(fields.state.value,'');
   assert.match(fields.pairedReport.textContent,/No report/);
-  assert.match(fields.templateStatus.textContent,/Generated Touch E3 profile/);
+  assert.match(fields.profileStatus.textContent,/Generated Touch E3 profile/);
   await fields.sendTarget.handlers.click(); assert.equal(lastRequest.body.id,2); assert.equal(lastRequest.body.state,undefined);
-  await fields.clearState.handlers.click(); assert.equal(lastRequest.body.id,2);
   await fields.removeRadiator.handlers.click(); assert.deepEqual(lastRequest,{url:'/api/radiators',body:{action:'remove',id:2}});
   // An old in-flight 404 from B must not reset a newer selection of A.
   let releaseStatus;
@@ -211,9 +174,9 @@ async function main() {
   await vm.runInContext('refreshRadio()',context); await vm.runInContext('refreshMqtt()',context);
   assert.match(fields.httpAccess.textContent,/diagnostics only/);
   assert.match(fields.networkAccess.textContent,/even offline/);
-  for(const id of ['sendTarget','pairStart','saveState','removeRadiator','saveTimezone','mqttSave']) assert(fields[id].disabled,id);
+  for(const id of ['sendTarget','pairStart','removeRadiator','saveTimezone','mqttSave']) assert(fields[id].disabled,id);
   const beforeBlocked=lastRequest;
-  for(const id of ['sendTarget','clearState','removeRadiator','saveTimezone','mqttSave']) await fields[id].handlers.click();
+  for(const id of ['sendTarget','removeRadiator','saveTimezone','mqttSave']) await fields[id].handlers.click();
   assert.equal(lastRequest,beforeBlocked);
   assert.match(fields.commandAction.textContent,/Unavailable here/);
   network={...network,http_interface:'sta',http_control_allowed:true};
@@ -249,7 +212,7 @@ async function main() {
   assert.deepEqual(lastRequest,{url:'/api/time',body:{action:'manual',unix_seconds:1767268800}});
   assert.match(fields.timeAction.textContent,/Manual UTC time set/);
   responseOK=false; await fields.saveTimezone.handlers.click();
-  assert.equal(fields.timeAction.textContent,'No learned controller state');
+  assert.equal(fields.timeAction.textContent,'Command unavailable');
   assert(!html.includes('getHours()')); assert(!html.includes('clock_seconds:'));
   responseOK=true;
   mqtt={...mqtt,broker_connected:true,subscription_pending:true};
@@ -276,34 +239,19 @@ async function main() {
   assert.match(fields.mqttStatus.textContent,/publication failed; retrying/);
   for(const field of Object.values(fields)) assert(!field.textContent.includes(secret));
   commissioning.mode='listen-only';
-  commissioning.observations=[{radiator:'F1040506',controller:'F10A0B0C',age_ms:300001,stale:true,mode:0,temperature_c:null,target_c:20.5,paired:true,paired_id:1,saved_template:true}];
-  commissioning.candidates=[{radiator:'F1040506',controller:'F10A0B0C',version:'A'.repeat(32),age_ms:4500,paired:true,paired_id:1}];
-  await vm.runInContext('refreshCommissioning(true)',context);
+  commissioning.observations=[{radiator:'F1040506',controller:'F10A0B0C',age_ms:300001,stale:true,mode:0,temperature_c:null,target_c:20.5,paired:true,paired_id:1}];
+  await vm.runInContext('refreshCommissioning()',context);
   assert.equal(fields.sendTarget.disabled,true); assert.equal(fields.pairStart.disabled,true);
   assert.match(fields.passiveObservations.textContent,/F1040506 → F10A0B0C.*STALE/);
   assert.match(fields.passiveObservations.textContent,/Measured: unavailable/);
-  assert.doesNotMatch(fields.passiveObservations.textContent,/Candidate|template/);
-  assert.equal(fields.adoptCandidate.disabled,false);
-  fields.replaceCandidate.checked=true;
-  await fields.adoptCandidate.handlers.click();
-  assert.deepEqual(lastRequest,{url:'/api/controller-state',body:{action:'adopt',id:1,radiator:'F1040506',version:'A'.repeat(32),replace:true}});
-  commissioning.candidates[0]={...commissioning.candidates[0],version:'B'.repeat(32)};
-  await vm.runInContext('refreshCommissioning()',context);
-  assert.equal(fields.candidateSelect.value,'A'.repeat(32));
-  assert.equal(fields.adoptCandidate.disabled,true);
-  assert.match(fields.candidateDetails.textContent,/Replaced or evicted/);
-  await fields.refreshCandidates.handlers.click();
-  assert.equal(fields.candidateSelect.value,'B'.repeat(32)); assert.equal(fields.replaceCandidate.checked,false);
   commissioning.save_status='failed';commissioning.storage_error=6;commissioning.persistence_uncertain=true;
-  commissioning.adoption={id:1,version:'A'.repeat(32),status:'failed',error:6};
   await vm.runInContext('refreshCommissioning()',context);
   assert.match(fields.commissioningStatus.textContent,/RF disabled/);
   assert.match(fields.commissioningStatus.textContent,/Persistence uncertain/);
-  assert.match(fields.adoptionStatus.textContent,/failed.*ID 1.*Storage error/);
   network.http_control_allowed=false; network.http_interface='ap';
   await vm.runInContext('refreshNetwork()',context);
   await vm.runInContext('refreshCommissioning()',context);
-  assert.equal(fields.enableControl.disabled,true); assert.equal(fields.adoptCandidate.disabled,true);
+  assert.equal(fields.enableControl.disabled,true);
   network={...network,http_interface:'sta',http_control_allowed:true};
   await vm.runInContext('refreshNetwork()',context);
   commissioning={...commissioning,monitor_capacity:8,monitor_save_status:'succeeded',monitor_storage_error:0,
@@ -323,6 +271,6 @@ async function main() {
   for(const id of ['monitorSelect','monitorRename','monitorRemove']) assert(fields[id].disabled,id);
   network={...network,http_interface:'ap',http_control_allowed:false}; await vm.runInContext('refreshNetwork()',context);
   const beforeMonitor=lastRequest; await fields.monitorSelect.handlers.click(); assert.equal(lastRequest,beforeMonitor);
-  console.log('UI passive mode/candidate selection/errors plus learned/missing state, optional import, preview, admission and error rendering: passed');
+  console.log('UI generated commands, passive monitoring, previews, admission and error rendering: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

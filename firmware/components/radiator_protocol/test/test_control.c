@@ -5,7 +5,6 @@
 #include <string.h>
 
 static const uint8_t controller[4] = {0xf1,1,2,3}, radiator[4] = {0xf1,4,5,6};
-static const char *state_hex = "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0078B20C0000A20F60D9";
 static const char *report_hex = "23F1040506C6F1010203DF203000404B02A88A02BA00E100641919DA000A000A0A47CD48C59D";
 static rf_frame parse(const char *hex)
 {
@@ -34,59 +33,6 @@ static void expect_frame(const rf_frame *actual, const char *expected_hex)
     assert(actual->size == expected.size && !memcmp(actual->bytes, expected.bytes, expected.size));
 }
 
-static void complete_state_vectors(void)
-{
-    rf_frame state = parse(state_hex), report = parse(report_hex), out;
-    // The specification's complete synthetic state: all bytes, both CRCs.
-    assert(rf_live_state(&out, &state, &report, controller, radiator, RF_COMFORT, 2100, 43200));
-    expect_frame(&out, state_hex);
-    // Independently assembled from the fixed record order in protocol b70fab79,
-    // with CRCs calculated by clevertouch-radio 7706b90c radiatord/decoder.py
-    // crc16 (not this codec). Raw words = 320 + 18*C: 410,689,860,320,446,599.
-    // Clock 23:59:59 = 17 3B 3B; 5B and the opaque values are fixture data, NOT
-    // adopted defaults. See docs/architecture.md (Templates) for the byte mapping.
-    static const struct { rf_mode mode; int target; const char *hex; } vectors[] = {
-        {RF_COMFORT, 500, "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494019A00E100641919DA000000005B0078B2173B3B4F1FC430"},
-        {RF_COMFORT, 2050, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402B100E100641919DA000000005B0078B2173B3B26CE6271"},
-        {RF_COMFORT, 3000, "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494035C00E100641919DA000000005B0078B2173B3B826413A3"},
-        {RF_OFF, 0, "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494014001E100641919DA000000005B0078B2173B3B7DE8F50D"},
-        {RF_FROST, 700, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049401BE02E100641919DA000000005B0078B2173B3B9450290A"},
-        {RF_ECO, 1550, "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300494025703E100641919DA000000005B0078B2173B3BE9D4B021"},
-    };
-    for (size_t i = 0; i < sizeof(vectors) / sizeof(vectors[0]); ++i) {
-        assert(rf_live_state(&out, &state, &report, controller, radiator,
-                             vectors[i].mode, vectors[i].target, 86399));
-        expect_frame(&out, vectors[i].hex);
-    }
-    // 97 echoes the answered report's DF (byte 0, and byte 2 bit 0 = heating),
-    // keeping the template's other bits and its 5B. Templates and reports are the
-    // vectors controller_state, state_boost, radiator_report and report_heating
-    // from protocol 5dc2bcf; the report with DF byte 0 = 00 and all expected
-    // frames were built by radiator-rf 6977a94
-    // controller_state(..., mode=0, setpoint_C=21.0, clock=(12,0,0)).
-    static const char *state_boost_hex = "38F1010203C6F10405064500004B02A83B004C00008E000084CC000000009720300594029604E100641919DA000000005B0075B20C000086A53F89";
-    static const char *report_heating_hex = "23F1040506C6F1010203DF203001404B02A88A02BA00E100641919DA000A000A0A47DD99311E";
-    static const char *report_df0_hex = "23F1040506C6F1010203DF003000404B02A88A02BA00E100641919DA000A000A0A475751B366";
-    const struct { const char *state, *report, *hex; } echoes[] = {
-        // Heating report: 97 byte 2 bit 0 set (203004 -> 203005).
-        {state_hex, report_heating_hex, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030059402BA00E100641919DA000000005B0078B20C000072C3640A"},
-        // Template that echoed a heating report, answering one that is not: the bit
-        // clears (203005 -> 203004) and the template's Boost time 117 (0075) stays.
-        {state_boost_hex, report_hex, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0075B20C00008FCE818F"},
-        // DF byte 0 differs from the template's 97 byte 0: the report wins.
-        {state_hex, report_df0_hex, "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000970030049402BA00E100641919DA000000005B0078B20C00003B641056"},
-    };
-    for (size_t i = 0; i < sizeof(echoes) / sizeof(echoes[0]); ++i) {
-        rf_frame template_frame = parse(echoes[i].state), answered = parse(echoes[i].report);
-        assert(rf_live_state(&out, &template_frame, &answered, controller, radiator,
-                             RF_COMFORT, 2100, 43200));
-        expect_frame(&out, echoes[i].hex);
-    }
-    rf_frame empty = {0};
-    assert(!rf_live_state(&out, &empty, &report, controller, radiator, RF_COMFORT, 2000, 0));
-    assert(!rf_live_state(&out, &state, &empty, controller, radiator, RF_COMFORT, 2000, 0));
-    assert(!rf_live_state(&out, &state, &report, controller, radiator, RF_COMFORT, 3001, 0));
-}
 static void generated_context_contract(void)
 {
     rf_control c; rf_frame out;
@@ -128,9 +74,8 @@ static void generated_context_contract(void)
 
 int main(void)
 {
-    complete_state_vectors();
     generated_context_contract();
-    rf_frame state = parse(state_hex), report = parse(report_hex), out;
+    rf_frame report = parse(report_hex), out;
     rf_control_request r = request();
     rf_control c = {0};
     assert(!rf_control_next(&c, 0, &out));
@@ -155,10 +100,6 @@ int main(void)
     assert(!memcmp(out.bytes + 14, report.bytes + 16, 2));
     assert(!memcmp(out.bytes + 39, report.bytes + 23, 4));
     for (int i = 44; i < 48; ++i) assert(out.bytes[i] == 0);
-    for (int i = 10; i < 55; ++i)
-        if (!(i >= 14 && i <= 15) && !(i >= 35 && i <= 37) &&
-            !(i >= 39 && i <= 42) && !(i >= 44 && i <= 47) && !(i >= 52 && i <= 54))
-            assert(out.bytes[i] == state.bytes[i]); // fixed generated profile fields
     rf_control_sent(&c, 4000, true);
     assert(c.status.phase == RF_CONTROL_WAIT_READBACK && c.status.attempts == 1);
     rf_control_receive(&c, 4500, &ack);
@@ -200,17 +141,7 @@ int main(void)
     start(&c); rf_control_receive(&c, 1100, &report); rf_control_sent(&c, 1200, true);
     rf_control_receive(&c, 1300, &wrong_dest); rf_control_receive(&c, 1400, &wrong_source);
     assert(c.status.phase == RF_CONTROL_WAIT_READBACK);
-    rf_frame fresh = parse("23F1040506C6F1010203DF203000404B084C8A02BA00E100373764DA000A000A0A4705F7FAB5");
     rf_frame unavailable = parse("23F1040506C6F1010203DF203000404B084C8A084C00E100373764DA000A000A0A477906FA25");
-    rf_frame updated;
-    assert(rf_live_state(&updated, &state, &fresh, controller, radiator, RF_OFF, 0, 12345));
-    assert(updated.bytes[14] == 8 && updated.bytes[15] == 0x4c); // unavailable echo
-    assert(updated.bytes[35] == 1 && updated.bytes[36] == 0x40 && updated.bytes[37] == 1);
-    assert(!memcmp(updated.bytes + 39, fresh.bytes + 23, 4));
-    assert(updated.bytes[52] == 3 && updated.bytes[53] == 25 && updated.bytes[54] == 45);
-    expect_frame(&updated, "38F1010203C6F10405064500004B084C3B004C00008E000084CC000000009720300494014001E100373764DA000000005B0078B203192D3A8CFC68");
-    assert(!rf_live_state(&updated, &state, &fresh, controller, radiator, RF_ECO, 2000, 86400));
-    assert(!rf_live_state(&updated, &state, &wrong_dest, controller, radiator, RF_ECO, 2000, 0));
     start(&c); rf_control_receive(&c, 1100, &report); rf_control_sent(&c, 1200, true);
     rf_control_receive(&c, 1300, &unavailable); assert(c.status.phase != RF_CONTROL_MATCHED);
     c = (rf_control){0}; r.clock_seconds = 86400;
@@ -225,11 +156,6 @@ int main(void)
     rf_control_sent(&c, 1000, true); rf_control_receive(&c, 1100, &report);
     rf_control_sent(&c, 1200, true); rf_control_receive(&c, 1300, &match);
     assert(c.status.phase == RF_CONTROL_MATCHED); // Compare encoded target, not unrepresentable hundredths.
-    rf_frame readdressed_report = parse("23F1040506C6F1070809DF203000404B02A88A02BA00E100641919DA000A000A0A47F4BE58B2");
-    const uint8_t new_controller[4] = {0xf1,7,8,9}; r = request();
-    assert(rf_live_state(&updated, &state, &readdressed_report, new_controller, radiator, RF_COMFORT, 2050, 0));
-    assert(!memcmp(updated.bytes + 1, new_controller, 4) && !memcmp(updated.bytes + 6, radiator, 4));
-    expect_frame(&updated, "38F1070809C6F10405064500004B02A83B004C00008E000084CC00000000972030049402B100E100641919DA000000005B0078B2000000B1BED423");
     static const char *mode_reports[] = {
         "23F1040506C6F1010203DF203000404B02A88A02B100E100641919DA000A000A0A47C783C11D",
         "23F1040506C6F1010203DF203000404B02A88A014001E100641919DA000A000A0A4776324BA1",

@@ -42,7 +42,7 @@ machines and writes the radiator registry and operating mode.
 | --- | --- | --- |
 | `radiator_protocol` | Frame codec, CRCs, pairing and command state machines. Portable C, no RTOS or chip code. | – |
 | `radio_transport` | CC1101 setup through RadioLib, receive/transmit worker, registry in RAM, request admission | protocol, store, time |
-| `device_store` | Registry and RF-mode NVS records, boot-time migration/persistence gate | protocol |
+| `device_store` | Registry and RF-mode NVS records, initial mode persistence gate | protocol |
 | `network_setup` | Wi-Fi station and setup access point policy, BOOT button, Wi-Fi credentials store | store |
 | `device_time` | SNTP, manual UTC, POSIX time zone, command clock | store |
 | `mqtt_bridge` | Broker settings, command routing, results, state snapshots, Home Assistant discovery | transport, network |
@@ -73,28 +73,15 @@ writes; only that small persistence boundary holds a task mutex during NVS I/O.
 
 ## Operating mode
 
-Fresh installations start **listen-only**. On first boot the decision is saved
-in `rf_mode`. Startup snapshots the migration decision before starting time,
-network or other settings owners. A shared gate runs before every registry,
-Wi-Fi, timezone, MQTT or discovery-journal mutation. If the first mode write
-fails, no settings write can proceed until a retry has durably established that
-same boot decision. A fresh registry load does not create an empty registry.
-Retries never re-scan settings created during the current boot as migration
-evidence. A forced initial retry also avoids trusting a failed write's cached
-same-value NVS result. It is serialized against explicit mode saves so it cannot
-overwrite a successfully enabled mode.
-An upgrade without that key retains **control-enabled** if any prior application
-key exists, including an empty registry. This preserves existing installations;
-select listen-only explicitly before passive commissioning on an upgraded unit.
-Corrupt or unreadable mode/settings detection fails closed for RF and reports a
-storage error without erasing or replacing the bad record. An explicit STA mode
-save can repair it. A known existing invalid mode record still permits Wi-Fi
-and other-key repair without replacing that record; its presence prevents
-absent-key migration. Unknown record presence blocks settings writes. Read-only
-diagnostics and RAM Wi-Fi trials remain available while persistence is gated.
-A failed initial mode error keeps RF closed for the current boot even after a later settings save establishes the initial record;
-clear that reported error through an explicit STA mode save or reboot. Wi-Fi
-forget never clears the operating mode.
+An absent operating-mode record always starts **listen-only**, even if other
+settings exist. Only an explicit STA mode save enables control. Startup saves
+this initial decision before settings owners run. All settings writes share the
+mode persistence gate; failed bootstrap writes must be durably retried first.
+Retries keep the same boot decision and are serialized against explicit mode
+saves. A failed initial write keeps RF closed this boot until explicit mode save
+or reboot. Corrupt/unreadable mode records fail closed and remain visible;
+known-present invalid records permit other-key repair without changing RF mode.
+Unknown presence blocks settings writes. Wi-Fi forget never changes mode.
 
 Mode changes are explicit STA-only requests, queued to the existing worker.
 They reserve admission under the task mutex and are refused while pairing,
@@ -109,7 +96,7 @@ HTTP and MQTT use shared admission. The worker also checks mode immediately
 before physical TX and marks TX in progress under the same mutex. Mode admission
 cannot pass while that flag is set. Thus no transmission can begin after
 listen-only is reported active. Enabling control only saves mode; it does not
-pair, poll, adopt a template or create RF work. Network/MQTT events do not change
+pair, poll or create RF work. Network/MQTT events do not change
 mode. Boot never resumes RF work.
 
 ## Passive commissioning
@@ -122,40 +109,19 @@ fields are added. Observations do not create pairing, authorize commands or
 produce MQTT/HA discovery automatically. Explicit selections are described below. Paired command machines still require both their
 saved source and destination addresses to match.
 
-A separate RAM cache retains CRC-valid, structurally valid 59-byte controller
-states by radiator destination, from any source controller and before pairing.
-Reports, acknowledgements and unknown/malformed frames cannot overwrite them.
-Capture uses the codec's existing template validator; active learning retains
-its strict paired-controller source rule. Passive capture neither changes
-active learned/saved templates nor writes flash.
-
-Each cache holds `2 × CLEVERBOX_RADIATOR_CAPACITY` entries (default 16). A known
-address updates in place. Otherwise use the first unused slot, then replace the
-least recently received/captured entry; timestamp ties choose the lowest slot.
-Caches are independent: report traffic cannot evict templates. Full flags and
-saturating eviction counters make the bounds visible. They allocate and write
-no flash per packet. Entries and capture versions clear on reboot. External
-identities are RF addresses, never reusable cache indices.
-
-Every capture gets a version made from a random 64-bit boot nonce and a strictly
-increasing 64-bit sequence. Even identical recaptures change it; sequence
-exhaustion refuses further capture rather than wrapping. Explicit adoption
-requires that version and radiator address, a matching paired ID, STA access,
-and `replace:true` when a saved template exists. Missing/replaced/evicted or
-old-boot versions are rejected. Admission copies the exact selected bytes into
-the existing registry save request under the mutex; later traffic cannot alter
-the queued snapshot. The persistence result names its ID/version. On success,
-adoption saves that template and clears the learned RAM override so the selected
-bytes become the saved legacy template. On failure the previous templates remain.
-Adoption works in listen-only and sends nothing. Generated commands ignore all candidate/learned/saved bytes; captured sources
-grant no control. Deprecated manual hex import remains diagnostic access only.
+The cache holds `2 × CLEVERBOX_RADIATOR_CAPACITY` entries (default 16).
+A known address updates in place. New addresses use free slots, then replace
+the least recently received entry; ties choose the lowest slot. Full status and
+a saturating eviction counter expose this bound. Reports write no flash, and
+observations clear on reboot. Non-report frames are receive diagnostics only;
+there is no retained controller-state capture, learning or adoption path.
 
 ## Passive Home Assistant monitoring
 
 A separate selection list holds `RADIO_MONITOR_CAPACITY` addresses and names
 (equal to `CLEVERBOX_RADIATOR_CAPACITY`, default 8). The radio worker persists
 explicit select, rename and remove actions in `ha_monitors`, separately from
-pairings/templates. Selection requires a decoded report in the general passive
+pairings. Selection requires a decoded report in the general passive
 cache or an existing selection. All actions use the full four-byte RF address;
 cache slots and destination controllers never identify a device.
 
@@ -175,8 +141,8 @@ Remove monitoring, disconnect Touch E3, then start pairing again explicitly.
 The discovery address is not necessarily the final radiator address, so an
 explicit pairing attempt can already have sent its offer. Passive operations
 never send RF. Pairing removal never creates a passive selection; selection
-removal never changes pairings or saved templates. No automatic conversion,
-mode enable, template adoption or command replay occurs.
+removal never changes pairings. No automatic conversion,
+mode enable or command replay occurs.
 
 The shared mode-persistence gate runs before every selection write. Save uses
 a versioned blob with generation, commit and independent handle readback. RAM
@@ -184,17 +150,6 @@ changes only after verified success. A failed write reports `failed`, storage
 error and uncertainty; old RAM selections continue this boot. Further monitor
 mutations stop until reboot, which loads whichever record is durable. Corrupt,
 unknown or oversized records are reported, not truncated or overwritten.
-
-Default-capacity host layout compared with main `4c5861d`: static BSS grows by
-2960 B (GNU `size`, includes alignment), with a further 48 B in data. This
-includes two 304 B selection lists (live and prospective), eight 72 B monitored
-observations, two 303 B selection wire buffers, and the expanded discovery
-journal/labels. General caches remain 2304 B, the nine-entry queue remains
-176 B per request, and command machines do not grow. These are host layout
-measurements, not ESP heap/stack high-water measurements. Serialized selection
-storage is at most 303 B; the journal grows from 72 B to 264 B, a combined
-495 B increase before NVS overhead. Firmware size is reported in the PR build
-evidence. No new tasks, timers, queues or dynamic persistent collections exist.
 
 Genuine reception alongside Touch E3, independent RF silence, real report
 interpretation/freshness, power-cycle retention and sustained receive
@@ -210,10 +165,9 @@ Each radiator has a record with:
 - **Name**: 1–32 UTF-8 bytes, no control characters. New records are named
   `Radiator`.
 - **Pairing**: controller address and radiator address (4 bytes each).
-- **Saved template** (optional): see [Templates](#templates).
 
-Persisted: ID, name, pairing, saved template. Everything else is RAM-only and
-cleared at boot: learned template, latest report, command state and results.
+Persisted: ID, name and pairing. Everything else is RAM-only and
+cleared at boot: latest report, command state and results.
 Boot loads the registry and starts receiving. It never transmits.
 
 Capacity is `CLEVERBOX_RADIATOR_CAPACITY` (default 8). Set it for every
@@ -222,35 +176,22 @@ component, in both C and C++ flags; on the host, for example
 than the build's capacity blocks all changes
 (`registry_problem: stored_registry_exceeds_capacity`) and is never truncated.
 
-Changes to the registry (rename, remove, save or clear a template) run one at a
+Changes to the registry (rename or remove) run one at a
 time through the worker. A record with an outstanding command cannot be removed.
 Removing a record does not unpair the physical radiator.
 
-## Templates
+## Generated controller frames
 
-Normal commands use only the [generated controller profile](controller-profile.md).
-Templates are deprecated diagnostic data. No template selection, fallback or
-missing-template gate exists in admission or delivery. Neither saved nor learned
-bytes can override addresses, constants, report echoes, duration, target or clock.
+Normal commands use only the [explicit controller profile](controller-profile.md).
+There is no template codec, import, capture, learning, saving or adoption feature.
+The command carries settings only; the worker supplies saved addresses, validated
+report context and the admitted clock. Unknown command fields return `400`.
+`/api/controller-state` has no route; `/api/preview` supports short frames only.
 
-The registry wire format and migration are unchanged. Old templates, including
-unusual opaque values, stay readable and are never silently deleted. An invalid
-legacy record still reports its load error and stays on disk. Registry corruption
-and persistence failures retain their existing explicit gates; removing a template
-dependency does not repair storage or authorize RF.
-
-**Learning.** The worker retains the latest CRC-valid controller-state frame
-whose source and destination match the saved relationship in RAM, for diagnostics
-only. Passive candidate capture remains independent. Neither writes flash.
-
-**Compatibility.** Deprecated `/api/controller-state` save/import/clear/adopt
-and template-target `/api/preview` remain available on STA with the same validation,
-persistence results and no-RF semantics. The page puts these under closed,
-explicitly deprecated diagnostic sections. `/api/command` rejects any `state`
-field with `400`, even a valid or null value, instead of ignoring a requested
-override or using a second command stack. HTTP template availability/source/age
-fields describe legacy data only; `command.frame_source` is `generated-touch-e3`.
-No stored format, IDs, names, pairings, operating mode or unrelated settings change.
+Registry v2 stores no controller-state bytes. No earlier format is loaded or
+migrated. Unknown versions, corrupt records and oversized registries fail closed
+without changing the stored bytes. Development simulator storage from an earlier
+format must be reset explicitly before use.
 
 ## Pairing
 
@@ -372,7 +313,7 @@ exchange, frame construction or requested/observed meaning changes.
 
 Queue execution is suspended while physical TX is outstanding. Accepted local
 writes remain pending in their original bounded queue order, with no queue
-rotation or discarded entries. Flash calls, template changes, registry removal
+rotation or discarded entries. Flash calls, registry removal
 and compaction run only on later iterations after TX resolution and RX restoration
 (or during recovery if restoration failed). Admission may queue another radiator's
 command; its original ID/cookie and admission time remain intact. A reserved
@@ -434,7 +375,7 @@ Their pending/save results describe the actual persistence call, not radio
 health. A validated matching report remains matched if RX restoration then fails.
 An inclusion already saved successfully remains complete/saved even
 if restoring RX immediately after its acknowledgement fails. Unsaved pairing
-work ends; retry pairing explicitly. IDs, pairings, templates, selections and
+work ends; retry pairing explicitly. IDs, pairings, selections and
 all unrelated storage survive recovery unchanged.
 
 An error before submitting the CC1101 STX command is a confirmed failure to
@@ -595,10 +536,8 @@ automatically.
 
 | Key | Layout | Written when |
 | --- | --- | --- |
-| `rf_mode` | v1: version (1), control-enabled flag (0 or 1); 2 bytes | Initial fresh/upgrade decision and explicit STA mode saves |
-| `registry` | v1: version (1), count (LE16), next ID (LE32), then per record: ID (LE32), name (33, NUL-terminated), controller and radiator address (4 + 4), saved flag (1), template (59). Size `7 + 105 × count`. | Pairing saved, rename, remove, template save/import/clear |
-| `pairing` | Legacy v1: version, controller, radiator (9 bytes). Read once for migration, never written. | – |
-| `control_state` | Legacy v1: version, addresses, template (68 bytes) or 9-byte clear marker. Read for migration only. | – |
+| `rf_mode` | v1: version (1), control-enabled flag (0 or 1); 2 bytes | Initial listen-only decision and explicit STA mode saves |
+| `registry` | v2: version (2), count (LE16), next ID (LE32), then per record: ID (LE32), name (33, NUL-terminated), controller and radiator address (4 + 4). Size `7 + 45 × count`. | Pairing saved, rename, remove |
 | `wifi` | v1: version (1), SSID (33), password (64) | Wi-Fi saved or forgotten |
 | `timezone` | v1: version (1), NUL-terminated POSIX rule | Time zone saved |
 | `mqtt` | v1: version, flags, port (LE16), host (97), username (65), password (129); 295 bytes | Broker configured, enabled, disabled or forgotten |
@@ -614,9 +553,6 @@ Write policy:
   cannot be confirmed, status reports `persistence_uncertain`; the next boot may
   load the old, new or no value.
 - Corrupt or unknown records are reported and left untouched.
-- Migration: if `registry` is absent and `pairing` is valid, boot creates
-  record 1 (`Radiator 1`) and commits `registry`. Legacy keys stay. An existing
-  `registry`, even empty, always wins, so removed radiators do not come back.
 
 ## Security
 
@@ -648,8 +584,8 @@ and locks, the monotonic clock, NVS (file-backed), the Wi-Fi driver and the
 MQTT client (fake, or real sockets with `--real-mqtt`).
 
 Two invented radiators answer offers, binds, polls and valid state frames with
-replies and reports. Their report writer uses its own CRC code. The synthetic
-fixture and its template values exist only in the simulator and tests.
+replies and reports. Their report writer uses its own CRC code. Expected frame vectors remain explicit in tests; the simulator has no
+controller-state fixture injection workflow.
 
 Because the simulation is single-threaded, it does not exercise task
 scheduling, lock contention, stack depth or RF timing. Loopback tests exercise

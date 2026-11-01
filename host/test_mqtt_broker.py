@@ -17,13 +17,13 @@ import tempfile
 import time
 import paho.mqtt.client as mqtt
 from mqtt_client import BrokerClient
-from test_http import ROOT,STATE
+from test_http import seed_pairing, ROOT,STATE
 
 BASE='cleverbox/v1/020000000001'
 
 
 def run(directory):
-    directory=Path(directory); storage=directory/'broker.bin'; storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    directory=Path(directory); storage=directory/'broker.bin'; seed_pairing(storage)
     os.environ['CLEVERBOX_SIM_STORAGE']=str(storage)
     sock=socket.socket(); sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]; sock.close()
     conf=directory/'mosquitto.conf'; conf.write_text(f'listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\nuser {pwd.getpwuid(os.geteuid()).pw_name}\n')
@@ -77,7 +77,10 @@ def run(directory):
         pump(lambda:any(t.endswith('/state') for t,p,r in messages))
         assert any(t.endswith('/state') and not p['available'] for t,p,r in messages)
         assert http()['simulation_tx']==[]
-        assert not http('/api/radio')['command']['template_available']
+        assert 'template_available' not in http('/api/radio')['command']
+        assert http('/api/commissioning')['mode']=='listen-only'
+        http('/api/commissioning',{'mode':'control-enabled'},202); lib.simulation_advance(1)
+        assert http()['simulation_tx']==[]
         http('/api/time',dict(action='manual',unix_seconds=1767268800))
         session=http('/api/mqtt')['session']
         payload=json.dumps(dict(session=session,request_id=1,mode=0,centi_c=2150))

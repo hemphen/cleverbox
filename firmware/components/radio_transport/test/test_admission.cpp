@@ -12,7 +12,6 @@ extern "C" esp_err_t device_registry_save_record(const radiator_registry *, cons
 static rf_control_request command;
 struct stop_worker {};
 static unsigned checks;
-static rf_frame b_state;
 static rf_frame state_frame() {
     rf_frame f = {};
     assert(rf_parse_hex("38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0078B20C0000A20F60D9", f.bytes, sizeof(f.bytes), &f.size)); return f;
@@ -23,7 +22,7 @@ static int mode_store_result;
 extern "C" esp_err_t device_mode_save(bool) { return mode_store_result; }
 static void reset() {
     status_lock = xSemaphoreCreateMutex(); mode_store_result = 0; tx_in_progress = false;
-    capture_sequence = 0; capture_boot = 1; monitors={};
+    monitors={};
     status = {}; status.ready = true; status.health=RADIO_READY; status.worker_running=true; status.control_enabled = true; registry = {}; registry.count = 2; registry.next_id = 3;
     for (unsigned i = 0; i < 2; ++i) {
         auto &d = registry.records[i]; d.id = i + 1;
@@ -343,10 +342,6 @@ static void test_generated_relationships() {
     reset(); radio_worker w;
     auto &a=registry.records[0]; auto &b=registry.records[1];
     b.pair.controller[3]=9;
-    b.has_saved_template=true;
-    memcpy(b.saved_template,b_state.bytes,CONTROLLER_STATE_BYTES);
-    const auto saved=b;
-    assert(!a.has_control_template && !a.has_saved_template);
     assert(radio_control_start(1,&command)==ESP_OK);
     assert(radio_control_start(2,&command)==ESP_OK);
     test_step(w); test_step(w);
@@ -359,7 +354,6 @@ static void test_generated_relationships() {
     assert(transmitted_bytes[4]==9 && transmitted_bytes[9]==7);
     assert(transmitted_bytes[32]==0x30 && transmitted_bytes[33]==4);
     assert(transmitted_bytes[49]==0 && transmitted_bytes[50]==120);
-    assert(!memcmp(b.saved_template,saved.saved_template,CONTROLLER_STATE_BYTES));
     assert(a.control.phase==RF_CONTROL_WAIT_REPORT && !a.has_paired_report);
     report=report_b(false); report.bytes[4]=6; reseal_test(report);
     hear(w,report);
@@ -378,14 +372,7 @@ int main() {
     reset(); radio_worker worker;
     rf_frame state = state_frame();
     assert(radio_control_start(0, &command) == ESP_ERR_INVALID_STATE);
-    // Learning remains diagnostic; no template gate on commands.
-    hear(worker, state);
-    assert(registry.records[0].has_control_template && !registry.records[1].has_control_template);
-    rf_frame bstate = state;
-    const char *bhex = "38F1010203C6F10405074500004B02A83B004C00008E000084CC00000000977182939402BA00E100641919DA000000005BABCDB20C00000CFC7F4B";
-    assert(rf_parse_hex(bhex, bstate.bytes, sizeof(bstate.bytes), &bstate.size));
-    hear(worker, bstate); b_state = bstate;
-
+    hear(worker, state); // Valid non-report traffic does not authorize a command.
     assert(radio_control_start(1, &command) == ESP_OK);
     assert(radio_control_start(1, &command) == ESP_ERR_INVALID_STATE);
     assert(radio_device_remove(1) == ESP_ERR_INVALID_STATE);
@@ -418,14 +405,14 @@ int main() {
     assert(!registry.records[0].command_reserved); queue_full = false;
     test_generated_relationships();
     test_tx_lifecycle(); test_tx_signal_and_deadline(); test_tx_failures();
-    test_tx_fairness_and_expiry(); test_tx_local_queue_and_identity(); test_tx_template_mutation(); test_tx_pair_cancel_and_silence();
+    test_tx_fairness_and_expiry(); test_tx_local_queue_and_identity(); test_tx_local_mutation(); test_tx_pair_cancel_and_silence();
     test_recovery_bounds(); test_radio_fault_observation_and_writes();
     test_fault_persistence_and_pairing(); test_hal_containment();
     test_queue_capacity(); test_fair_turns(); test_compaction(); test_fatal_rx_failure(); test_admission_clock_and_queue_delay();
     test_partial_and_fifo_only(); test_report_before_selection(); test_final_guard_and_expiry();
     test_bounded_rx_recovery(); test_deferred_state_and_results();
     test_expired_handoffs_and_rx_failure(); test_sustained_input_deadlines();
-    test_passive_mode(); test_passive_capture();
+    test_passive_mode(); test_passive_reports();
     reset(); registry.count=0; monitors={}; radio_worker monitoring;
     status.control_enabled=false; hear(monitoring,report_b(false));
     assert(radio_monitor_change("select",report_b(false).bytes+1,"Observed")==ESP_OK);

@@ -92,11 +92,9 @@ def run(directory):
         app.advance(59999); assert status(app)['state'] == 'failed'
         app.advance(1); assert status(app)['state'] == 'connecting'
         assert connect(app)['state'] == 'connected' and wifi.read_bytes() == saved
-        # Pair + save controller state, then admit a command before network loss.
+        # Pair a radiator, then admit a command before network loss.
         app.http('/api/pairing', {'action': 'start', 'source': 'F1010203', 'destination': 'F1100001'}, 202)
         app.advance(2000); assert app.http()['pairing']['saved']
-        app.sim('fixture'); app.advance(1)
-        app.http('/api/controller-state', {'action': 'save'}, 202); app.advance(1)
         registry = Path(str(storage) + '.registry'); before = registry.read_bytes()
         app.sim('scenario', name='delayed')
         app.command(target=2050); app.advance(1)
@@ -124,7 +122,7 @@ def run(directory):
     app = App(storage)
     try:
         assert not status(app)['configured'] and status(app)['recovery_ap']
-        assert app.http()['pairing']['saved'] and app.http()['command']['saved_available']
+        assert app.http()['pairing']['saved']
         assert app.http()['simulation_tx'] == []
         configure(app, ssid, password); assert not failures(app)['configured']
         assert not wifi.exists()
@@ -221,7 +219,7 @@ def run(directory):
     try:
         # An erase which reports failure can still take effect across restart.
         assert not status(app)['configured'] and status(app)['recovery_ap']
-        assert app.http()['pairing']['saved'] and app.http()['command']['saved_available']
+        assert app.http()['pairing']['saved']
         assert app.http()['simulation_tx'] == [] and registry.read_bytes() == before
     finally:
         app.stop()

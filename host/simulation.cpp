@@ -18,7 +18,6 @@ struct simulated_device { uint8_t address[4]; bool offered, bound; uint16_t targ
 static simulated_device devices[] = {{{0xf1,4,5,6},false,false,698,0}, {{0xf1,4,5,7},false,false,698,0}};
 static unsigned inclusion_device;
 static const uint8_t controller[] = {0xf1,1,2,3};
-static const char *fixture = "38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0078B20C0000A20F60D9";
 static rf_frame parse(const char *hex) {
     rf_frame f = {}; bool ok = rf_parse_hex(hex, f.bytes, sizeof(f.bytes), &f.size);
     assert(ok); return f;
@@ -30,7 +29,7 @@ static void schedule(const rf_frame &f, int delay = 0) {
     std::stable_sort(deliveries.begin(), deliveries.end(), [](const delivery &a, const delivery &b) { return a.due < b.due; });
 }
 // Independent simulator envelope writer; deliberately never calls rf_short,
-// rf_set_target or rf_live_state. Literal exchanges below are independent vectors.
+// rf_touch_e3_state. Literal exchanges below are independent vectors.
 static uint16_t checksum(const uint8_t *p, size_t n, bool reflected) {
     uint16_t value = 0xffff;
     for (size_t i = 0; i < n * 8; ++i) {
@@ -117,12 +116,6 @@ extern "C" int simulation_inject(const char *hex) {
 extern "C" int simulation_device(int index) {
     if (index < 0 || index >= (int)(sizeof(devices) / sizeof(devices[0]))) return 0;
     inclusion_device = (unsigned)index; return 1;
-}
-extern "C" void simulation_fixture(void) {
-    rf_frame f = parse(fixture); memcpy(f.bytes + 6, devices[inclusion_device].address, 4);
-    // Distinct opaque fixture bytes are host-only original-controller stand-ins.
-    if (inclusion_device) { f.bytes[31] = 0x71; f.bytes[32] = 0x82; f.bytes[33] = 0x93; f.bytes[49] = 0xab; f.bytes[50] = 0xcd; }
-    seal(f); schedule(f, 1);
 }
 extern "C" void simulation_status(cJSON *j) {
     cJSON_AddBoolToObject(j, "simulation", true);

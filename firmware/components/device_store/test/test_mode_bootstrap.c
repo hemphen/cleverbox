@@ -50,9 +50,9 @@ int main(int argc, char **argv) {
     bool enabled=true;
     assert(device_mode_prepare_write()==ESP_ERR_INVALID_STATE);
     assert(device_mode_start(&enabled)==ESP_FAIL && !enabled);
-    assert(writes==1 && cached_present && !flash_present && scans==7);
+    assert(writes==1 && cached_present && !flash_present && scans==0);
     assert(device_mode_prepare_write()==ESP_FAIL && !flash_present);
-    assert(device_mode_start(&enabled)==ESP_FAIL && !enabled && scans==7);
+    assert(device_mode_start(&enabled)==ESP_FAIL && !enabled && scans==0);
     fail_write=false;
     if (argc==2 && !strcmp(argv[1],"enable-first")) {
         assert(device_mode_save(true)==ESP_OK && flash_present && flash[1]==1);
@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
         puts("Bootstrap retry versus explicit mode save: serialized, explicit enable preserved: passed");
     } else {
         assert(device_mode_prepare_write()==ESP_OK && flash_present && flash[0]==1 && flash[1]==0);
-        assert(erases==2 && writes==2 && scans==7);
+        assert(erases==2 && writes==2 && scans==0);
         assert(device_mode_start(&enabled)==ESP_FAIL && !enabled); // RF error stays latched this boot
         unsigned previous=writes;
         assert(device_mode_prepare_write()==ESP_OK && writes==previous); // no per-setting mode write

@@ -17,9 +17,6 @@ typedef enum { RF_COMFORT = 0, RF_OFF = 1, RF_FROST = 2, RF_ECO = 3 } rf_mode;
 
 bool rf_valid(const rf_frame *frame);
 bool rf_short(rf_frame *out, const uint8_t source[4], const uint8_t dest[4], rf_command command);
-// Preserve the complete controller-state template except target/mode and CRCs.
-// Temperature is centidegrees Celsius; Off always uses raw 320.
-bool rf_set_target(rf_frame *out, const rf_frame *state, rf_mode mode, int centi_c);
 bool rf_parse_hex(const char *hex, uint8_t *out, size_t capacity, size_t *size);
 void rf_to_hex(const rf_frame *frame, char out[RF_MAX_FRAME * 2 + 1]);
 typedef struct {
@@ -30,13 +27,6 @@ typedef struct {
 } rf_report;
 // Decode only the documented radiator-report shape, after validating both CRCs.
 bool rf_decode_report(const rf_frame *frame, rf_report *report);
-// Legacy diagnostic codec only; normal commands use rf_touch_e3_state.
-// Build from a same-radiator template and a newly received report.
-// Refresh addresses, measured temperature, E1, zero DA and local clock; keep opaque fields.
-bool rf_live_state(rf_frame *out, const rf_frame *state, const rf_frame *report,
-                   const uint8_t controller[4], const uint8_t radiator[4],
-                   rf_mode mode, int centi_c, unsigned clock_seconds);
-
 // Explicit replacement-controller profile; no template and no transmission.
 // Contract, evidence and byte layout: docs/controller-profile.md.
 typedef struct {

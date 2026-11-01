@@ -183,8 +183,3 @@ Delivery error `0x730A` means uncertain physical delivery. The bridge snapshot
 retains the underlying failure stage/code. Tracked command results still name
 the original request/session. Reconnect publishes results and observations,
 never failed commands. See [the failure policy](architecture.md#radio-health-and-recovery).
-
-The admission reason strings `invalid_settings_or_template` and
-`busy_or_unavailable_or_missing_template` are replaced by the names above.
-Topic/payload/session/token contracts and HA draft-and-Apply behavior are unchanged.
-Legacy template HTTP diagnostics remain readable but cannot influence MQTT output.

@@ -54,11 +54,10 @@ def run(directory):
         assert status(app)['manual_recovery'] and status(app)['recovery_ap']
         finish(app); app.advance(59999); assert status(app)['recovery_ap']
         app.advance(1); assert not status(app)['recovery_ap']
-        # Stable IDs, names, pairings/templates, timezone, broker credentials and
+        # Stable IDs, names, pairings, timezone, broker credentials and
         # a durable offline discovery cleanup record must survive recovery/forget.
         app.http('/api/pairing', {'action': 'start', 'source': 'F1010203', 'destination': 'F1100001'}, 202)
-        app.advance(2000); app.sim('fixture'); app.advance(1)
-        app.http('/api/controller-state', {'action': 'save'}, 202); app.advance(1)
+        app.advance(2000)
         app.http('/api/radiators', {'action': 'rename', 'id': 1, 'name': 'Bench'}, 202); app.advance(1)
         app.http('/api/time', {'action': 'timezone', 'timezone': 'CET-1'}, 200)
         app.http('/api/mqtt', dict(action='configure', host='broker.test', port=1883,
@@ -126,7 +125,7 @@ def run(directory):
         assert not s['manual_recovery'] and not s['configured'] and s['recovery_ap']
         radio = app.advance(1000)
         assert radio['command']['phase'] == 'idle' and not radio['simulation_tx']
-        assert radio['pairing']['saved'] and radio['command']['saved_available']
+        assert radio['pairing']['saved']
         assert radio['radiators'][0]['name'] == 'Bench'
         assert app.http('/api/time')['timezone'] == 'CET-1'
         assert app.http('/api/mqtt')['configured'] and app.http('/api/mqtt')['discovery_pending'] > 0

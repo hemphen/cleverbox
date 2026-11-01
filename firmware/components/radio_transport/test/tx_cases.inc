@@ -149,12 +149,12 @@ static void test_tx_local_queue_and_identity() {
     assert(registry.records[0].tracked_result.phase==RF_CONTROL_MATCHED && registry.records[0].tracked_result.attempts==1);
     // Pending flash requests remain pending through faults and keep real outcomes.
     reset(); radio_worker failed; ready_state(failed,1); tx_busy(59); failed.step();
-    auto state=state_frame(); assert(radio_state_save(1,&state)==ESP_OK);
+    assert(radio_device_rename(1,"Failed rename")==ESP_OK);
     test_now_us=failed.tx.deadline_us; failed.step();
     assert(!status.ready && queue_count==1 && status.mutation_pending && !store_calls);
     store_result=ESP_ERR_TIMEOUT; failed.step();
     assert(store_calls==1 && last_stored_id==1 && !status.mutation_pending);
-    assert(registry.records[0].state_save_result==RADIO_STORE_FAILED && status.mutation_error==ESP_ERR_TIMEOUT);
+    assert(status.mutation_error==ESP_ERR_TIMEOUT && strcmp(registry.records[0].name,"Failed rename"));
     // Exhaust the existing finite recovery batch, then explicitly retry. None
     // of these setup/retry iterations can revive the failed request or its bytes.
     begin_result=-99;
@@ -176,20 +176,20 @@ static void test_tx_local_queue_and_identity() {
     tx_done(); ordered.step(); ordered.step();
     assert(store_calls==2 && !strcmp(registry.records[0].name,"Second"));
 }
-static void test_tx_template_mutation() {
+static void test_tx_local_mutation() {
     reset(); radio_worker w;
     assert(control_start_at(2,&command,test_now_us/1000,456)==ESP_OK);
     w.step(); w.step();
     rf_frame report=report_b(false); rf_control_receive(&w.controls[1],test_now_us/1000,&report);
     tx_busy(59); w.step(); const auto pending=w.tx;
-    assert(radio_state_clear(2)==ESP_OK);
-    assert(registry.records[1].state_clear_result==RADIO_STORE_PENDING);
+    assert(radio_device_rename(2,"After TX")==ESP_OK);
+    assert(status.mutation_pending);
     w.step(); assert(!store_calls && queue_count==1 && tx_in_progress);
     assert(!memcmp(pending.bytes,w.tx.bytes,pending.size));
     tx_done(); w.step();
     assert(!store_calls && registry.records[1].tracked_result.attempts==1);
     w.step();
-    assert(store_calls==1 && registry.records[1].state_clear_result==RADIO_STORE_OK);
+    assert(store_calls==1 && !status.mutation_error && !strcmp(registry.records[1].name,"After TX"));
     assert(registry.records[1].result_cookie==456 && registry.records[1].command_reserved);
     assert(w.controls[1].status.phase==RF_CONTROL_WAIT_READBACK && w.controls[1].status.attempts==1);
     hear(w,report_b(true));
