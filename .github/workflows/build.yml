@@ -47,6 +47,8 @@ jobs:
         env:
           RESOURCE_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
+          . /opt/esp/idf/export.sh
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --depth=1 origin "$RESOURCE_BASE"
           python3 .github/scripts/radio-resources.py "$RESOURCE_BASE"
       - uses: actions/upload-artifact@v4
