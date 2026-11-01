@@ -112,7 +112,7 @@ static void test_tx_fairness_and_expiry() {
     tx_done(); w.step(); assert(w.next_device==1 && registry.records[0].control.attempts==1);
     // Fresh independent request may arrive while A is physically outstanding.
     reset(); radio_worker parallel; start_control(parallel,0); tx_busy(); parallel.step();
-    command.state=b_state;
+
     assert(control_start_at(2,&command,test_now_us/1000,222)==ESP_OK);
     for (unsigned i=0;i<3;++i) parallel.step();
     assert(queue_count==1 && registry.records[1].command_pending && transmit_count==1);
@@ -123,7 +123,7 @@ static void test_tx_fairness_and_expiry() {
     assert(registry.records[1].result_cookie==222 && registry.records[1].tracked_result.phase==RF_CONTROL_WAIT_REPORT);
     // A queued command expires from its admission time, rather than getting a
     // fresh allowance after waiting behind another transmission.
-    reset(); radio_worker queued; start_control(queued,0); tx_busy(); queued.step(); command.state=b_state;
+    reset(); test_now_us=200000000; radio_worker queued; start_control(queued,0); tx_busy(); queued.step();
     assert(control_start_at(2,&command,test_now_us/1000-RF_CONTROL_WAIT_MS+1,333)==ESP_OK);
     test_now_us+=2000; queued.step(); assert(registry.records[1].command_pending);
     tx_done(); queued.step(); queued.step();
@@ -131,7 +131,7 @@ static void test_tx_fairness_and_expiry() {
     assert(registry.records[1].result_cookie==333 && transmit_count==1);
 }
 static void test_tx_local_queue_and_identity() {
-    reset(); radio_worker w; command.state=b_state;
+    reset(); radio_worker w;
     assert(control_start_at(2,&command,test_now_us/1000,987)==ESP_OK); tx_busy(); w.step();
     assert(radio_device_remove(2)==ESP_ERR_INVALID_STATE);
     assert(radio_device_remove(1)==ESP_OK); // Compaction accepted during physical TX.
@@ -149,12 +149,12 @@ static void test_tx_local_queue_and_identity() {
     assert(registry.records[0].tracked_result.phase==RF_CONTROL_MATCHED && registry.records[0].tracked_result.attempts==1);
     // Pending flash requests remain pending through faults and keep real outcomes.
     reset(); radio_worker failed; ready_state(failed,1); tx_busy(59); failed.step();
-    auto state=state_frame(); assert(radio_state_save(1,&state)==ESP_OK);
+    assert(radio_device_rename(1,"Failed rename")==ESP_OK);
     test_now_us=failed.tx.deadline_us; failed.step();
     assert(!status.ready && queue_count==1 && status.mutation_pending && !store_calls);
     store_result=ESP_ERR_TIMEOUT; failed.step();
     assert(store_calls==1 && last_stored_id==1 && !status.mutation_pending);
-    assert(registry.records[0].state_save_result==RADIO_STORE_FAILED && status.mutation_error==ESP_ERR_TIMEOUT);
+    assert(status.mutation_error==ESP_ERR_TIMEOUT && strcmp(registry.records[0].name,"Failed rename"));
     // Exhaust the existing finite recovery batch, then explicitly retry. None
     // of these setup/retry iterations can revive the failed request or its bytes.
     begin_result=-99;
@@ -170,26 +170,26 @@ static void test_tx_local_queue_and_identity() {
     // command cannot overtake or discard a pending store.
     reset(); radio_worker ordered; assert(radio_device_rename(1,"First")==ESP_OK);
     ordered.step(); assert(store_calls==1 && !transmit_count);
-    command.state=b_state; assert(radio_control_start(2,&command)==ESP_OK);
+    assert(radio_control_start(2,&command)==ESP_OK);
     tx_busy(); ordered.step(); assert(radio_device_rename(1,"Second")==ESP_OK);
     ordered.step(); assert(store_calls==1 && queue_count==1);
     tx_done(); ordered.step(); ordered.step();
     assert(store_calls==2 && !strcmp(registry.records[0].name,"Second"));
 }
-static void test_tx_template_mutation() {
-    reset(); radio_worker w; command.state=b_state;
+static void test_tx_local_mutation() {
+    reset(); radio_worker w;
     assert(control_start_at(2,&command,test_now_us/1000,456)==ESP_OK);
     w.step(); w.step();
     rf_frame report=report_b(false); rf_control_receive(&w.controls[1],test_now_us/1000,&report);
     tx_busy(59); w.step(); const auto pending=w.tx;
-    assert(radio_state_clear(2)==ESP_OK);
-    assert(registry.records[1].state_clear_result==RADIO_STORE_PENDING);
+    assert(radio_device_rename(2,"After TX")==ESP_OK);
+    assert(status.mutation_pending);
     w.step(); assert(!store_calls && queue_count==1 && tx_in_progress);
     assert(!memcmp(pending.bytes,w.tx.bytes,pending.size));
     tx_done(); w.step();
     assert(!store_calls && registry.records[1].tracked_result.attempts==1);
     w.step();
-    assert(store_calls==1 && registry.records[1].state_clear_result==RADIO_STORE_OK);
+    assert(store_calls==1 && !status.mutation_error && !strcmp(registry.records[1].name,"After TX"));
     assert(registry.records[1].result_cookie==456 && registry.records[1].command_reserved);
     assert(w.controls[1].status.phase==RF_CONTROL_WAIT_READBACK && w.controls[1].status.attempts==1);
     hear(w,report_b(true));

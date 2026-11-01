@@ -152,8 +152,6 @@ def main():
                     offset=data.get('offset',0); total=data.get('total',len(payload))
                     if type(offset) is not int or type(total) is not int or offset<0 or total<0: raise ValueError()
                     lib.mqtt_bridge_input(topic,len(topic),payload,len(payload),offset,total,bool(data.get('retained',False)))
-                elif action == 'fixture':
-                    lib.simulation_fixture()
                 elif action == 'device' and type(data.get('index')) is int:
                     if not lib.simulation_device(data['index']):
                         raise ValueError()

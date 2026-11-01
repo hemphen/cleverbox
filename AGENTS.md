@@ -16,14 +16,15 @@ ESP32-C6 + CC1101 board. Read [README.md](README.md) and
   defines it.
 - When hardware contradicts the specification, record a short finding and take
   the protocol question to clevertouch-protocol.
-- Never use the synthetic fixture's template values (such as `5B`) as defaults
+- Never use synthetic test-vector values as defaults
   in physical firmware.
 - The explicitly selected Touch E3 replacement-controller codec profile is
   permitted. Its constants must trace to observed protocol evidence, not to
   synthetic fixtures. Keep its reversible assumptions and input contract in
   [docs/controller-profile.md](docs/controller-profile.md). Captures are evidence,
-  not controller personalities or capability descriptions. Production dispatch
-  still requires templates; changing that admission is a separate milestone.
+  not controller personalities or capability descriptions. Normal commands use
+  only this generated profile, with explicit non-Boost duration 120 minutes.
+  Do not restore a template-based controller stack, capture, import or adoption.
 
 ## Scope
 
@@ -47,8 +48,8 @@ ESP32-C6 + CC1101 board. Read [README.md](README.md) and
   energy figures.
 - Radiator IDs are stable across restarts and never reused.
 - Nothing is sent at boot: no inclusion, polls or settings changes.
-- Templates reach flash only through the save and import actions. Passive learning
-  stays in RAM.
+- Persist registry v2 only: identities, names and saved relationships. There are
+  no deployed devices requiring older registry formats or template migration.
 - Use bounded queues, timeouts and retries. Do not block network or event loops.
 - Do not add a thermostat or PID loop without an explicit requirement.
 - Take pin assignments from the board schematic or manufacturer firmware and
@@ -56,9 +57,8 @@ ESP32-C6 + CC1101 board. Read [README.md](README.md) and
 
 ## Host simulation
 
-The simulation must run the production receive, learning and state-machine
-code. Keep synthetic controller fixtures explicit and separate from radiator
-reports.
+The simulation must run the production receive and state-machine code. Expected generated frame vectors
+stay explicit in tests; no synthetic original-controller injection workflow.
 
 ## Tests
 

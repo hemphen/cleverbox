@@ -4,13 +4,13 @@
 import json
 from pathlib import Path
 import tempfile
-from test_http import App, STATE
+from test_http import seed_pairing, App
 from test_mqtt import BASE, connect, publications, send
 
 
 def run(directory):
     storage = Path(directory) / 'tokens.bin'
-    storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    seed_pairing(storage)
     app = App(storage)
     try:
         app.http('/api/mqtt', dict(action='configure', host='broker.test', port=1883,
@@ -35,10 +35,11 @@ def run(directory):
         assert command(token)['reason'] == 'invalid_command_token'
         token = snapshot()['command_token']
         app.http('/api/time', dict(action='manual', unix_seconds=1767268800))
-        assert command(token)['reason'] == 'busy_or_unavailable_or_missing_template'
+        assert command(token)['accepted']
         assert command(token)['reason'] == 'invalid_command_token'
         token = snapshot()['command_token']
-        app.http('/api/controller-state', dict(action='import', id=1, state=STATE), 202); app.advance(1)
+        assert app.http()['command']['phase']=='matched'
+        assert 'template_available' not in app.http()['command']
         # Numeric clients and token clients share ONE atomic sequence. Floor is
         # never an allocator: a token allocates at consumption, after numeric 100.
         assert send(app, session, 100)['accepted']; app.advance(1000)
@@ -47,12 +48,13 @@ def run(directory):
         app.sim('scenario', name='silence')
         accepted = command(token)
         assert accepted['accepted'] and accepted['request_id'] == 101 and accepted['command_token'] == token
+        app.advance(2)  # Resolve the admitted poll before measuring duplicate silence.
         tx = app.http()['simulation_tx']
         assert command(token)['reason'] == 'invalid_command_token'
         assert app.http()['simulation_tx'] == tx
         token2 = snapshot()['command_token']
         busy = command(token2)
-        assert busy['request_id'] == 102 and busy['reason'] == 'busy_or_unavailable_or_missing_template'
+        assert busy['request_id'] == 102 and busy['reason'] == 'busy_or_unavailable'
         assert command(token2)['reason'] == 'invalid_command_token'
         app.advance(151000)
         delivery = [r['payload'] for r in publications(app) if r['payload'].get('stage') == 'delivery'][-1]

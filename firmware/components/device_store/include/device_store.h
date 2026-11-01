@@ -14,9 +14,8 @@ typedef struct { uint8_t controller[4], radiator[4]; } paired_device;
 #define CLEVERBOX_RADIATOR_CAPACITY 8
 #endif
 #define RADIATOR_NAME_BYTES 32
-#define CONTROLLER_STATE_BYTES 59
 #define REGISTRY_HEADER_BYTES 7
-#define REGISTRY_RECORD_BYTES (4 + RADIATOR_NAME_BYTES + 1 + 8 + 1 + CONTROLLER_STATE_BYTES)
+#define REGISTRY_RECORD_BYTES (4 + RADIATOR_NAME_BYTES + 1 + 8)
 #define REGISTRY_STORAGE_BYTES (REGISTRY_HEADER_BYTES + REGISTRY_RECORD_BYTES * CLEVERBOX_RADIATOR_CAPACITY)
 #define DEVICE_STORE_ERR_CAPACITY 0x7c01
 #if CLEVERBOX_RADIATOR_CAPACITY < 1 || CLEVERBOX_RADIATOR_CAPACITY > 65535
@@ -27,12 +26,9 @@ typedef struct {
     uint32_t id;
     char name[RADIATOR_NAME_BYTES + 1];
     paired_device pair;
-    bool has_saved_template;
-    uint8_t saved_template[CONTROLLER_STATE_BYTES];
-    // Everything below is transient. The live machine is worker-owned.
-    bool has_control_template, has_paired_report;
-    uint8_t control_template[CONTROLLER_STATE_BYTES];
-    int64_t control_template_time_us, paired_report_time_us;
+    // Everything below is transient.
+    bool has_paired_report;
+    int64_t paired_report_time_us;
     rf_report paired_report;
     rf_control_status control;
     bool command_reserved; // Admission through worker handoff and terminal publication.
@@ -42,8 +38,7 @@ typedef struct {
     uint64_t command_cookie, result_cookie;
     rf_control_status tracked_result;
     int tracked_error;
-    int control_error, state_load_error, state_store_error;
-    radio_store_result state_save_result, state_clear_result;
+    int control_error;
 } radiator_record;
 typedef struct {
     uint32_t next_id;
@@ -56,7 +51,7 @@ typedef struct { uint8_t address[4]; char name[RADIATOR_NAME_BYTES + 1]; } monit
 typedef struct { size_t count; monitor_selection records[RADIO_MONITOR_CAPACITY]; } monitor_registry;
 esp_err_t device_monitors_load(monitor_registry *out);
 esp_err_t device_monitors_save(const monitor_registry *value);
-// A present registry (even empty) is authoritative; legacy keys are never erased.
+// Registry v2 only. Unknown formats are rejected without mutation.
 // Capacity/version/validation failures block mutation, never truncate records.
 esp_err_t device_registry_load(radiator_registry *registry);
 esp_err_t device_registry_save(const radiator_registry *registry);

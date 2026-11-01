@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 from urllib.parse import urlsplit
-from test_http import App, STATE, REPORT
+from test_http import seed_pairing, App, STATE, REPORT
 from test_network import status, configure, connect
 from test_recovery import hold
 
@@ -35,7 +35,7 @@ def files(storage):
 
 def run(directory):
     storage = Path(directory) / 'boundary'
-    storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    seed_pairing(storage)
     app = App(storage, interfaces=True)
     sta, ap, unknown = '127.0.0.1', '127.0.0.2', '127.0.0.3'
     spoof = {'Host': '192.0.2.10', 'Origin': 'http://192.0.2.10',
@@ -58,14 +58,12 @@ def run(directory):
         request(app, ap, '/api/network', {'action': 'configure', 'ssid': 'generated', 'password': 'testonly123'}, 202)
         connect(app)
         assert status(app)['configured']
-        app.http('/api/controller-state', {'action': 'import', 'state': STATE}, 202)
+        assert 'template_available' not in app.http()['command']
         app.advance(1)
         actions = [('/api/pairing', {'action': a, 'source': 'F1010203', 'destination': 'F1100001', 'id': 1})
                    for a in ('start', 'save', 'cancel')]
-        actions += [('/api/controller-state', {'action': a, 'state': STATE, 'id': 1}) for a in ('save', 'import', 'clear')]
         actions += [('/api/radiators', {'action': a, 'id': 1, 'name': 'Blocked'}) for a in ('rename', 'remove', 'select')]
-        actions += [('/api/commissioning', {'mode':'control-enabled'}),
-                    ('/api/controller-state', {'action':'adopt','id':1,'radiator':'F1040506','version':'A'*32,'replace':True})]
+        actions += [('/api/commissioning', {'mode':'control-enabled'})]
         actions += [('/api/command', {'id': 1, 'mode': 0, 'centi_c': 2050, 'state': STATE}),
                     ('/api/preview', {'command': 'offer', 'source': 'F1010203', 'destination': 'F1100001'}),
                     ('/api/time', {'action': 'manual', 'unix_seconds': 1767268800}),
@@ -120,7 +118,7 @@ def run(directory):
         assert 'testonly123' not in str(request(app, ap, '/api/network'))
         request(app, ap, '/api/network', {'action': 'forget', 'confirm': True}, 202)
         assert not status(app)['configured'] and status(app)['recovery_ap']
-        assert app.http()['command']['saved_available']
+        assert app.http()['pairing']['saved'] and 'template_available' not in app.http()['command']
     finally:
         app.stop()
 

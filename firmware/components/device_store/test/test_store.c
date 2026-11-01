@@ -8,19 +8,18 @@
 
 // Fake only the NVS boundary. Writes are deliberately eager, as ESP-IDF NVS
 // may write before commit: closing a handle must not be mistaken for rollback.
-static unsigned char disk[3][REGISTRY_STORAGE_BYTES + REGISTRY_RECORD_BYTES];
-static size_t sizes[3];
+static unsigned char disk[1][REGISTRY_STORAGE_BYTES + REGISTRY_RECORD_BYTES];
+static size_t sizes[1];
 static bool fail_write;
 static unsigned fail_commits;
 static unsigned key_index(const char *key)
 {
-    assert(!strcmp(key, "pairing") || !strcmp(key, "control_state") || !strcmp(key, "registry"));
-    return !strcmp(key, "pairing") ? 0 : !strcmp(key, "registry") ? 2 : 1;
+    assert(!strcmp(key, "registry")); return 0;
 }
 esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *out)
 {
     assert(!strcmp(name, "cleverbox")); *out = 1;
-    return mode == NVS_READONLY && !sizes[0] && !sizes[1] && !sizes[2] ? ESP_ERR_NVS_NOT_FOUND : ESP_OK;
+    return mode == NVS_READONLY && !sizes[0] ? ESP_ERR_NVS_NOT_FOUND : ESP_OK;
 }
 esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *size)
 {
@@ -49,29 +48,33 @@ void nvs_close(nvs_handle_t h) { assert(h == 1); }
 
 int main(void)
 {
-    const uint8_t legacy[] = {1,0xf1,1,2,3,0xf1,4,5,6};
-    rf_frame frame = {0};
-    assert(rf_parse_hex("38F1010203C6F10405064500004B02A83B004C00008E000084CC00000000972030049402BA00E100641919DA000000005B0078B20C0000A20F60D9", frame.bytes, sizeof(frame.bytes), &frame.size));
-    radiator_registry empty = {0};
-    assert(device_registry_load(&empty) == ESP_OK && empty.count == 0);
-    memcpy(disk[0], legacy, sizeof(legacy)); sizes[0] = sizeof(legacy);
-    // Migration, eager-write rollback, retry, and authoritative empty registry.
     radiator_registry r = {0}, loaded_registry = {0};
+    assert(device_registry_load(&r) == ESP_OK && !r.count && r.next_id == 1);
+    radiator_record first = {.id=1, .name="Radiator", .pair={{0xf1,1,2,3},{0xf1,4,5,6}}};
     fail_write = true;
-    assert(device_registry_load(&r) == ESP_FAIL && sizes[0] == 9 && !sizes[2]);
+    assert(device_registry_save_record(&r,&first,0) == ESP_FAIL && !sizes[0]);
     fail_write = false; fail_commits = 1;
-    assert(device_registry_load(&r) == ESP_FAIL && sizes[0] == 9 && !sizes[2]);
-    assert(device_registry_load(&r) == ESP_OK && r.count == 1 && r.records[0].id == 1);
-    assert(!r.records[0].has_saved_template && r.next_id == 2);
+    assert(device_registry_save_record(&r,&first,0) == ESP_FAIL && !sizes[0]);
+    assert(device_registry_save_record(&r,&first,0) == ESP_OK);
+    assert(device_registry_load(&r) == ESP_OK && r.count==1 && r.next_id==2);
+    assert(sizes[0]==REGISTRY_HEADER_BYTES+REGISTRY_RECORD_BYTES && disk[0][0]==2);
+    // The generated controller profile rejects a zero controller identity suffix.
+    // The registry must reject it both before saving and when loading stored bytes.
+    radiator_record invalid = r.records[0];
+    memset(invalid.pair.controller + 1, 0, 3);
+    assert(device_registry_save_record(&r, &invalid, 0) == ESP_ERR_INVALID_ARG);
     assert(device_registry_load(&loaded_registry) == ESP_OK && loaded_registry.count == 1);
-    sizes[2] = 0;
-    memcpy(disk[1], legacy, sizeof(legacy)); memcpy(disk[1] + 9, frame.bytes, frame.size); sizes[1] = 68;
-    assert(device_registry_load(&r) == ESP_OK && r.records[0].has_saved_template);
-    assert(!memcmp(r.records[0].saved_template, frame.bytes, CONTROLLER_STATE_BYTES));
+    const size_t controller_offset = REGISTRY_HEADER_BYTES + 4 + RADIATOR_NAME_BYTES + 1;
+    memset(disk[0] + controller_offset + 1, 0, 3);
+    assert(device_registry_load(&loaded_registry) == ESP_ERR_INVALID_STATE && !loaded_registry.count);
+    assert(disk[0][controller_offset + 1] == 0 && disk[0][controller_offset + 2] == 0 &&
+           disk[0][controller_offset + 3] == 0); // Invalid NVS data was not modified.
+    memcpy(disk[0] + controller_offset + 1, first.pair.controller + 1, 3);
+    assert(device_registry_load(&loaded_registry) == ESP_OK && loaded_registry.count == 1);
     // Full-capacity generated records; no path is special to eight or to two.
     while (r.count < CLEVERBOX_RADIATOR_CAPACITY) {
         radiator_record *d = &r.records[r.count++]; *d = r.records[0];
-        d->id = r.next_id++; d->has_saved_template = false; d->pair.radiator[1] = 0x20; d->pair.radiator[2] = (uint8_t)(d->id >> 8); d->pair.radiator[3] = (uint8_t)(d->id + 10);
+        d->id = r.next_id++; d->pair.radiator[1] = 0x20; d->pair.radiator[2] = (uint8_t)(d->id >> 8); d->pair.radiator[3] = (uint8_t)(d->id + 10);
     }
     assert(device_registry_save(&r) == ESP_OK);
     assert(device_registry_load(&loaded_registry) == ESP_OK && loaded_registry.count == CLEVERBOX_RADIATOR_CAPACITY);
@@ -84,36 +87,27 @@ int main(void)
     assert(device_registry_load(&loaded_registry) == ESP_OK && strcmp(loaded_registry.records[0].name, "Bedroom"));
     assert(device_registry_save_record(&r, &changed, 0) == ESP_OK);
     assert(device_registry_load(&loaded_registry) == ESP_OK && !strcmp(loaded_registry.records[0].name, "Bedroom"));
-    changed.id = r.next_id; changed.pair.radiator[3] = 99; changed.has_saved_template = false;
+    changed.id = r.next_id; changed.pair.radiator[3] = 99;
     assert(device_registry_save_record(&r, &changed, 0) == ESP_ERR_INVALID_STATE); // Full.
     changed.id = r.next_id; changed.pair = r.records[0].pair;
     assert(device_registry_save_record(&r, &changed, 0) != ESP_OK); // Duplicate.
     // A valid larger-capacity blob cannot be loaded at this capacity. It remains
     // byte-for-byte present, and a save cannot overwrite an oversized record.
-    size_t original_size = sizes[2];
-    sizes[2] += REGISTRY_RECORD_BYTES; disk[2][1] = CLEVERBOX_RADIATOR_CAPACITY + 1;
+    size_t original_size = sizes[0];
+    sizes[0] += REGISTRY_RECORD_BYTES; disk[0][1] = CLEVERBOX_RADIATOR_CAPACITY + 1;
     assert(device_registry_load(&loaded_registry) == DEVICE_STORE_ERR_CAPACITY && !loaded_registry.count);
-    assert(device_registry_save(&r) != ESP_OK && sizes[2] == original_size + REGISTRY_RECORD_BYTES);
-    sizes[2] = original_size; disk[2][1] = CLEVERBOX_RADIATOR_CAPACITY;
-    disk[2][0] = 99;
-    assert(device_registry_load(&loaded_registry) == ESP_ERR_INVALID_STATE && !loaded_registry.count && disk[2][0] == 99);
-    disk[2][0] = 1;
+    assert(device_registry_save(&r) != ESP_OK && sizes[0] == original_size + REGISTRY_RECORD_BYTES);
+    sizes[0] = original_size; disk[0][1] = CLEVERBOX_RADIATOR_CAPACITY;
+    disk[0][0] = 99;
+    assert(device_registry_load(&loaded_registry) == ESP_ERR_INVALID_STATE && !loaded_registry.count && disk[0][0] == 99);
+    disk[0][0] = 2;
     r.count = 0;
     assert(device_registry_save(&r) == ESP_OK);
-    assert(sizes[0] == 9 && sizes[1] == 68); // Legacy setup retained, but never resurrected.
     assert(device_registry_load(&loaded_registry) == ESP_OK && loaded_registry.count == 0);
     assert(loaded_registry.next_id == r.next_id);
-    // Unknown/corrupt optional legacy state retains usable pair and can be
-    // repaired explicitly; unknown pairing never starts a fresh registry.
-    sizes[2] = 0; disk[1][0] = 99;
-    assert(device_registry_load(&loaded_registry) == ESP_ERR_INVALID_STATE && loaded_registry.count == 1);
-    assert(loaded_registry.records[0].state_load_error && !loaded_registry.records[0].has_saved_template);
-    assert(!sizes[2] && disk[1][0] == 99);
-    disk[1][0] = 1; disk[1][67] ^= 1;
-    assert(device_registry_load(&loaded_registry) == ESP_ERR_INVALID_STATE && !sizes[2]);
-    disk[1][67] ^= 1; disk[1][4] ^= 1;
-    assert(device_registry_load(&loaded_registry) == ESP_ERR_INVALID_STATE && !sizes[2]);
-    disk[1][4] ^= 1; disk[0][0] = 99;
-    assert(device_registry_load(&loaded_registry) == ESP_ERR_INVALID_STATE && !loaded_registry.count && !sizes[2]);
-    puts("Legacy/state validation, migration retry/rollback, registry capacity, identity/name/state retention, authoritative removal: passed");
+    // Retired and unknown formats fail without writes or implicit migration.
+    disk[0][0]=1;
+    assert(device_registry_load(&loaded_registry)==ESP_ERR_INVALID_STATE && !loaded_registry.count);
+    assert(disk[0][0]==1);
+    puts("Registry v2: identities/names, capacity, unknown format rejection, failed writes/commit rollback and authoritative removal: passed");
 }

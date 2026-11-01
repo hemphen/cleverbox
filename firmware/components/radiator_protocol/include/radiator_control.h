@@ -12,7 +12,6 @@ typedef enum {
     RF_CONTROL_WAIT_READBACK, RF_CONTROL_MATCHED, RF_CONTROL_TIMEOUT, RF_CONTROL_ERROR
 } rf_control_phase;
 typedef struct {
-    rf_frame state;
     rf_mode mode;
     int centi_c;
     unsigned clock_seconds; // Local time at request acceptance, snapshotted by admission.
@@ -26,15 +25,15 @@ typedef struct {
 } rf_control_status;
 typedef struct {
     rf_control_status status;
-    // Only the controller-state and a radiator report are retained between ticks.
+    // Only a newly routed radiator report is retained between ticks.
     // Full 258-byte RF envelopes are assembled temporarily for codec calls.
-    uint8_t state[59], report_bytes[64];
+    uint8_t report_bytes[64];
     size_t report_size;
     rf_mode mode;
     int centi_c;
     unsigned clock_seconds;
     uint8_t controller[4], radiator[4];
-    int64_t started_ms, deadline_ms;
+    int64_t started_ms, deadline_ms, report_received_ms;
 } rf_control;
 bool rf_control_active(const rf_control_status *s);
 bool rf_control_start(rf_control *c, const rf_control_request *request,

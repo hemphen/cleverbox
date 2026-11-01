@@ -3,7 +3,7 @@
 """Production time/HTTP/admission/worker integration; fake monotonic/SNTP I/O only."""
 from pathlib import Path
 import tempfile
-from test_http import App, STATE, REPORT
+from test_http import seed_pairing, App, STATE, REPORT
 
 TZ = 'CET-1CEST,M3.5.0/2,M10.5.0/3'
 
@@ -18,14 +18,14 @@ def clock(frame):
 
 def run(directory):
     storage = Path(directory) / 'time.bin'
-    storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    seed_pairing(storage)
     app = App(storage)
     try:
         s = app.http('/api/time')
         assert not s['usable'] and s['source'] == 'unsynchronized'
         assert not s['synchronized_this_boot'] and s['sync_age_ms'] is None and 'utc' not in s
         assert s['timezone'] == 'UTC0'
-        app.http('/api/controller-state', {'action': 'import', 'state': STATE}, 202)
+        assert 'template_available' not in app.http()['command']
         app.advance(1)
         error = app.http('/api/command', {'mode': 0, 'centi_c': 2050}, 409)
         assert 'Device time unavailable' in error and 'Wi-Fi' in error and 'UTC' in error

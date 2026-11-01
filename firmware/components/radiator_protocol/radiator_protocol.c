@@ -47,27 +47,6 @@ bool rf_short(rf_frame *out, const uint8_t source[4], const uint8_t dest[4], rf_
     seal(&f); *out = f; return true;
 }
 
-bool rf_set_target(rf_frame *out, const rf_frame *state, rf_mode mode, int centi_c)
-{
-    static const uint8_t tags[] = {0x45,0x4b,0x3b,0x4c,0x8e,0xcc,0x97,0x94,0xe1,0xda,0x5b,0xb2};
-    if (!out || !rf_valid(state) || state->size != 59 || mode < RF_COMFORT || mode > RF_ECO)
-        return false;
-    // Stage-1 application limits, matching the observed 5–30 C profile.
-    if (mode != RF_OFF && (centi_c < 500 || centi_c > 3000)) return false;
-    size_t pos = 10, target = 0;
-    for (size_t i = 0; i < sizeof(tags); ++i) {
-        if (pos >= 55 || state->bytes[pos] != tags[i]) return false;
-        if (tags[i] == 0x94) target = pos + 1;
-        pos += 2 + (tags[i] >> 6);
-    }
-    if (pos != 55 || !target) return false;
-    rf_frame f = *state;
-    unsigned raw = mode == RF_OFF ? 320 : (18 * centi_c + 50) / 100 + 320;
-    f.bytes[target] = raw >> 8; f.bytes[target + 1] = raw & 255;
-    f.bytes[target + 2] = (uint8_t)mode;
-    seal(&f); *out = f; return true;
-}
-
 static int nibble(char c)
 {
     if (c >= '0' && c <= '9') return c - '0';
@@ -130,37 +109,6 @@ bool rf_decode_report(const rf_frame *frame, rf_report *out)
     }
     if (pos != 34) return false;
     *out = report;
-    return true;
-}
-
-bool rf_live_state(rf_frame *out, const rf_frame *state, const rf_frame *report,
-                   const uint8_t controller[4], const uint8_t radiator[4],
-                   rf_mode mode, int centi_c, unsigned clock_seconds)
-{
-    rf_report decoded;
-    rf_frame f;
-    if (!out || !controller || !radiator || clock_seconds >= 86400 ||
-        !rf_set_target(&f, state, mode, centi_c) ||
-        !rf_decode_report(report, &decoded) ||
-        memcmp(state->bytes + 6, radiator, 4) ||
-        memcmp(decoded.source, radiator, 4) || memcmp(decoded.destination, controller, 4))
-        return false;
-    // These offsets belong to the strictly validated report/state layouts above.
-    memcpy(f.bytes + 1, controller, 4);
-    memcpy(f.bytes + 6, radiator, 4);
-    memcpy(f.bytes + 14, report->bytes + 16, 2); // 4B, including unavailable sentinel
-    // 97 echoes the answered report's DF: byte 0, and DF byte 2 bit 0 (heating
-    // now) into 97 byte 2 bit 0. 97's other bits stay from the template.
-    f.bytes[31] = report->bytes[11];
-    f.bytes[33] = (uint8_t)((f.bytes[33] & 0xfe) | (report->bytes[13] & 1));
-    // Prototype policy: echo current E1; do not invent a thermostat/PID output.
-    memcpy(f.bytes + 39, report->bytes + 23, 4);
-    memset(f.bytes + 44, 0, 4); // DA is zero in the documented controller states.
-    f.bytes[52] = clock_seconds / 3600;
-    f.bytes[53] = clock_seconds / 60 % 60;
-    f.bytes[54] = clock_seconds % 60;
-    seal(&f);
-    *out = f;
     return true;
 }
 

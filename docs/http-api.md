@@ -14,7 +14,7 @@ remain redacted. POST admission is:
 | Endpoint | AP | STA (trusted LAN) | Unknown |
 | --- | --- | --- | --- |
 | `/api/network` (configure, forget, finish_recovery) | Allowed | Allowed | Denied |
-| `/api/pairing`, `/api/command`, `/api/controller-state`, `/api/radiators` | Denied | Allowed | Denied |
+| `/api/pairing`, `/api/command`, `/api/radiators` | Denied | Allowed | Denied |
 | `/api/radio`, `/api/commissioning`, `/api/time`, `/api/mqtt`, `/api/preview` | Denied | Allowed | Denied |
 
 Denial returns `403` with an explanation and requests socket closure, before
@@ -64,7 +64,6 @@ is neither HTTP authentication nor a network firewall.
 | `GET /api/radiators` | – | Same response as `/api/radio` |
 | `POST /api/radiators` | 255 B | Select, rename, remove |
 | `POST /api/pairing` | 255 B | Start, cancel, save pairing |
-| `POST /api/controller-state` | 767 B | Save, import, clear template |
 | `POST /api/command` | 511 B | Send target and mode |
 | `POST /api/preview` | 1023 B | Build a frame without sending it |
 | `GET /api/network`, `POST /api/network` | 767 B | Wi-Fi status and setup |
@@ -74,8 +73,7 @@ is neither HTTP authentication nor a network firewall.
 ## Passive commissioning
 
 `GET /api/commissioning` is read-only diagnostic exposure on STA, AP and unknown
-interfaces, just like existing RF diagnostics. It returns no candidate frame
-bytes. Mode changes, monitoring mutations and template adoption require STA through the central
+interfaces, just like existing RF diagnostics. Mode changes and monitoring mutations require STA through the central
 admission table. Unknown classification never authorizes either mutation.
 
 | Field | Meaning |
@@ -84,11 +82,9 @@ admission table. Unknown classification never authorizes either mutation.
 | `pending`, `save_status` | Mode change queued; `not_attempted`, `pending`, `succeeded`, `failed` |
 | `storage_error`, `persistence_uncertain` | Mode load/write error; stored mode after restart may differ |
 | `capacity` | Entries per independent RAM cache: twice paired capacity |
-| `observations_full`, `candidates_full` | Cache bound reached |
-| `observation_evictions`, `candidate_evictions` | Saturating eviction counters since boot |
-| `observations[]` | `radiator` source address, `controller` destination, `temperature_c`, `target_c` (null if unavailable), `mode`, monotonic `age_ms`, `stale` (≥ 300000 ms), `paired`, `paired_id` if paired, `saved_template` |
-| `candidates[]` | Radiator destination address, source `controller`, capture `age_ms`, opaque `version`, `paired`, optional `paired_id`, `saved_template` |
-| `adoption` | Latest explicit adoption: paired `id`, exact candidate `version`, persistence `status`, storage `error` |
+| `observations_full` | Cache bound reached |
+| `observation_evictions` | Saturating eviction counters since boot |
+| `observations[]` | `radiator` source address, `controller` destination, `temperature_c`, `target_c` (null if unavailable), `mode`, monotonic `age_ms`, `stale` (≥ 300000 ms), `paired`, `paired_id` if paired |
 
 `POST /api/commissioning` accepts a mode request with exactly one field:
 
@@ -101,7 +97,7 @@ admission table. Unknown classification never authorizes either mutation.
 `save_status:succeeded` and `mode`. `409` means pairing, RF work or persistence is
 outstanding, or the worker is unavailable. Allow bounded work to finish and
 retry explicitly. Failures close RF and report storage uncertainty. Control
-enable queues no pairing, polling, template adoption or command.
+enable queues no pairing, polling or command.
 If the initial mode save failed, other settings saves first retry that same boot
 choice; they report failure without changing their own keys if mode persistence
 still fails. Diagnostics and RAM Wi-Fi trials remain available. The initial RF
@@ -120,7 +116,7 @@ Select requires that full address to have been observed or already selected.
 It can update an existing selection's name. Rename/remove require an existing
 selection. An already paired address, capacity exhaustion, storage error or
 pending mutation returns `409`. Pairing is exclusive with monitor changes.
-No action sends RF or changes mode, pairing or templates.
+No action sends RF or changes mode or pairing.
 
 `202` means queued. The GET response adds `monitor_capacity` (default 8),
 `monitors[]` (`radiator`, `name`, `available`, optional monotonic `age_ms` and
@@ -132,24 +128,19 @@ global switch: selection persists while disabled, but passive snapshots/configs
 publish only while enabled. Removing or disabling discovery schedules durable
 cleanup. Use [MQTT status](#mqtt) to track completion/errors.
 
-The page shows reports and candidate metadata, including matching pair/template
-status. Candidate choices are explicit snapshots: refresh choices after capture
-or pairing. Automatic status updates never substitute a newer capture into a
-selection. A replaced or evicted selection is disabled and rejected by the API.
-Adoption returns `202`; inspect `adoption.id`, `version`, `status` and `error`.
-Only one registry mutation is pending, and the endpoint retains the latest
-adoption outcome; it is not a history service.
+Normal control sequence:
 
-Practical sequence:
+1. Disconnect Touch E3 and explicitly enable control on STA.
+2. Put one radiator in pairing mode and pair with explicit addresses. Wait for
+   `inclusion.saved:true`; failed storage must be retried explicitly.
+3. Set device time (SNTP or manual UTC).
+4. Send a normal target and mode. Cleverbox polls, receives a fresh routed report,
+   sends a generated profile frame, then waits for matching observed readback.
 
-1. Leave Touch E3 operating and select listen-only (upgrades preserve old control mode).
-2. Wait for reports and candidate frames; a target change on Touch E3 may help.
-3. Identify the intended radiator by RF source address.
-4. Disconnect Touch E3 before enabling control and pairing explicitly. Pairing can reset radiator settings.
-5. Refresh candidates, adopt the matching capture, set device time and send a normal command.
-
-No step runs automatically. Observations/candidates clear at reboot. Mode,
-pairings and saved templates persist. See [cache and version rules](architecture.md#passive-commissioning).
+No capture, import, save or adoption is required. Listen-only passive monitoring
+is still available alongside Touch E3 and grants no pairing or command rights.
+No step runs automatically. Boot clears reports and commands, retains settings
+and sends nothing. See [context and retry policy](architecture.md#command-delivery).
 
 ## Radiators
 
@@ -163,8 +154,8 @@ Optional query `?id=N` selects a radiator; unknown IDs return `404`.
 | `chip_version` | CC1101 version register, `-1` if not read |
 | `valid_frames`, `invalid_frames`, `receive_errors` | Counters since boot |
 | `capacity` | Maximum radiators in this build |
-| `registry_error`, `registry_problem` | Load or migration error: `none`, `load_or_migration_failed`, `stored_registry_exceeds_capacity` |
-| `mutation_pending`, `mutation_error` | Latest registry change (rename, remove, template save or clear): queued, and its result code |
+| `registry_error`, `registry_problem` | Load error: `none`, `load_failed`, `stored_registry_exceeds_capacity` |
+| `mutation_pending`, `mutation_error` | Latest registry change (rename or remove): queued, and its result code |
 | `exchange_id` | ID reserved by a running pairing, else 0 |
 | `active_commands` | Radiators with an outstanding command |
 | `radiators` | Array of [radiator objects](#radiator-object) |
@@ -184,7 +175,7 @@ observation.
 | --- | --- |
 | `health` | `initializing`, `ready`, `recovering`, `faulted` |
 | `ready` | Radio setup and entry to RX succeeded; independent of traffic |
-| `control_ready` | Global radio/mode/registry/pairing/mutation/clock gates permit commands; device busy/template checks still apply |
+| `control_ready` | Global radio/mode/registry/pairing/mutation/clock gates permit commands; device busy/relationship checks still apply |
 | `failure_stage`, `failure_code` | Last failure, retained after success: `none`, `initialize`, `receive`, `transmit`, `tx_start`, `tx_complete`, `rx_restore`, `resources` and underlying code |
 | `recovery_attempt`, `recovery_attempt_limit` | Current/last batch attempt and fixed limit 4 |
 | `recovery_attempts`, `recovery_successes` | Saturating lifetime setup-attempt and successful-recovery counters; initial success is not a recovery |
@@ -214,11 +205,7 @@ Reported observations keep their original ages during recovery. A global
 | `command.attempts`, `command.error` | State frames sent; last error code |
 | `command.requested_target_c`, `command.requested_mode` | Requested settings (absent when idle; Off shows 0) |
 | `command.match_age_ms` | Time since the matching report (when `matched`) |
-| `command.template_source` | `learned`, `saved` or `missing` |
-| `command.template_available`, `learned_available`, `saved_available` | Which templates exist |
-| `command.template_age_ms` | Age of the learned template |
-| `command.save_status`, `command.clear_status` | Latest template save or clear: `not_attempted`, `pending`, `succeeded`, `failed` |
-| `command.state_store_error`, `command.state_load_error` | Storage error codes |
+| `command.frame_source` | `generated-touch-e3`; normal frame construction |
 | `observed` | Present after the first report this boot: `age_ms`, `stale` (≥ 5 min), `mode`, `temperature_c`, `target_c` (`null` if the radiator reports it unavailable) |
 
 Physical TX resolves on a later worker tick. A command may still show `poll` or
@@ -249,20 +236,6 @@ Start returns `409` in listen-only or during a mode change/storage error, or whi
 outstanding, at capacity, or if the radio is not ready. Track progress in
 `inclusion`. See [pairing](architecture.md#pairing).
 
-### `POST /api/controller-state`
-
-| Request | Effect |
-| --- | --- |
-| `{"action":"save","id":1}` | Save the learned template; `409` if none |
-| `{"action":"import","id":1,"state":"<118 hex digits>"}` | Validate and save a template; destination must be the radiator's address |
-| `{"action":"clear","id":1}` | Remove saved and learned templates |
-| `{"action":"adopt","id":1,"radiator":"F1040506","version":"<32 hex digits>","replace":false}` | Save the exact retained candidate into a matching paired record; allowed in listen-only. All five fields required. Set `replace:true` explicitly to overwrite a saved template. |
-
-Returns `{"accepted":true,"transmitted":false}`. Track `command.save_status`
-and `command.clear_status`. Adoption also reports its correlated outcome in
-`GET /api/commissioning`. A changed/evicted version or replacement without
-explicit permission returns `409`; destination mismatch is `400`.
-
 ### `POST /api/command`
 
 ```json
@@ -273,11 +246,10 @@ explicit permission returns `409`; destination mismatch is `400`.
 | --- | --- | --- |
 | `id` | yes (see conventions) | Radiator |
 | `mode`, `centi_c` | yes | Requested settings |
-| `state` | no | Template for this command only (hex). Invalid values fail; they never fall back to another template. |
 | `clock_seconds` | forbidden on physical firmware | Presence returns `400`, including null or malformed values. Only host builds accept 0–86399 for tests. |
 
 Returns `{"status":"queued"}` with `202`. `409` cases: listen-only or mode change/storage error, clock not set, radiator
-busy, pairing or registry change running, radio not ready, no template.
+busy, pairing or registry change running, radio not ready or invalid saved relationship. No cached report or template is required at admission; a new routed report is required before each state transmission.
 Track `command.phase`; see [command delivery](architecture.md#command-delivery).
 
 ### `POST /api/preview`
@@ -287,11 +259,11 @@ Builds a frame and returns it without transmitting:
 
 ```json
 {"command":"offer","source":"F1010203","destination":"F1100001"}
-{"command":"target","state":"<template hex>","mode":0,"centi_c":2050}
 ```
 
-`command` is `offer`, `bind`, `poll` or `target`. `target` sets bytes 35–37 and
-both CRCs and keeps everything else, including the clock.
+`command` is `offer`, `bind` or `poll`. Controller-state preview/import is not supported.
+The removed `/api/controller-state` endpoint returns `404`; unknown command fields,
+including `state`, return `400`.
 
 ## Network
 
@@ -393,7 +365,6 @@ endpoint.
 | Action | Fields | Effect |
 | --- | --- | --- |
 | `device` | `index` 0 or 1 | Choose which invented radiator answers the next inclusion and fixture |
-| `fixture` | – | Inject a synthetic controller-state frame for the chosen radiator |
 | `scenario` | `name`: `normal`, `delayed`, `silence`, `silence_a`, `ack_only` | Reply timing: 300 ms, 2.5 s, none, none from radiator A, short acks only |
 
 With `serve.py --test-clock` the clock is frozen and more actions exist:

@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 import paho.mqtt.client as mqtt
-from test_http import App, ROOT, STATE, REPORT, changed_frame
+from test_http import seed_pairing, App, ROOT, REPORT, changed_frame
 from test_registry import REPORT_B
 from test_passive import seal
 from test_mqtt import BASE
@@ -109,7 +109,7 @@ http:
                 assert process.poll() is None and time.monotonic() < until
                 time.sleep(.02)
     broker = start_broker()
-    storage = directory / 'bridge.bin'; storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    storage = directory / 'bridge.bin'; seed_pairing(storage)
     app = App(storage, real_mqtt=True); ha = None
     observer = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id='ha-test-observer', clean_session=True)
     messages = []
@@ -196,12 +196,8 @@ http:
         apply(1,22,'Comfort'); pump(lambda:admitted(1,'time_unavailable'))
         assert app.http()['simulation_tx'] == tx
         app.http('/api/time',dict(action='manual',unix_seconds=1767268800)); snapshots()
-        apply(1); pump(lambda:admitted(1,'busy_or_unavailable_or_missing_template'))
-        assert app.http()['simulation_tx'] == tx
-        app.http('/api/controller-state',dict(action='import',id=1,state=STATE),202); advance(10)
-        app.sim('fixture'); advance(10) # B was selected explicitly above.
-        app.http('/api/controller-state',dict(action='save',id=2),202); advance(10)
-        snapshots()
+        assert all('template_available' not in d['command'] for d in app.http()['radiators'])
+        # Actual HA draft-and-Apply flow requires no template on either radiator.
         apply(1,22,'Comfort'); pump(lambda:phase(1,'matched'))
         snapshots(); pump(lambda:state_is('sensor.cleverbox_020000000001_1_observed_target','22.0'))
         assert state_is('sensor.cleverbox_020000000001_1_observed_mode','Comfort')
@@ -213,7 +209,7 @@ http:
         apply(1); pump(lambda:phase(1,'matched') and app.http('/api/radio?id=1')['observed']['mode']==3)
         snapshots(); pump(lambda:state_is('sensor.cleverbox_020000000001_1_observed_mode','Eco'))
         assert state_is('sensor.cleverbox_020000000001_1_observed_target','22.0')
-        print('HA controls, full commands, prerequisites and observations: passed', flush=True)
+        print('HA no-template draft/Apply controls, full commands, prerequisites and observations: passed', flush=True)
         # Two Apply actions before a new token: exactly one admission/RF poll.
         app.sim('scenario',name='silence_a'); snapshots()
         apply(1,23,'Comfort'); apply(1,24,'Eco')
@@ -221,7 +217,7 @@ http:
         assert state_is('sensor.cleverbox_020000000001_1_observed_target','22.0')
         assert app.http('/api/radio?id=1')['command']['requested_target_c']==23
         snapshots(); apply(1)
-        pump(lambda:admitted(1,'busy_or_unavailable_or_missing_template'))
+        pump(lambda:admitted(1,'busy_or_unavailable'))
         apply(2,16,'Eco'); pump(lambda:phase(2,'matched'))
         assert app.http()['radiators'][0]['command']['pending']
         snapshots(); pump(lambda:state_is('sensor.cleverbox_020000000001_2_observed_target','16.0'))

@@ -3,7 +3,7 @@
 """Faults affect only adapter I/O; all recovery/admission/publication is production."""
 from pathlib import Path
 import tempfile
-from test_http import App, REPORT, STATE
+from test_http import seed_pairing, App, REPORT, STATE
 from test_http_boundary import request
 from test_passive_ha import select, setup, enable, rows, STATE_TOPIC
 from test_mqtt import BASE, connect, publications
@@ -82,10 +82,9 @@ def run(directory):
     finally: app.stop()
     # Failure at TX may have reached the radiator. All independent commands end;
     # recovery/reconnect/reboot do not send them again.
-    storage=directory/'commands'; storage.write_bytes(bytes.fromhex('01F1010203F1040506'))
+    storage=directory/'commands'; seed_pairing(storage)
     app=App(storage)
     try:
-        app.http('/api/controller-state',dict(action='import',state=STATE),202); app.advance(1)
         setup(app)
         app.sim('scenario',name='silence'); fault(app,'transmit',-99)
         app.command(); s=app.advance(1)

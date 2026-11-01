@@ -2,8 +2,9 @@
 
 Cleverbox connects to one MQTT 3.1.1 broker over plain TCP. Configure it on the
 web page or with [`POST /api/mqtt`](http-api.md#post-apimqtt). Commands sent over
-MQTT go through the same admission and delivery as HTTP commands. Templates and
-the clock must be set up through HTTP first. Listen-only mode (the fresh default)
+MQTT go through the same admission and delivery as HTTP commands. Pairing and
+usable device time must be established first. Commands use the generated
+controller profile and never require or accept a template. Listen-only mode (the fresh default)
 rejects every command through shared RF admission. Only an explicit STA HTTP
 action can enable control; MQTT/network reconnects never change mode.
 
@@ -60,7 +61,7 @@ identifies itself in one of two ways:
   used. This is what the Home Assistant package uses.
 
 A request ID or token is consumed once the session and ID or token check pass,
-even if the command is then rejected (bad fields, busy, no template). Retry
+even if the command is then rejected (bad fields, busy, invalid relationship). Retry
 with a new ID or a fresh token. Wrong sessions and retained messages consume
 nothing.
 
@@ -105,8 +106,8 @@ in [command delivery](architecture.md#command-delivery).
 | `unknown_identity` | No radiator with this ID |
 | `listen_only` | RF disabled by operating mode, pending mode transition or mode storage error |
 | `time_unavailable` | Device clock not set |
-| `invalid_settings_or_template` | Settings rejected by the codec |
-| `busy_or_unavailable_or_missing_template` | Radiator busy, pairing running, radio not ready or no template |
+| `invalid_settings_or_relationship` | Settings rejected by the codec |
+| `busy_or_unavailable` | Radiator busy, pairing/mutation running or radio not ready |
 
 Only the latest MQTT command per radiator is tracked. Its delivery result is
 republished after a reconnect. Results are not stored across reboots.

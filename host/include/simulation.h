@@ -14,7 +14,6 @@ int simulation_radio_fault(const char *, int);
 int simulation_device(int index);
 int simulation_scenario(const char *);
 int simulation_inject(const char *);
-void simulation_fixture(void);
 #ifdef __cplusplus
 }
 #endif
