@@ -185,7 +185,7 @@ observation.
 | `health` | `initializing`, `ready`, `recovering`, `faulted` |
 | `ready` | Radio setup and entry to RX succeeded; independent of traffic |
 | `control_ready` | Global radio/mode/registry/pairing/mutation/clock gates permit commands; device busy/template checks still apply |
-| `failure_stage`, `failure_code` | Last failure, retained after success: `none`, `initialize`, `receive`, `transmit`, `rx_restore`, `resources` and underlying code |
+| `failure_stage`, `failure_code` | Last failure, retained after success: `none`, `initialize`, `receive`, `transmit`, `tx_start`, `tx_complete`, `rx_restore`, `resources` and underlying code |
 | `recovery_attempt`, `recovery_attempt_limit` | Current/last batch attempt and fixed limit 4 |
 | `recovery_attempts`, `recovery_successes` | Saturating lifetime setup-attempt and successful-recovery counters; initial success is not a recovery |
 | `retry_in_ms` | Monotonic delay until next attempt, or null when ready, exhausted or initial setup is in progress |
@@ -220,6 +220,11 @@ Reported observations keep their original ages during recovery. A global
 | `command.save_status`, `command.clear_status` | Latest template save or clear: `not_attempted`, `pending`, `succeeded`, `failed` |
 | `command.state_store_error`, `command.state_load_error` | Storage error codes |
 | `observed` | Present after the first report this boot: `age_ms`, `stale` (≥ 5 min), `mode`, `temperature_c`, `target_c` (`null` if the radiator reports it unavailable) |
+
+Physical TX resolves on a later worker tick. A command may still show `poll` or
+`sending` while its physical frame is outstanding; `attempts` updates once on
+resolution. Accepted local writes remain pending until that operation resolves.
+See [TX lifecycle and failure stages](architecture.md#physical-transmit-lifecycle).
 
 ### `POST /api/radiators`
 

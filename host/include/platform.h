@@ -39,18 +39,24 @@ inline int xQueueReceive(QueueHandle_t, void *p, int) {
     memcpy(p, queued.front().data(), item_size); queued.pop_front(); return pdPASS;
 }
 constexpr uint32_t RADIOLIB_NC = UINT32_MAX;
+constexpr int RADIOLIB_ERR_TX_TIMEOUT = -5;
 constexpr int RADIOLIB_ERR_NONE = 0, RADIOLIB_ENCODING_NRZ = 0;
 constexpr int RADIOLIB_CC1101_REG_PKTCTRL0 = 0, RADIOLIB_CC1101_REG_RXBYTES = 1,
               RADIOLIB_CC1101_REG_FIFO = 2, RADIOLIB_CC1101_REG_MDMCFG2 = 3,
-              RADIOLIB_CC1101_REG_PKTCTRL1 = 4;
+              RADIOLIB_CC1101_REG_PKTCTRL1 = 4, RADIOLIB_CC1101_REG_TXBYTES = 5, RADIOLIB_CC1101_REG_MARCSTATE = 6, RADIOLIB_CC1101_REG_IOCFG2 = 7;
+constexpr int RADIOLIB_CC1101_MARC_STATE_IDLE = 1, RADIOLIB_CC1101_MARC_STATE_TXFIFO_UNDERFLOW = 0x16;
+constexpr int RADIOLIB_CC1101_GDOX_HIGH_Z = 0x2e;
 inline std::vector<uint8_t> fifo;
 inline size_t fifo_used;
 void simulated_transmit(const uint8_t *, size_t);
 inline int injected_begin, injected_receive, injected_tx, injected_spi;
 class IdfHal { public:
     int GpioModeInput = 0, failure = 0;
+    bool stx = false;
+    bool tx_started() const { return stx; }
+    uint32_t digitalRead(int pin) { assert(pin==RADIO_GDO2); return 0; }
     void pinMode(int, int) {}
-    void begin_operation(unsigned) { failure = 0; }
+    void begin_operation(unsigned) { failure = 0; stx = false; }
     int error() { return failure; }
     void record_error(int e) { if (!failure) failure=e; }
 };
@@ -62,6 +68,8 @@ public:
     uint8_t SPIreadRegister(int reg) {
         if (injected_spi) { host_hal->record_error(injected_spi); return 0; }
         if (reg == (RADIOLIB_CC1101_REG_RXBYTES | 0x40)) return fifo.size() - fifo_used;
+        if (reg == (RADIOLIB_CC1101_REG_TXBYTES | 0x40)) return 0;
+        if (reg == (RADIOLIB_CC1101_REG_MARCSTATE | 0x40)) return 1;
         assert(reg == RADIOLIB_CC1101_REG_FIFO && fifo_used < fifo.size());
         return fifo[fifo_used++];
     }
@@ -74,7 +82,8 @@ public:
     explicit CC1101(Module *) {}
     int standby() { return 0; }
     int fixedPacketLengthMode(size_t) { return 0; }
-    int transmit(const uint8_t *p, size_t n) { simulated_transmit(p, n); return injected_tx; }
+    int startTransmit(const uint8_t *p, size_t n) { host_hal->stx=true; simulated_transmit(p, n); return injected_tx; }
+    int finishTransmit() { return 0; }
     int startReceive() { fifo.clear(); fifo_used = 0; return injected_receive; }
     int begin(double, double, double, double, int, int) { if (injected_spi) host_hal->record_error(injected_spi); return injected_begin; }
     int getChipVersion() { return -1; } // No physical chip.

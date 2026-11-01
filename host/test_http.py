@@ -140,7 +140,7 @@ def saved_state_workflow(directory):
         # 97 byte 1 (offset 32) is template-owned; byte 0 and byte 2 bit 0 echo DF.
         override = changed_frame(changed_frame(STATE, 32), 4)
         app.command(state=override)
-        app.advance(1)
+        app.advance(2)  # TX completion runs on the following owner tick.
         newer = changed_frame(STATE, 49)
         app.sim('inject', frame=newer)
         app.advance(1)
@@ -155,7 +155,7 @@ def saved_state_workflow(directory):
         app.advance(1)
         # Next command selects newly learned RAM, without overwriting saved state.
         app.command()
-        app.advance(1)
+        app.advance(2)  # TX completion runs on the following owner tick.
         app.sim('inject', frame=REPORT)
         s = app.advance(2)
         assert bytes.fromhex(s['simulation_tx'][-1])[49:51] == bytes.fromhex(newer)[49:51]
@@ -182,7 +182,7 @@ def saved_state_workflow(directory):
         assert app.http()['command']['template_source'] == 'saved'
         app.sim('scenario', name='silence')
         app.command()
-        app.advance(1)
+        app.advance(2)  # TX completion runs on the following owner tick.
         app.sim('inject', frame=REPORT)
         s = app.advance(2)
         assert bytes.fromhex(s['simulation_tx'][-1])[31:34] == bytes.fromhex(imported)[31:34]
@@ -276,7 +276,7 @@ def main():
             # state transmission, short ACK, then a later matching decoded report.
             for target, mode, expected in ((2050, 0, COMFORT), (1550, 3, ECO)):
                 app.command(target, mode)
-                s = app.advance(1)
+                s = app.advance(2)
                 assert s['command']['phase'] == 'waiting_report'
                 assert s['command']['requested_target_c'] == target / 100
                 assert s['simulation_tx'][-1] == POLL
@@ -304,7 +304,7 @@ def main():
             # Silence expires at the unchanged production wait, without blind retry.
             app.sim('scenario', name='silence')
             app.command(2200)
-            s = app.advance(1)
+            s = app.advance(2)
             assert s['command']['phase'] == 'waiting_report'
             assert app.advance(149999)['command']['phase'] == 'waiting_report'
             s = app.advance(1)
@@ -339,7 +339,7 @@ def main():
             # Explicit invalid import cannot fall back; valid manual import still works.
             app.http('/api/command', {'mode': 0, 'centi_c': 2300, 'clock_seconds': 0, 'state': STATE[:-2] + '00'}, 400)
             app.command(2400, state=STATE)
-            assert app.advance(1)['command']['phase'] == 'waiting_report'
+            assert app.advance(2)['command']['phase'] == 'waiting_report'
         finally:
             app.stop()
         app = App(storage)

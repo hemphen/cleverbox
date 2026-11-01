@@ -327,10 +327,68 @@ Rules:
 **Transmit scheduling.** Each worker iteration takes at most one queued request,
 advances all deadlines and services reception first. A partial frame in
 software, bytes in the FIFO or an unstable byte count postpone transmission.
-Otherwise the worker sends one ready frame, pairing first, then commands in
-round-robin order. Postponing never extends a deadline. Transmission blocks
-until done and then restores receive mode. This is half-duplex ordering, not
-collision avoidance: a frame can start on air after the last FIFO check.
+Otherwise the worker starts one ready frame, pairing first, then commands in
+round-robin order. Postponing never extends a deadline. The task yields between
+TX completion checks. This is half-duplex ordering, not collision avoidance:
+a frame can start on air after the last FIFO check.
+
+## Physical transmit lifecycle
+
+The existing owner holds one physical TX record: copied bytes (at most 64),
+length, stable radiator ID, pairing flag, STX uncertainty and monotonic deadline.
+It contains no registry pointers or references to stack-owned frames. The
+record is 88 bytes on the supported ABIs. The task/queue/capacity are unchanged.
+
+After RX service and the final idle check, the owner reserves `tx_in_progress`
+under the admission mutex, checks mode again, enters standby, selects fixed
+length and calls RadioLib `startTransmit()`. It returns to the existing task;
+completion is first checked on a later 1 ms tick. While TX is outstanding,
+there is no receive-FIFO service or second transmission. Every other active
+command keeps its deadline. The sending machine keeps its pre-send phase
+until completion; its old ready-to-send deadline no longer applies once started.
+The physical deadline bounds it instead. Queued commands retain admission time.
+
+Each completion check samples GDO2 once, TXBYTES twice and MARCSTATE once.
+Success requires GDO2 low, two matching empty TX FIFO counts and MARCSTATE IDLE.
+An observed rising edge is not required: a whole pulse can fall between ticks.
+Low by itself cannot complete a transmission. TXBYTES underflow or MARCSTATE
+TXFIFO_UNDERFLOW reports `0x730B`; SPI errors retain their HAL code. A stuck
+signal, busy state, nonempty or unstable FIFO expires at **100 ms**, measured
+once from successful `startTransmit()` return. Polls never move that deadline;
+it is checked before and after register sampling. This conservative software
+limit is not a measured RF timing guarantee.
+
+Only the successful indication invokes `finishTransmit()`. It verifies the
+expected IDLE state, flushes TX and makes GDO2 high impedance. All outcomes,
+including start failure and timeout, then attempt one receive-profile restoration:
+standby, GDO2 high impedance, infinite packet length, and `startReceive()`
+(standby, RX FIFO flush, GDO0 mapping, threshold and RX strobe). A restoration
+error enters recovery. Completion proves local transmission progress, never
+radiator acceptance. Only a matching later report confirms requested settings.
+
+The original machine receives exactly one sent callback when the physical
+operation resolves. A state frame counts one attempt if STX may have been
+submitted, including failed completion; a confirmed pre-STX failure counts none.
+Successful callbacks start the existing reply/readback deadline at resolution.
+The round-robin cursor advances once, on resolution. No retry limit, pairing
+exchange, frame construction or requested/observed meaning changes.
+
+Queue execution is suspended while physical TX is outstanding. Accepted local
+writes remain pending in their original bounded queue order, with no queue
+rotation or discarded entries. Flash calls, template changes, registry removal
+and compaction run only on later iterations after TX resolution and RX restoration
+(or during recovery if restoration failed). Admission may queue another radiator's
+command; its original ID/cookie and admission time remain intact. A reserved
+radiator cannot be removed or given another command. Resolve by stable ID before
+any queued mutation can shift records. Failed writes retain their actual failed
+store outcome. This scheduling covers this owner's writes; unrelated settings
+owners and hardware flash/cache stalls still require responsiveness measurements.
+
+`tx_in_progress` remains set through finalization, restoration and publication of
+the original result/fault. Mode changes remain refused throughout. Pair cancel
+may queue during TX and stops remaining steps after the physical operation resolves;
+it cannot retract bytes already sent. Recovery, reconnect and boot never resume
+an outstanding physical record or create RF work.
 
 ## Receive path
 
@@ -382,12 +440,17 @@ if restoring RX immediately after its acknowledgement fails. Unsaved pairing
 work ends; retry pairing explicitly. IDs, pairings, templates, selections and
 all unrelated storage survive recovery unchanged.
 
-An error before entering `transmit()` is a failure to attempt that frame.
-Once that call starts, a failure or failed RX restoration reports
+An error before submitting the CC1101 STX command is a confirmed failure to
+attempt that frame. The HAL records STX submission before the driver call;
+a start/completion error cannot prove silence after that boundary. A failure
+or failed RX restoration after possible STX reports
 `RADIO_ERR_DELIVERY_UNCERTAIN` (`0x730A`) for that command/pairing: bytes may
 already have gone on air. Commands which previously attempted a state frame
 also report uncertainty when ended by another radio fault. The underlying
-failure remains in radio stage/code diagnostics. No error confirms radiator
+failure remains in radio stage/code diagnostics: `transmit` for preparation,
+`tx_start` for `startTransmit()`, `tx_complete` for polling/finalization and
+`rx_restore` for restoration alone. If TX and restoration both fail, retain the
+original TX stage/code. No error confirms radiator
 settings; later matching reports can still reconcile results without sending.
 
 ### Failure boundaries
@@ -398,7 +461,7 @@ settings; later matching reports can still reconcile results without sending.
 | Partial/truncated frame, overflow, invalid count, unstable count, bad CRC | Existing bounded FIFO cleanup; no reinitialization if RX restoration succeeds |
 | Receive standby/startReceive/register operation fails | End RF work, discard partial software frame, recover |
 | SPI init/add/start/completion returns an error, or operation deadline expires | Sticky HAL error suppresses further SPI for that operation; recover before accepting any read bytes |
-| TX preparation, blocking TX or post-TX RX restoration fails | End RF work with delivery uncertainty where appropriate; recover even if RX restoration itself succeeded |
+| TX preparation, start, completion or post-TX RX restoration fails | End RF work with delivery uncertainty where appropriate; recover even if RX restoration itself succeeded |
 
 Every setup attempt reapplies the established frequency/modulation/packet
 configuration and enters RX. It transmits no probe and does not update report
@@ -409,11 +472,20 @@ observations remain available for inspection with their original age.
 
 The HAL replaces aborting SPI `ESP_ERROR_CHECK` calls with a sticky error.
 It checks owner-operation deadlines of **1200 ms for setup**, **250 ms for
-receive service/final idle sampling**, and **1000 ms for TX and restoration**.
-These suppress further SPI; they do not unwind a library call. RadioLib's
-reachable waits are separately finite: ten chip-detection reads with 10 ms
-delays, 100 ms standby, 1600 µs TX calibration, short-packet GDO deadlines and
-register readback checks. HAL `yield()` gives other tasks a tick. The unbounded
+receive service/final idle sampling and each TX status sample**, and separate
+**1000 ms operations for TX start and RX restoration**. These suppress further
+SPI; they do not unwind a library call. RadioLib's reachable waits are separately
+finite: ten chip-detection reads with 10 ms delays, 100 ms per standby,
+1600 µs TX calibration and register readback checks (default 2 ms each).
+`startTransmit()` itself calls standby (and ignores that call's return), flushes
+TX, waits for calibration, maps GDO2, fills the FIFO and submits STX. Our checked
+outer standby and sticky HAL errors remain necessary. There is no FIFO refill
+for fixed frames up to 64 bytes with address filtering off. `finishTransmit()`
+still synchronously waits for IDLE (truncated timeout 3 ms at this bitrate), then
+calls standby and performs cleanup. It is called only after the owner observes
+IDLE/empty FIFO. Restoration calls checked standby and `startReceive()`'s own
+standby. These finite calls and scheduler/driver latency remain synchronous;
+only the GDO completion wait moves into task iterations. HAL `yield()` gives other tasks a tick. The unbounded
 large-packet refill stable-count loop is unreachable because every transmitted
 frame is fixed length and at most 64 bytes with address filtering disabled.
 

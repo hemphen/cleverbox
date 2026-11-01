@@ -9,8 +9,7 @@ previous locked revision. Check the resolved source, not just the manifest.
 ## Upgrade decision
 
 Compared with 7.3.0 (`2a2f6e0edf5a527cd83d2a04a7e2eb5d220329cd`),
-7.8.1 is a useful, software-compatible upgrade for our short, blocking CC1101
-packet transmissions. It was the latest non-prerelease upstream release when
+7.8.1 is a useful, software-compatible upgrade for our short CC1101 packet transmissions. It was the latest non-prerelease upstream release when
 checked on 2026-10-30. The small timing and cleanup improvements justify the
 update; improved physical reliability is not established.
 
@@ -30,8 +29,8 @@ update; improved physical reliability is not established.
 `standby()` and `startReceive()` retain their relevant behaviour: IDLE wait,
 RX FIFO flush, GDO0 FIFO mapping, threshold and RX strobe. Fixed-length TX still
 sends the complete envelope, including the two software CRCs, without a library
-length/address byte. The blocking GDO2 start/end waits and their timeout formula
-are unchanged. `finishTransmit()` additionally checks TXOFF mode, but ours stays
+length/address byte. The library's blocking `transmit()` retains its GDO2 start/end waits; the
+production owner instead uses the bounded completion sequence below. `finishTransmit()` additionally checks TXOFF mode, but ours stays
 IDLE. Error handling still needs the caller's unconditional RX restoration.
 
 Module register reads/writes and readback checks remain compatible. The paranoid
@@ -126,21 +125,35 @@ same board and settings, with an antenna and independent packet capture:
   reporting and subsequent RX/profile restoration.
 - Repeat partial-frame overlaps, malformed/truncated traffic and overflow.
   Record loss, deferrals and command attempts; the final-sample collision window
-  and blocking TX receive gap remain.
+  and half-duplex TX receive gap remain.
 - Exercise two radiators, one silent, while measuring HTTP/MQTT latency and
   per-radiator progress under Wi-Fi/broker loss/reconnect. Check no replay at boot.
 
 See the full [bring-up checklist](hardware.md#bring-up-checklist).
 
-## Candidate transport milestone
+## Worker-driven short TX
 
-Nonblocking **short-packet TX** is a candidate transport milestone. Deliberate
-setup/recovery access, practical template acquisition and bounded radio recovery
-are implemented in software; hardware acceptance is required before unattended installation (see [issue #20](https://github.com/hemphen/cleverbox/issues/20)).
-The current owner still uses blocking short TX, with a yielding HAL in the
-GDO waits. Software checks do not establish physical CPU use or responsiveness. Evaluate
-`startTransmit()` plus owner-polled completion and a bounded deadline, keeping
-all SPI access in that owner and preserving receive-first arbitration. Note that
-`startTransmit()`, `standby()` and `finishTransmit()` still contain blocking
-waits, so merely renaming the transmit call is not sufficient. Measure scheduling
-and responsiveness on the board; receive interrupts and OTA remain separate work.
+Production uses `startTransmit()` and `finishTransmit()` on the existing owner,
+with no ISR or receive interrupt. This is packet-mode scheduling; it does not
+select CC1101 asynchronous serial mode. Wiring remains Module CS18, IRQ/GDO0=15,
+GPIO/GDO2=14, as sourced in [hardware](hardware.md#wiring). Physical board revision
+and GDO wiring still need verification on the received board.
+
+At the exact pin, `CC1101::startTransmit()` maps IOCFG2 bits 5:0 to `0x06`
+(sync sent / packet end) for frames up to the 64-byte FIFO. GDO2 asserts at sync
+and deasserts at packet end. TXOFF stays IDLE (`MCSM1` bits 1:0 = 0). The worker
+polls GDO2 and the TXBYTES/MARCSTATE status registers with burst-read addressing;
+it does not spin on edges. A low GDO2 plus IDLE and stable empty FIFO can complete
+even if the high pulse was missed between ticks. Underflow, bus errors and a
+fixed deadline end work through bounded recovery. The [lifecycle and synchronous
+bounds](architecture.md#physical-transmit-lifecycle) define attempts, uncertainty,
+restoration and queue scheduling.
+
+The real pinned-library harness separately tests start returning without GDO
+polling, exact fixed payloads at 14/59/64 bytes, unchanged GDO mapping and RF
+registers, delayed completion, a missed pulse, stuck signals, underflow registers,
+finalizer register errors and infinite-RX restoration. Existing blocking-library
+probes remain as compatibility checks. The production-worker tests inject
+adapter events across separate iterations; real-library probes supply register
+responses, not physical RF. Neither establishes CPU savings, better reception,
+turnaround timing or physical reliability. See the [hardware checks](hardware.md#transmit-completion-acceptance).

@@ -227,3 +227,16 @@ not establish electrical fault recovery.
 A silently wrong SPI response or failed RF front end without an observable error
 is not guaranteed detectable. Driver/internal assertion deadlocks are not
 recoverable by this owner policy; see [adapter limits](architecture.md#adapter-bounds-and-limits).
+
+## Transmit completion acceptance
+
+Software polling has not been tested on a board. Use the same RF profile,
+antenna, radiators and workload for baseline and candidate comparisons.
+
+- [ ] Record PCB revision and verify GPIO14/GDO2 and GPIO15/GDO0 against the manufacturer source. Scope GDO2 sync assertion and packet-end deassertion alongside SPI STX, TXBYTES/MARCSTATE sampling and RX re-entry. Include a pulse entirely between task polls.
+- [ ] Independently capture offer/bind/poll/state packets; compare exact envelopes/CRCs and TX count with original request results. Local completion is not acceptance; verify radiator readback and display separately.
+- [ ] Measure TX-to-RX turnaround and missed incoming frames before, during and after TX. Dump fixed/infinite packet mode, GDO mappings, threshold and the full RF profile after success, timeout and recovery. No reception gain is assumed.
+- [ ] Safely exercise stuck/absent GDO, failed start, underflow, SPI/finalizer/restoration failures and exhausted retry, using controlled fixtures or diagnostic hooks. Compare actual RF with confirmed-pre-STX versus uncertain-delivery results. Never hot-plug powered wires.
+- [ ] Exercise multiple radiators (including a silent one), ready/queued deadline expiry, queued removal/rename/template writes and pair cancel during TX. Check fairness, single physical TX, exact attempt counts, original HTTP/MQTT request attribution and honest persistence outcomes.
+- [ ] Measure HTTP/MQTT latency during TX, queue backlog and simultaneous independent NVS settings writes. Record watchdog behavior, minimum heap/largest free block, and radio/HTTP/MQTT stack high-water marks. No CPU, scheduling or heap improvement is claimed from host tests.
+- [ ] Independently verify exact RF silence in listen-only through faults, exhaustion/retry, reconnect, HA birth and reboot. Verify failed RF work is never replayed; accepted local writes retain their outcomes and ordering.

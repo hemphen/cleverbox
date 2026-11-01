@@ -17,6 +17,7 @@ tested on the board.
 | Listen-only mode, passive inventory and retained template capture | Tested | Not tested |
 | Receive and decode radiator reports | Tested | Not tested |
 | Bounded radio recovery and health diagnostics | Tested | Not tested |
+| Worker-polled CC1101 TX completion | Tested | Not tested |
 | Pair radiators (one at a time, up to 8) | Tested | Not tested |
 | Set target and mode, confirmed by radiator readback | Tested | Not tested |
 | Wi-Fi setup, setup access point and button recovery | Tested | Not tested |

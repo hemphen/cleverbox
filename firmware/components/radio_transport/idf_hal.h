@@ -17,9 +17,10 @@ public:
     // Errors are sticky for one owner operation. Suppress subsequent SPI after
     // failure/deadline so a partial failed TX cannot issue a later TX strobe.
     void begin_operation(unsigned ms) {
-        failure = ESP_OK; deadline_us = ms ? esp_timer_get_time() + ms * 1000LL : 0;
+        failure = ESP_OK; stx_submitted = false; deadline_us = ms ? esp_timer_get_time() + ms * 1000LL : 0;
         if (pending) finish_pending();
     }
+    bool tx_started() const { return stx_submitted; }
     int error() { check_deadline(); return failure; }
     void record_error(int e) { if (!failure && e) failure = e; }
     void yield() override { vTaskDelay(1); check_deadline(); }
@@ -78,6 +79,9 @@ public:
             if (out) memcpy(tx, out + offset, chunk);
             transaction = {}; transaction.length = chunk * 8;
             transaction.tx_buffer = tx; transaction.rx_buffer = rx;
+            // CC1101 STX is a one-byte command (not a register access).
+            // Mark before submission: a driver error need not prove RF silence.
+            if (len == 1 && out && out[0] == RADIOLIB_CC1101_CMD_TX) stx_submitted = true;
             int e = spi_device_polling_start(spi, &transaction, portMAX_DELAY);
             record_error(e); if (e) return;
             pending = true;
@@ -92,6 +96,7 @@ public:
 private:
     spi_device_handle_t spi = nullptr;
     bool bus_owned = false, bus_acquired = false, pending = false;
+    bool stx_submitted = false;
     int failure = ESP_OK;
     int64_t deadline_us = 0;
     // A timed-out IDF transaction may still be in flight. Its descriptor and

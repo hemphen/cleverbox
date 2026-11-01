@@ -96,6 +96,7 @@ extern "C" const char *radio_health_name(radio_health h) {
 extern "C" const char *radio_failure_name(radio_failure_stage s) {
     switch (s) { case RADIO_FAILURE_INITIALIZE: return "initialize"; case RADIO_FAILURE_RECEIVE: return "receive";
         case RADIO_FAILURE_TX: return "transmit"; case RADIO_FAILURE_RX_RESTORE: return "rx_restore";
+        case RADIO_FAILURE_TX_START: return "tx_start"; case RADIO_FAILURE_TX_COMPLETE: return "tx_complete";
         case RADIO_FAILURE_RESOURCES: return "resources"; default: return "none"; }
 }
 extern "C" esp_err_t radio_retry(void) {
@@ -353,39 +354,6 @@ extern "C" esp_err_t radio_candidate_adopt(uint32_t id, const uint8_t radiator[4
     return enqueue_mutation(id, STATE_SAVE, nullptr, nullptr, radiator, version, replace);
 }
 
-static int transmit_frame(const rf_frame &frame, int &rx_result, bool &uncertain)
-{
-    uncertain = false;
-    if (!rf_valid(&frame) || frame.size > 64) {
-        rx_result = RADIOLIB_ERR_NONE;
-        return ESP_ERR_INVALID_ARG;
-    }
-    // Final boundary serializes with mode admission. tx_in_progress prevents
-    // acknowledging a transition during the entire physical transmission.
-    lock_status();
-    if (!rf_allowed()) { unlock_status(); rx_result = RADIOLIB_ERR_NONE; return RADIO_ERR_LISTEN_ONLY; }
-    tx_in_progress = true;
-    unlock_status();
-    // Poll, inclusion and 59-byte controller-state frames all fit in the FIFO. Fixed length sends our complete envelope
-    // without RadioLib adding another length byte or a hardware CRC.
-    hal.begin_operation(1000);
-    int result = radio.standby();
-    if (result == RADIOLIB_ERR_NONE && !hal.error()) result = radio.fixedPacketLengthMode(frame.size);
-    if (result == RADIOLIB_ERR_NONE && !hal.error()) {
-        uncertain = true; // The blocking driver cannot prove that no bytes went on air.
-        result = radio.transmit(frame.bytes, frame.size);
-    }
-    if (hal.error()) result = hal.error();
-    // Always leave TX and restore the receive profile, including after timeout.
-    rx_result = radio.standby();
-    if (rx_result == RADIOLIB_ERR_NONE)
-        rx_result = module.SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL0, 2, 1, 0);
-    if (rx_result == RADIOLIB_ERR_NONE) rx_result = radio.startReceive();
-    if (hal.error()) rx_result = hal.error();
-    lock_status(); tx_in_progress = false; unlock_status();
-    return result != RADIOLIB_ERR_NONE ? result : rx_result;
-}
-
 static void save_pair(const rf_pairing &pair, bool &saved, int &error) {
     // Defense in depth: never persist paired control over a monitored address.
     for (size_t i=0;i<monitors.count;++i)
@@ -454,6 +422,112 @@ struct radio_worker {
     rf_control controls[CLEVERBOX_RADIATOR_CAPACITY] = {};
     int control_errors[CLEVERBOX_RADIATOR_CAPACITY] = {};
     size_t next_device = 0; // Round-robin choice among frames ready for TX.
+    // No pointers into the compactable registry or stack-owned outgoing frame.
+    struct physical_tx {
+        uint8_t bytes[64] = {};
+        size_t size = 0;
+        uint32_t id = 0;
+        bool active = false, pairing = false, uncertain = false;
+        int64_t deadline_us = 0;
+    } tx;
+    static_assert(sizeof(physical_tx) == 88, "Review retained TX resource budget");
+    static constexpr int64_t TX_WAIT_US = 100000;
+    void tick() {
+        const int64_t now = esp_timer_get_time()/1000;
+        // Once physically started, the ready-to-send deadline no longer applies.
+        // The physical deadline bounds that owner; every other command still ages.
+        if (!tx.active || !tx.pairing) rf_pair_tick(&pair, now);
+        for (size_t i=0; i<registry.count; ++i)
+            if (!tx.active || tx.pairing || registry.records[i].id != tx.id)
+                rf_control_tick(&controls[i], now);
+    }
+    void resolve_tx(int result, radio_failure_stage stage) {
+        // Exactly one cleanup/restoration, also after a failed start/timeout.
+        // A new operation may retry a pending SPI completion, never reuse it.
+        hal.begin_operation(1000);
+        int rx = radio.standby();
+        // finishTransmit normally sets GDO2 high-Z. Restore that mapping even
+        // after start/timeout/finalizer errors before returning to infinite RX.
+        if (!rx && !hal.error()) rx = module.SPIsetRegValue(RADIOLIB_CC1101_REG_IOCFG2, RADIOLIB_CC1101_GDOX_HIGH_Z, 5, 0);
+        if (!rx && !hal.error()) rx = module.SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL0, 2, 1, 0);
+        if (!rx && !hal.error()) rx = radio.startReceive();
+        if (hal.error()) rx = hal.error();
+        const int outcome = (result || rx) && tx.uncertain ? RADIO_ERR_DELIVERY_UNCERTAIN : result;
+        if (tx.pairing) {
+            pair_error = outcome;
+            rf_pair_sent(&pair, esp_timer_get_time()/1000, result == 0);
+        } else {
+            radiator_record *d = find_device(tx.id);
+            // Queue processing/compaction is suspended while tx.active. Admission
+            // cannot replace this reserved command. Resolve by stable identity.
+            if (d) {
+                size_t i = d - registry.records;
+                next_device = (i+1) % registry.count;
+                control_errors[i] = outcome;
+                if (!tx.uncertain && result) controls[i].status.phase = RF_CONTROL_ERROR;
+                else rf_control_sent(&controls[i], esp_timer_get_time()/1000, result == 0);
+            }
+        }
+        // Retain the original failure if cleanup also fails.
+        if (result || rx) fail(result ? result : rx, result ? stage : RADIO_FAILURE_RX_RESTORE);
+        else publish();
+        lock_status(); tx_in_progress = false; unlock_status();
+        tx = {};
+    }
+    void start_tx(const rf_frame &outgoing, bool pairing_tx, uint32_t id) {
+        lock_status();
+        int refusal = !rf_valid(&outgoing) || outgoing.size > 64 ? ESP_ERR_INVALID_ARG :
+                      !rf_allowed() ? RADIO_ERR_LISTEN_ONLY : 0;
+        if (!refusal) tx_in_progress = true;
+        unlock_status();
+        if (refusal) {
+            if (pairing_tx) { pair_error = refusal; rf_pair_sent(&pair, esp_timer_get_time()/1000, false); }
+            else if (auto *d = find_device(id)) {
+                size_t i = d - registry.records;
+                controls[i].status.phase = RF_CONTROL_ERROR; control_errors[i] = refusal;
+            }
+            publish(); return;
+        }
+        memcpy(tx.bytes, outgoing.bytes, outgoing.size); tx.size = outgoing.size; tx.id = id; tx.pairing = pairing_tx; tx.active = true;
+        hal.begin_operation(1000);
+        int result = radio.standby();
+        if (!result && !hal.error()) result = radio.fixedPacketLengthMode(tx.size);
+        radio_failure_stage stage = RADIO_FAILURE_TX;
+        if (!result && !hal.error()) {
+            stage = RADIO_FAILURE_TX_START;
+            result = radio.startTransmit(tx.bytes, tx.size);
+            // The HAL records submission of the STX strobe, including uncertain
+            // bus completion. Earlier suppressed/failed setup cannot send bytes.
+            tx.uncertain = hal.tx_started();
+        }
+        if (hal.error()) result = hal.error();
+        if (result) { resolve_tx(result, stage); return; }
+        tx.deadline_us = esp_timer_get_time() + TX_WAIT_US;
+        publish(); // No completion polling until the next owner tick.
+    }
+    void progress_tx() {
+        if (esp_timer_get_time() >= tx.deadline_us) {
+            resolve_tx(RADIOLIB_ERR_TX_TIMEOUT, RADIO_FAILURE_TX_COMPLETE); return;
+        }
+        // Constant bounded samples, no wait for a signal transition. GDO2 is
+        // sync-sent/packet-end; a whole pulse may fall between owner ticks.
+        hal.begin_operation(250);
+        const bool high = hal.digitalRead(RADIO_GDO2) != 0;
+        uint8_t previous = module.SPIreadRegister(RADIOLIB_CC1101_REG_TXBYTES | 0x40);
+        uint8_t count = module.SPIreadRegister(RADIOLIB_CC1101_REG_TXBYTES | 0x40);
+        uint8_t marc = module.SPIreadRegister(RADIOLIB_CC1101_REG_MARCSTATE | 0x40) & 0x1f;
+        int result = hal.error();
+        if (!result && ((previous | count) & 0x80 || marc == RADIOLIB_CC1101_MARC_STATE_TXFIFO_UNDERFLOW)) result = RADIO_ERR_TX_UNDERFLOW;
+        if (!result && esp_timer_get_time() >= tx.deadline_us) result = RADIOLIB_ERR_TX_TIMEOUT;
+        if (result) { resolve_tx(result, RADIO_FAILURE_TX_COMPLETE); return; }
+        // Low alone could mean not yet started or broken wiring. Require IDLE
+        // and two matching empty FIFO reads before calling the real finalizer.
+        if (!high && marc == RADIOLIB_CC1101_MARC_STATE_IDLE && count == 0 && previous == count) {
+            result = radio.finishTransmit();
+            if (hal.error()) result = hal.error();
+            resolve_tx(result, RADIO_FAILURE_TX_COMPLETE);
+        } else publish();
+    }
     void publish() {
         lock_status();
         status.pairing = pair; status.pairing_saved = saved; status.pairing_error = pair_error;
@@ -557,6 +631,9 @@ struct radio_worker {
         ESP_LOGI("radio", "Setup attempt=%u result=%d", status.recovery_attempt, result);
     }
     void step() {
+        if (tx.active) {
+            tick(); progress_tx(); return;
+        }
         radio_request request;
         if (xQueueReceive(radio_requests, &request, 0) == pdPASS) {
             if (request.action == MODE_SET) {
@@ -678,17 +755,14 @@ struct radio_worker {
                 rf_pair_start(&pair, request.controller, request.candidate, request.admitted_ms);
             }
         }
-        int64_t now_ms = esp_timer_get_time() / 1000;
-        rf_pair_tick(&pair, now_ms);
-        for (size_t i = 0; i < registry.count; ++i) rf_control_tick(&controls[i], now_ms);
+        tick();
         if (!radio_transport_status().ready) { recover(); return; }
         hal.begin_operation(250);
         service_receive();
         if (!radio_transport_status().ready) return;
         if (hal.error()) { fail(hal.error()); return; }
-        now_ms = esp_timer_get_time() / 1000;
-        rf_pair_tick(&pair, now_ms);
-        for (size_t i = 0; i < registry.count; ++i) rf_control_tick(&controls[i], now_ms);
+        tick();
+        int64_t now_ms = esp_timer_get_time() / 1000;
         if (started >= 0 || frame.size) { publish(); return; }
         rf_frame outgoing = {};
         bool pairing_tx = rf_pair_next(&pair, now_ms, &outgoing);
@@ -714,32 +788,8 @@ struct radio_worker {
             bool still_ready = pairing_tx ? rf_pair_active(&pair) :
                                             rf_control_active(&controls[chosen].status);
             if (!still_ready) { publish(); return; }
-            int rx_result;
-            bool uncertain;
-            int tx_result = transmit_frame(outgoing, rx_result, uncertain);
-            int outcome = (tx_result || rx_result) && uncertain ? RADIO_ERR_DELIVERY_UNCERTAIN : tx_result;
-            if (pairing_tx) {
-                pair_error = outcome;
-                rf_pair_sent(&pair, esp_timer_get_time() / 1000, tx_result == 0);
-            } else {
-                next_device = (chosen + 1) % registry.count;
-                control_errors[chosen] = outcome;
-                if (tx_result && !uncertain) {
-                    // Preparation failed before entering transmit(). Do not count
-                    // a state-frame attempt that could not have gone on air.
-                    controls[chosen].status.phase = RF_CONTROL_ERROR;
-                } else rf_control_sent(&controls[chosen], esp_timer_get_time() / 1000, tx_result == 0);
-            }
-            if (tx_result == RADIO_ERR_LISTEN_ONLY || tx_result == ESP_ERR_INVALID_ARG) {
-                publish(); return; // Admission/construction refusal is not a hardware fault.
-            }
-            if (tx_result || rx_result) {
-                // One locked transition closes admission and publishes outcomes
-                // before releasing any reservations or removing queued RF work.
-                fail(rx_result ? rx_result : tx_result,
-                     rx_result ? RADIO_FAILURE_RX_RESTORE : RADIO_FAILURE_TX);
-                return;
-            }
+            start_tx(outgoing, pairing_tx, control_tx ? registry.records[chosen].id : exchange_id);
+            return;
         }
         publish();
     }

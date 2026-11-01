@@ -96,7 +96,9 @@ def run(directory):
         app.http('/api/command', {'mode': 0, 'centi_c': 2050}, 202)
         app.advance(1)
         tx = app.http('/api/simulation/radio')['simulation_tx']
-        assert len(tx) == 1 and app.http()['command']['phase'] == 'waiting_report'
+        assert len(tx) == 1 and app.http()['command']['phase'] == 'poll'
+        app.advance(1)  # Owner resolves TX on a later iteration.
+        assert app.http()['command']['phase'] == 'waiting_report'
         app.advance(41); hold(app)
         app.sim('network_event', name='disconnected')
         assert status(app)['manual_recovery'] and status(app)['recovery_ap']
