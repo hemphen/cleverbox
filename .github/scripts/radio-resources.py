@@ -60,7 +60,8 @@ with tempfile.TemporaryDirectory(prefix='radio-resource-base-') as temp:
         command.append(str(temp / 'radio_transport.cpp') if arg == entry['file'] else arg)
         i += 1
     # The base transport's public header must take precedence over the candidate.
-    command.insert(command.index('-c'), '-I' + str(temp / 'include'))
+    compiler_index = next(i for i, a in enumerate(command) if a.endswith('riscv32-esp-elf-g++'))
+    command.insert(compiler_index + 1, '-I' + str(temp / 'include'))
     subprocess.run(command, cwd=entry['directory'], check=True)
     before, after = ram(output), ram(original_object)
     print(f'Radio object RAM versus {base} (same compiler/SDK/configuration):')
