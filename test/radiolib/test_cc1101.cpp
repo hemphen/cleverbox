@@ -193,6 +193,18 @@ int main() {
         hal.no_end=hal.stuck_high=hal.underflow=false;
         restore(radio,module,hal); // Deadline/fault path must force IDLE before RX.
     }
+    // Real start mapping/calibration failures occur before STX. This verifies
+    // the production HAL's pre-STX classification against the pinned sequence.
+    auto strobes=hal.tx_strobes;
+    hal.refuse_register=0;
+    assert(start(packet,sizeof(packet))==RADIOLIB_ERR_SPI_WRITE_FAILED);
+    assert(hal.tx_strobes==strobes);
+    hal.refuse_register=-1; restore(radio,module,hal);
+    hal.calibration_us=100000;
+    auto before=hal.us;
+    assert(start(packet,sizeof(packet))==RADIOLIB_ERR_TX_TIMEOUT);
+    assert(hal.tx_strobes==strobes && hal.us-before<10000);
+    hal.calibration_us=200; restore(radio,module,hal);
     // Real finishTransmit cleanup errors, separately from asynchronous start.
     assert(start(packet,sizeof(packet))==0); hal.us+=3000; assert(complete());
     hal.refuse_register=0;

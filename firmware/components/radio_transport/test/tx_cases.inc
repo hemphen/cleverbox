@@ -176,6 +176,25 @@ static void test_tx_local_queue_and_identity() {
     tx_done(); ordered.step(); ordered.step();
     assert(store_calls==2 && !strcmp(registry.records[0].name,"Second"));
 }
+static void test_tx_template_mutation() {
+    reset(); radio_worker w; command.state=b_state;
+    assert(control_start_at(2,&command,test_now_us/1000,456)==ESP_OK);
+    w.step(); w.step();
+    rf_frame report=report_b(false); rf_control_receive(&w.controls[1],test_now_us/1000,&report);
+    tx_busy(59); w.step(); const auto pending=w.tx;
+    assert(radio_state_clear(2)==ESP_OK);
+    assert(registry.records[1].state_clear_result==RADIO_STORE_PENDING);
+    w.step(); assert(!store_calls && queue_count==1 && tx_in_progress);
+    assert(!memcmp(pending.bytes,w.tx.bytes,pending.size));
+    tx_done(); w.step();
+    assert(!store_calls && registry.records[1].tracked_result.attempts==1);
+    w.step();
+    assert(store_calls==1 && registry.records[1].state_clear_result==RADIO_STORE_OK);
+    assert(registry.records[1].result_cookie==456 && registry.records[1].command_reserved);
+    assert(w.controls[1].status.phase==RF_CONTROL_WAIT_READBACK && w.controls[1].status.attempts==1);
+    hear(w,report_b(true));
+    assert(registry.records[1].tracked_result.phase==RF_CONTROL_MATCHED && registry.records[1].result_cookie==456);
+}
 static void test_tx_pair_cancel_and_silence() {
     reset(); radio_worker w; const uint8_t c[]={0xf1,1,2,3},dst[]={0xf1,0x10,0,1}; uint32_t id;
     assert(radio_pair_start(c,dst,&id)==ESP_OK); tx_busy(); w.step();
@@ -199,4 +218,3 @@ static void test_tx_pair_cancel_and_silence() {
     silent.fail(-103); test_now_us=status.retry_at_ms*1000; silent.step(); silent.step();
     assert(status.ready && !transmit_count && !silent.tx.active && !tx_in_progress);
 }
-

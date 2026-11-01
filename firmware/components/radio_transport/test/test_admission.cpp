@@ -387,7 +387,7 @@ int main() {
     queue_full = true; assert(radio_control_start(1, &command) == ESP_ERR_TIMEOUT);
     assert(!registry.records[0].command_reserved); queue_full = false;
     test_tx_lifecycle(); test_tx_signal_and_deadline(); test_tx_failures();
-    test_tx_fairness_and_expiry(); test_tx_local_queue_and_identity(); test_tx_pair_cancel_and_silence();
+    test_tx_fairness_and_expiry(); test_tx_local_queue_and_identity(); test_tx_template_mutation(); test_tx_pair_cancel_and_silence();
     test_recovery_bounds(); test_radio_fault_observation_and_writes();
     test_fault_persistence_and_pairing(); test_hal_containment();
     test_queue_capacity(); test_fair_turns(); test_compaction(); test_fatal_rx_failure(); test_admission_clock_and_queue_delay();
