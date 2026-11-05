@@ -3,7 +3,7 @@
 `rf_touch_e3_state` builds one Cleverbox replacement-controller profile from
 explicit inputs and a fresh radiator report. It needs no controller-state
 capture or per-radiator template. Production `rf_control_next` uses this builder
-as its sole state-frame path. See [delivery and context policy](architecture.md#command-delivery).
+as its sole state-frame path. See [delivery and context policy](architecture.md#commands).
 The builder creates bytes, never RF work. It adds no transmission trigger.
 
 ## Contract
@@ -151,12 +151,10 @@ clock/minute/target rounding boundaries, invalid identities and relationships,
 bad inner/outer CRCs separately, malformed/truncated reports, unsupported modes,
 missing/future/negative/stale timestamps and signed timestamp limits. Existing state-machine and host regressions still apply.
 
-The normal Build workflow also runs host/HTTP, capacity, discovery-limit, real
-broker and pinned RadioLib tests and an ESP-IDF 5.5.1 ESP32-C6 firmware build.
-Actual HA integration on the final affected revision is required for normal
-command-path changes, including no-template draft-and-Apply control. Host/worker
-suites also exercise generated command routing, retry context, format rejection,
-time, recovery, replay protection and listen-only silence.
+The Build workflow also runs the host suites, a real broker, the pinned RadioLib
+driver against a register model and an ESP-IDF 5.5.1 ESP32-C6 firmware build.
+The host suites send generated commands through the simulator and compare the
+transmitted frames with explicit vectors.
 
 Software vectors establish construction correctness only. Independent on-air
 capture, radiator readback and physical heating acceptance remain unverified

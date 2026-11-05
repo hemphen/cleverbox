@@ -15,8 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libcjson-dev pkg-config mosquitto python3-venv cmake
-      - run: make test test-http test-capacity test-discovery-limit
-      - name: Real pinned RadioLib register probes
+      - run: make test test-http
+      - name: Real pinned RadioLib driver against a register model
         run: |
           pin=$(sed -n 's/^    version: //p' firmware/components/radio_transport/idf_component.yml)
           git init build/radiolib-source
@@ -41,16 +41,6 @@ jobs:
           idf.py set-target esp32c6
           idf.py build
           idf.py size
-      - name: Compare radio static RAM with PR base
-        if: github.event_name == 'pull_request'
-        shell: bash
-        env:
-          RESOURCE_BASE: ${{ github.event.pull_request.base.sha }}
-        run: |
-          . /opt/esp/idf/export.sh
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git fetch --depth=1 origin "$RESOURCE_BASE"
-          python3 .github/scripts/radio-resources.py "$RESOURCE_BASE"
       - uses: actions/upload-artifact@v4
         with:
           name: cleverbox-esp32c6

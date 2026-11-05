@@ -9,63 +9,41 @@ Target hardware: Elecram Sub-GHz 855–925 MHz Bridge (ESP32-C6 + CC1101).
 
 ## Status
 
-All features below are implemented and covered by host tests. None has been
-tested on the board.
+**Experimental firmware for controlled development.** It is not suitable for
+unattended deployment.
+
+- Hardware behaviour is not yet verified. Everything below is tested in
+  software only, with a host simulation of the radio.
+- The firmware assumes a developer is present to read logs, retry, restart,
+  reflash and reset radiators. Errors are reported, not recovered automatically.
+- Production hardening is deferred; see [accepted risks](docs/production-hardening.md).
 
 | Feature | Software | Hardware |
 | --- | --- | --- |
-| Listen-only mode and passive report inventory | Tested | Not tested |
-| Receive and decode radiator reports | Tested | Not tested |
-| Bounded radio recovery and health diagnostics | Tested | Not tested |
-| Worker-polled CC1101 TX completion | Tested | Not tested |
-| Pair radiators (one at a time, up to 8) | Tested | Not tested |
+| Receive and decode radiator reports from any controller | Tested | Not tested |
+| Monitor radiators without pairing | Tested | Not tested |
+| Pair radiators | Tested | Not tested |
 | Set target and mode, confirmed by radiator readback | Tested | Not tested |
-| Wi-Fi setup, setup access point and button recovery | Tested | Not tested |
-| Device time (SNTP, POSIX time zone) | Tested | Not tested |
+| Wi-Fi setup, setup access point and BOOT button | Tested | Not tested |
+| Device time (SNTP, manual, POSIX time zone) | Tested | Not tested |
 | MQTT commands and state | Tested | Not tested |
-| Selected passive radiator monitoring in Home Assistant | Tested | Not tested |
-| Home Assistant discovery | Tested | Not tested |
+| Home Assistant discovery and controls | Tested | Not tested |
 | OTA firmware updates | Not started | |
 
 ## How it works
 
-Installations without a saved RF mode start listen-only. The local passive view identifies reports from any controller
-without pairing or transmitting.
-Select observed RF addresses for read-only Home Assistant monitoring without pairing,
-then enable global discovery. Follow the [commissioning workflow](docs/http-api.md#passive-commissioning).
-Disconnect Touch E3 before explicitly enabling control and pairing.
+Cleverbox listens continuously and shows every radiator it hears, whichever
+controller it reports to. A heard radiator can be **monitored**: it gets a
+record and appears in Home Assistant, and Cleverbox never transmits to it.
 
-Cleverbox pairs with each radiator as its RF controller and listens for the
-reports the radiator sends about every two minutes. To change a setting it
-polls the radiator, waits for a fresh report, then sends a controller-state
-frame with the new target and mode. A command counts as `matched` only when a
-later report shows the requested values.
+To control a radiator, disconnect the Touch E3 and **pair** it: Cleverbox
+becomes its RF controller. To change a setting, Cleverbox polls the radiator,
+waits for a report, then sends a controller-state frame built from the
+[Touch E3 replacement-controller profile](docs/controller-profile.md). A command
+counts as `matched` only when a later report shows the requested values.
+Commands run one at a time.
 
-Normal commands use the [Touch E3 replacement-controller profile](docs/controller-profile.md).
-Addresses come from the saved pairing; target and mode come from the request;
-report echoes come from a newly received report; clock comes from device time.
-No template code or storage is present.
-
-## Known limitations
-
-- No hardware testing yet. RF timing, transmit acceptance and heating behaviour
-  are unverified.
-- New-controller pairing, generated on-air bytes, radiator display/readback and
-  physical heating still require hardware validation. Software tests prove
-  construction and delivery behavior only.
-- The HTTP interface has no login. The setup access point uses the fixed,
-  published password `cleverbox`. After setup it opens only through deliberate
-  recovery (BOOT or Wi-Fi forget), and permits Wi-Fi setup and diagnostics only.
-  Full HTTP control requires the station interface on a trusted LAN.
-- MQTT uses plain TCP. NVS is not encrypted.
-- UI and MQTT commands are refused after each boot until the clock is set by
-  SNTP or by hand on the station interface. Physical `POST /api/command`
-  rejects `clock_seconds`; only the host simulator accepts that test override
-  ([Time](docs/architecture.md#time)).
-- Observable radio faults close RF admission and trigger a finite recovery batch.
-  Exhaustion requires **Retry radio** on the station interface. Recovery sends
-  nothing and never resumes failed work. Silent RF/bus failures without a driver
-  error cannot always be detected. See [recovery bounds and limits](docs/architecture.md#radio-health-and-recovery).
+Nothing is sent at boot. Only an explicit pairing or command transmits.
 
 ## Quick start
 
@@ -81,15 +59,12 @@ make simulate
 Open http://127.0.0.1:8080. The simulator runs the production firmware code
 against two invented radiators, `F1040506` and `F1040507`:
 
-1. Explicitly enable control in **Passive commissioning**, then choose a simulated device and start pairing. Inclusion completes in about
-   two seconds.
-2. Under **Device time**, set a manual UTC time.
-3. Send a target and mode, without a template. The requested values appear first, the readback
-   shortly after.
+1. Under **Pair a radiator**, enter controller `F1010203` and discovery
+   `F1100001` and start pairing. It completes in about two seconds.
+2. Under **Time**, set a manual UTC time.
+3. Choose a mode and target and press **Send**. The readback appears shortly after.
 
-Restart `make simulate` to check that pairings and names
-persist while commands and observations do not. Simulation-only controls are
-listed in the [HTTP API](docs/http-api.md#simulation-only).
+Settings are stored in `local/simulation.*`; delete them to start over.
 
 ### Board
 
@@ -104,23 +79,23 @@ idf.py -p PORT flash monitor
 ```
 
 Join Wi-Fi network **Cleverbox** (password **cleverbox**), open
-http://192.168.4.1/ and enter your home Wi-Fi on first setup. After saving,
-move to the home LAN and use the station IP for radiator, time and MQTT setup.
-Configured boots and router outages keep the AP off. To recover without serial,
-hold BOOT for five seconds after startup, then release. Keep BOOT released
-during reset. Then follow the
-[bring-up checklist](docs/hardware.md#bring-up-checklist).
+http://192.168.4.1/ and save your home Wi-Fi. Then use the station IP shown on
+the page (also logged on the serial console). To reopen the setup AP, hold BOOT
+for five seconds after startup, then release. Do not hold BOOT during reset.
+Then follow the [bring-up checklist](docs/hardware.md#bring-up-checklist).
 
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
-| [Controller profile](docs/controller-profile.md) | Normal generated profile, builder contract, evidence and vectors |
-| [Architecture](docs/architecture.md) | Components, tasks, state machines, storage, timing |
-| [HTTP API](docs/http-api.md) | Endpoints, payloads, status fields |
-| [MQTT](docs/mqtt.md) | Topics, command protocol, results, broker setup |
-| [Home Assistant](docs/home-assistant.md) | Discovery, control package, automations |
+| [Architecture](docs/architecture.md) | Components, tasks, registry, pairing, commands, radio errors, storage |
+| [HTTP API](docs/http-api.md) | Endpoints and payloads |
+| [MQTT](docs/mqtt.md) | Topics, commands, snapshots |
+| [Home Assistant](docs/home-assistant.md) | Discovery, control package |
 | [Hardware](docs/hardware.md) | Board, wiring, RF profile, flashing, bring-up checklist |
+| [Controller profile](docs/controller-profile.md) | Generated state frame, evidence and vectors |
+| [RadioLib](docs/radiolib.md) | Pinned version and how it is used |
+| [Production hardening](docs/production-hardening.md) | Accepted risks and deferred work |
 | [AGENTS.md](AGENTS.md) | Rules for contributors and coding agents |
 
 The radio protocol is specified in
@@ -135,21 +110,18 @@ The reference decoder is in
 
 | Command | Runs |
 | --- | --- |
-| `make test` | Unit tests: codec, pairing, commands, radio worker, registry, network, time, MQTT store, page script (needs Node.js) |
-| `make test-http` | Host suites over HTTP against the production code: registry, network, recovery, time, MQTT, tokens, discovery; physical HTTP branch and interface policy |
-| `make test-capacity` | `test` and `test-http` with a 3-radiator build |
-| `make test-discovery-limit` | Discovery with an undersized payload buffer |
+| `make test` | Unit tests: codec, generated frames, pairing, command machine, registry, time, page script syntax (needs Node.js) |
+| `make test-http` | Host simulation over HTTP: pairing, commands, queue, registry, radio receive and errors, settings, MQTT and discovery |
 | `make test-mqtt-broker` | Real Mosquitto 2.x broker; needs `paho-mqtt==2.1.0` |
-| `make RADIOLIB_SOURCE=/path/to/checkout test-radiolib` | Real RadioLib CC1101 register/HAL probes; needs CMake ([details](docs/radiolib.md)) |
+| `make RADIOLIB_SOURCE=/path/to/checkout test-radiolib` | Real RadioLib CC1101 driver against a register model; needs CMake |
 | `make test-home-assistant` | Home Assistant Core 2026.10.4 with a real broker; needs `host/requirements-ha.txt` |
 | `make simulate` | Interactive simulator on http://127.0.0.1:8080 |
 
 CI ([Build](.github/workflows/build.yml)) runs everything except
-`test-home-assistant` on pull requests and `main`, and builds the firmware image
-in `espressif/idf:v5.5.1`. The
-[Home Assistant workflow](.github/workflows/home-assistant.yml) runs weekly on
-`main`, on manual dispatch, and on pull requests labelled `run-ha`. Re-apply the
-label to rerun after new commits.
+`test-home-assistant` on pull requests and `main`, and builds the firmware in
+`espressif/idf:v5.5.1`. The [Home Assistant workflow](.github/workflows/home-assistant.yml)
+runs weekly on `main`, on manual dispatch, and on pull requests labelled
+`run-ha`. Re-apply the label to rerun after new commits.
 
 ## Scope
 

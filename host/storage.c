@@ -1,101 +1,60 @@
 // SPDX-License-Identifier: MIT
-// File-backed NVS subset: device_store.c still owns record format/validation.
+// File-backed NVS: each key is stored in "<CLEVERBOX_SIM_STORAGE>.<key>".
 #include "nvs.h"
-#include "device_store.h"
-#include "mqtt_bridge.h"
-#include <stdio.h>
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-static unsigned char staged[REGISTRY_STORAGE_BYTES > MQTT_RECORD_BYTES ? REGISTRY_STORAGE_BYTES : MQTT_RECORD_BYTES];
-static size_t staged_size;
-static char selected_path[4096];
-static int staged_valid;
-// Test-only flash boundary faults; production network store owns rollback.
-// 1: mutation becomes durable then reports failure; 2: rollback also fails.
-static int wifi_fault, wifi_fault_used;
-static int mqtt_fault, discovery_fault, mode_fault;
-int host_mode_storage_fault(int mode) { if (mode < 0 || mode > 3) return 0; mode_fault=mode; return 1; }
-int host_discovery_storage_fault(int mode) { if (mode<0 || mode>2) return 0; discovery_fault=mode; return 1; }
-int host_mqtt_storage_fault(int mode) { if (mode<0 || mode>2) return 0; mqtt_fault=mode; return 1; }
-int host_wifi_storage_fault(int mode) {
-    if (mode < 0 || mode > 2) return 0;
-    wifi_fault = mode; wifi_fault_used = 0; return 1;
-}
-static const char *path(void) { return getenv("CLEVERBOX_SIM_STORAGE"); }
-esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *h) {
-    if (strcmp(name, "cleverbox") || !path()) return ESP_FAIL;
-    (void)mode;
-    staged_valid = 0; *h = 1; return ESP_OK;
-}
-esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *n) {
-    (void)h;
-    if (strcmp(key, "ha_monitors") && strcmp(key, "registry") && strcmp(key, "wifi") && strcmp(key, "timezone") && strcmp(key, "mqtt") && strcmp(key, "ha_discovery") && strcmp(key, "rf_mode")) return ESP_FAIL;
-    if (!strcmp(key, "rf_mode") && mode_fault == 3) return ESP_FAIL;
-    char filename[4096];
-    if (snprintf(filename, sizeof(filename), "%s%s", path(), !strcmp(key, "ha_monitors") ? ".ha_monitors" : !strcmp(key, "rf_mode") ? ".rf_mode" : !strcmp(key, "ha_discovery") ? ".ha_discovery" : !strcmp(key, "mqtt") ? ".mqtt" : !strcmp(key, "timezone") ? ".timezone" : !strcmp(key, "wifi") ? ".wifi" : ".registry") >= (int)sizeof(filename)) return ESP_FAIL;
-    FILE *f = fopen(filename, "rb");
-    if (!f) return errno == ENOENT ? ESP_ERR_NVS_NOT_FOUND : ESP_FAIL;
-    if (!out) {
-        if (fseek(f, 0, SEEK_END)) { fclose(f); return ESP_FAIL; }
-        long length = ftell(f); fclose(f);
-        if (length < 0) return ESP_FAIL;
-        *n = (size_t)length; return ESP_OK;
-    }
-    size_t read = fread(out, 1, *n, f);
-    int extra = fgetc(f), failed = ferror(f); fclose(f);
-    if (failed || extra != EOF) return ESP_ERR_INVALID_STATE;
-    *n = read; return ESP_OK;
-}
-esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *in, size_t n) {
-    (void)h;
-    if ((strcmp(key, "ha_monitors") && strcmp(key, "registry") && strcmp(key, "wifi") && strcmp(key, "timezone") && strcmp(key, "mqtt") && strcmp(key, "ha_discovery") && strcmp(key, "rf_mode")) || n > sizeof(staged)) return ESP_FAIL;
-    if (snprintf(selected_path, sizeof(selected_path), "%s%s", path(), !strcmp(key, "ha_monitors") ? ".ha_monitors" : !strcmp(key, "rf_mode") ? ".rf_mode" : !strcmp(key, "ha_discovery") ? ".ha_discovery" : !strcmp(key, "mqtt") ? ".mqtt" : !strcmp(key, "timezone") ? ".timezone" : !strcmp(key, "wifi") ? ".wifi" : ".registry") >= (int)sizeof(selected_path)) return ESP_FAIL;
-    if (!strcmp(key, "wifi") && wifi_fault == 2 && wifi_fault_used) return ESP_FAIL;
-    if (!strcmp(key, "rf_mode") && mode_fault == 2) return ESP_FAIL;
-    memcpy(staged, in, n); staged_size = n; staged_valid = 1;
-    if (!strcmp(key, "rf_mode") && mode_fault == 1) {
-        esp_err_t err = nvs_commit(h); return err == ESP_OK ? ESP_FAIL : err;
-    }
-    if (!strcmp(key, "ha_discovery") && discovery_fault) {
-        int fault = discovery_fault; discovery_fault = 0;
-        if (fault == 1) { esp_err_t err = nvs_commit(h); return err == ESP_OK ? ESP_FAIL : err; }
-        return ESP_FAIL;
-    }
-    if (!strcmp(key, "mqtt") && mqtt_fault) {
-        int fault = mqtt_fault; mqtt_fault = 0;
-        if (fault == 1) { esp_err_t err = nvs_commit(h); return err == ESP_OK ? ESP_FAIL : err; }
-        return ESP_FAIL;
-    }
-    if (!strcmp(key, "wifi") && wifi_fault && !wifi_fault_used) {
-        wifi_fault_used = 1;
-        esp_err_t err = nvs_commit(h); return err == ESP_OK ? ESP_FAIL : err;
-    }
-    return ESP_OK;
-}
-esp_err_t nvs_commit(nvs_handle_t h) {
-    (void)h;
-    if (!staged_valid) return ESP_FAIL;
-    if (staged_valid == 2) return remove(selected_path) == 0 || errno == ENOENT ? ESP_OK : ESP_FAIL;
-    char temporary[4096];
-    if (snprintf(temporary, sizeof(temporary), "%s.tmp", selected_path) >= (int)sizeof(temporary)) return ESP_FAIL;
-    FILE *f = fopen(temporary, "wb"); if (!f) return ESP_FAIL;
-    int failed = fwrite(staged, 1, staged_size, f) != staged_size;
-    if (fclose(f)) failed = 1;
-    if (failed || rename(temporary, selected_path)) { remove(temporary); return ESP_FAIL; }
-    return ESP_OK;
-}
-void nvs_close(nvs_handle_t h) { (void)h; staged_valid = 0; }
 
-esp_err_t nvs_erase_key(nvs_handle_t h, const char *key) {
-    (void)h;
-    if (strcmp(key, "registry") && strcmp(key, "wifi") && strcmp(key, "timezone") && strcmp(key, "mqtt") && strcmp(key, "ha_discovery") && strcmp(key, "rf_mode")) return ESP_FAIL;
-    if (snprintf(selected_path, sizeof(selected_path), "%s%s", path(), !strcmp(key, "ha_monitors") ? ".ha_monitors" : !strcmp(key, "rf_mode") ? ".rf_mode" : !strcmp(key, "ha_discovery") ? ".ha_discovery" : !strcmp(key, "mqtt") ? ".mqtt" : !strcmp(key, "timezone") ? ".timezone" : !strcmp(key, "wifi") ? ".wifi" : ".registry") >= (int)sizeof(selected_path)) return ESP_FAIL;
-    if (!strcmp(key, "wifi") && wifi_fault == 2 && wifi_fault_used) return ESP_FAIL;
-    staged_valid = 2;
-    if (!strcmp(key, "wifi") && wifi_fault && !wifi_fault_used) {
-        wifi_fault_used = 1;
-        esp_err_t err = nvs_commit(h); return err == ESP_OK ? ESP_FAIL : err;
-    }
-    return ESP_OK;
+static int path(const char *key, char *out, size_t size)
+{
+    const char *base = getenv("CLEVERBOX_SIM_STORAGE");
+    return base && snprintf(out, size, "%s.%s", base, key) < (int)size;
 }
+
+esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *h)
+{
+    (void)mode; *h = 1;
+    return !strcmp(name, "cleverbox") && getenv("CLEVERBOX_SIM_STORAGE") ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *size)
+{
+    (void)h;
+    char name[4096];
+    if (!path(key, name, sizeof(name))) return ESP_FAIL;
+    FILE *f = fopen(name, "rb");
+    if (!f) return errno == ENOENT ? ESP_ERR_NVS_NOT_FOUND : ESP_FAIL;
+    fseek(f, 0, SEEK_END);
+    size_t length = (size_t)ftell(f);
+    rewind(f);
+    esp_err_t e = ESP_OK;
+    if (out && length > *size) e = ESP_ERR_INVALID_SIZE;
+    else if (out && fread(out, 1, length, f) != length) e = ESP_FAIL;
+    fclose(f);
+    if (e == ESP_OK) *size = length;
+    return e;
+}
+
+esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *data, size_t size)
+{
+    (void)h;
+    char name[4096];
+    if (!path(key, name, sizeof(name))) return ESP_FAIL;
+    FILE *f = fopen(name, "wb");
+    if (!f) return ESP_FAIL;
+    size_t written = fwrite(data, 1, size, f);
+    return fclose(f) == 0 && written == size ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t nvs_erase_key(nvs_handle_t h, const char *key)
+{
+    (void)h;
+    char name[4096];
+    if (!path(key, name, sizeof(name))) return ESP_FAIL;
+    if (remove(name) == 0) return ESP_OK;
+    return errno == ENOENT ? ESP_ERR_NVS_NOT_FOUND : ESP_FAIL;
+}
+
+esp_err_t nvs_commit(nvs_handle_t h) { (void)h; return ESP_OK; }
+void nvs_close(nvs_handle_t h) { (void)h; }

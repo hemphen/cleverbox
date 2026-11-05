@@ -1,26 +1,20 @@
 // SPDX-License-Identifier: MIT
-// Compatibility probes of REAL RadioLib, not RF simulation. This HAL supplies
-// deterministic registers, strobe responses, a GDO pulse and a monotonic clock.
+// Real RadioLib CC1101 driver against a register model, not RF simulation. This
+// HAL supplies deterministic registers, strobe responses, a GDO pulse and a clock.
 #include <RadioLib.h>
 #include <array>
 #include <cassert>
 #include <cstdio>
 #include <vector>
 
-static_assert(RADIOLIB_VERSION == 0x07030000 || RADIOLIB_VERSION == 0x07080100,
-              "Review expectations when testing another release");
-constexpr bool candidate = RADIOLIB_VERSION >= 0x07080100;
+static_assert(RADIOLIB_VERSION == 0x07080100, "Review expectations when testing another release");
 class RegisterHal : public RadioLibHal {
 public:
     RegisterHal() : RadioLibHal(0, 1, 0, 1, 1, 2) { reset(); }
     std::array<uint8_t, 64> regs{};
     std::vector<uint8_t> fifo, sent;
     unsigned long us = 0, fstxon_at = 0, tx_at = 0;
-    unsigned calibration_us = 200;
-    int refuse_register = -1;
     bool calibrating = false, transmitting = false, no_start = false, no_end = false;
-    bool idle_failure = false, stuck_high = false, underflow = false;
-    unsigned tx_strobes = 0, rx_strobes = 0;
     unsigned gdo_reads = 0;
     void reset() {
         regs.fill(0); regs[0x31] = 0x14; regs[0x35] = 1;
@@ -31,7 +25,6 @@ public:
     uint32_t digitalRead(uint32_t pin) override {
         // Same Module mapping as production: CS18, IRQ/GDO0=15, GPIO/GDO2=14.
         assert(pin == 14); ++gdo_reads; us += 100;
-        if (stuck_high) return 1;
         if (!transmitting || no_start) return 0;
         return no_end || us - tx_at < 2000;
     }
@@ -42,7 +35,7 @@ public:
     RadioLibTime_t millis() override { us += 100; return us / 1000; }
     RadioLibTime_t micros() override { us += 10; return us; }
     long pulseIn(uint32_t, uint32_t, RadioLibTime_t) override { return 0; }
-    // Model the production HAL yielding to other tasks during library waits.
+    // Time passes while the library yields during waits.
     void yield() override { us += 1000; }
     void spiBegin() override {}
     void spiEnd() override {}
@@ -56,15 +49,13 @@ public:
             switch (addr) {
                 case 0x30: reset(); break;
                 case 0x31: fstxon_at = us; calibrating = true; regs[0x35] = 8; break;
-                case 0x34: ++rx_strobes; regs[0x35] = 0x0d; break;
-                case 0x36:
-                    if (!idle_failure) { regs[0x35] = 1; calibrating = transmitting = false; }
-                    break;
+                case 0x34: regs[0x35] = 0x0d; break;
+                case 0x36: regs[0x35] = 1; calibrating = transmitting = false; break;
                 case 0x35:
                     assert((regs[8] & 7) == 0); // fixed TX, hardware CRC off
                     assert(regs[6] == fifo.size());
                     assert((regs[0] & 0x3f) == 6); // GDO2 sync sent / packet end
-                    ++tx_strobes; regs[0x3a] = fifo.size();
+                    regs[0x3a] = fifo.size();
                     sent = fifo; tx_at = us; transmitting = true; calibrating = false; regs[0x35] = 0x13; break;
                 case 0x3b: fifo.clear(); break;
             }
@@ -73,19 +64,18 @@ public:
         for (size_t i = 1; i < len; ++i) {
             unsigned reg = addr == 0x3f ? addr : (addr + i - 1);
             if (out[0] & 0x80) {
-                if (reg == 0x35 && calibrating && us - fstxon_at >= calibration_us) regs[reg] = 0x12;
-                if (transmitting && underflow) { regs[0x35]=0x16; regs[0x3a]=0x80; }
-                else if (transmitting && !no_end && us - tx_at >= 2000) { regs[0x35]=1; regs[0x3a]=0; }
+                if (reg == 0x35 && calibrating && us - fstxon_at >= 200) regs[reg] = 0x12;
+                if (transmitting && !no_end && us - tx_at >= 2000) { regs[0x35]=1; regs[0x3a]=0; }
                 in[i] = regs[reg];
             } else if (reg == 0x3f) fifo.push_back(out[i]);
-            else if (static_cast<int>(reg) != refuse_register) regs[reg] = out[i];
+            else regs[reg] = out[i];
         }
     }
 };
 
-// The production sequence and arguments; both versions must retain this profile.
-static void configure(CC1101& radio, Module& module, float bandwidth) {
-    assert(radio.begin(868.3, 1000.0 / 27.0, 17.0, bandwidth, 0, 32) == 0);
+// The production setup sequence and arguments (radio_transport.cpp initialize()).
+static void configure(CC1101& radio, Module& module) {
+    assert(radio.begin(868.3, 1000.0 / 27.0, 17.0, 101.6, 0, 32) == 0);
     assert(radio.setPreambleLength(32, 0) == 0);
     assert(radio.setEncoding(RADIOLIB_ENCODING_NRZ) == 0);
     assert(radio.setSyncWord(0xd3, 0x91) == 0);
@@ -96,153 +86,49 @@ static void configure(CC1101& radio, Module& module, float bandwidth) {
     assert(module.SPIsetRegValue(0x07, 0, 2, 2) == 0);
     assert(radio.startReceive() == 0);
 }
-static void restore(CC1101& radio, Module& module, RegisterHal& hal) {
+// The production transmit sequence (radio_transport.cpp transmit()).
+static int transmit(CC1101& radio, Module& module, const uint8_t* bytes, size_t length) {
     assert(radio.standby() == 0);
-    assert(module.SPIsetRegValue(0x00, 0x2e, 5, 0) == 0);
+    assert(radio.fixedPacketLengthMode(length) == 0);
+    int result = radio.transmit(bytes, length);
     assert(module.SPIsetRegValue(0x08, 2, 1, 0) == 0);
     assert(radio.startReceive() == 0);
-    assert((hal.regs[0x08] & 7) == 2); // infinite RX, CRC off
-    assert((hal.regs[0x02] & 0x7f) == 1); // GDO0 RX FIFO full/end
-    assert(hal.regs[0x35] == 0x0d);
+    return result;
 }
 int main() {
     RegisterHal hal;
-    Module module(&hal, 18, 15, RADIOLIB_NC, 14);
+    Module module(&hal, 18, 15, RADIOLIB_NC, 14); // CS18, GDO0=15, GDO2=14 as in board.h.
     CC1101 radio(&module);
-    configure(radio, module, 101.6);
-    assert((hal.regs[0x10] & 0xf0) == 0xc0);
-    // The corrected range comparison affects unsupported values, not 101.6.
-    assert(radio.setRxBandwidth(60.0) == (candidate ? RADIOLIB_ERR_INVALID_RX_BANDWIDTH : 0));
-    assert(radio.setRxBandwidth(101.6) == 0);
-    assert(radio.startReceive() == 0);
-    // Golden stable profile from the baseline; excludes status/calibration and
-    // IOCFG2, whose deliberate post-TX high-Z change is checked separately.
+    configure(radio, module);
+    // Golden RF profile; see docs/hardware.md.
     const uint8_t expected[][2] = {
         {0x03,0x0f},{0x04,0xd3},{0x05,0x91},{0x07,0},{0x08,2},
         {0x0d,0x21},{0x0e,0x65},{0x0f,0x6a},{0x10,0xca},{0x11,0x75},
         {0x12,3},{0x13,0x20},{0x14,0},{0x15,0x32},{0x17,0},{0x18,0x10},{0x3e,0x50}
     };
-    std::printf("profile:");
-    for (const auto& setting : expected) {
-        assert(hal.regs[setting[0]] == setting[1]);
-        std::printf(" %02x=%02x", setting[0], hal.regs[setting[0]]);
-    }
-    std::puts("");
+    for (const auto& setting : expected) assert(hal.regs[setting[0]] == setting[1]);
     const auto profile = hal.regs;
-    auto transmit = [&](const uint8_t* bytes, size_t length) {
-        assert(radio.standby() == 0);
-        assert(radio.fixedPacketLengthMode(length) == 0);
-        return radio.transmit(bytes, length);
-    };
+    // Fixed-length frames go out exactly as given: no length, address or CRC added.
     const uint8_t packet[] = {0x0b,0xf1,1,2,3,0xc6,0xf1,4,5,6,0,0,0,0};
     for (size_t length : {sizeof(packet), size_t(59), size_t(64)}) {
         std::vector<uint8_t> bytes(length);
-        for (size_t i=0; i<length; ++i) bytes[i] = packet[i % sizeof(packet)];
-        assert(transmit(bytes.data(), bytes.size()) == 0);
-        assert(hal.sent == bytes); // no library length/address/CRC added
-        assert(hal.gdo_reads > 0);
-        assert((hal.regs[0] & 0x3f) == (candidate ? 0x2e : 6));
-        restore(radio, module, hal);
-        assert(hal.regs[0x3e] == profile[0x3e]);
-        for (unsigned reg=3; reg<=0x2e; ++reg)
-            if (reg != 6) assert(hal.regs[reg] == profile[reg]); // PKTLEN retains TX length
+        for (size_t i = 0; i < length; ++i) bytes[i] = packet[i % sizeof(packet)];
+        assert(transmit(radio, module, bytes.data(), bytes.size()) == 0);
+        assert(hal.sent == bytes && hal.gdo_reads > 0);
+        // Back in infinite-length receive with the same profile.
+        assert((hal.regs[0x08] & 7) == 2 && hal.regs[0x35] == 0x0d);
+        for (unsigned reg = 3; reg <= 0x2e; ++reg)
+            if (reg != 6) assert(hal.regs[reg] == profile[reg]); // PKTLEN keeps the TX length.
     }
-    // Worker-style short TX: real start does no GDO completion polling and
-    // retains packet mode. Deterministic time advances between bounded samples.
-    auto start = [&](const uint8_t *bytes, size_t length) {
-        assert(radio.standby()==0);
-        assert(radio.fixedPacketLengthMode(length)==0);
-        auto reads=hal.gdo_reads;
-        int result=radio.startTransmit(bytes,length);
-        assert(hal.gdo_reads==reads);
-        return result;
-    };
-    auto complete = [&]() {
-        bool high=hal.digitalRead(14)!=0;
-        auto a=module.SPIreadRegister(0x3a | 0x40);
-        auto b=module.SPIreadRegister(0x3a | 0x40);
-        auto marc=module.SPIreadRegister(0x35 | 0x40)&0x1f;
-        return !high && a==0 && b==a && marc==1;
-    };
-    for (size_t length : {size_t(14),size_t(59),size_t(64)}) {
-        for (bool missed_pulse : {false,true}) {
-            std::vector<uint8_t> bytes(length,0x42);
-            hal.no_start=missed_pulse;
-            auto strobes=hal.tx_strobes, receives=hal.rx_strobes;
-            assert(start(bytes.data(),length)==0 && hal.tx_strobes==strobes+1);
-            assert(hal.sent==bytes && (hal.regs[0]&0x3f)==6 && !complete());
-            assert(hal.rx_strobes==receives); // No RX operation during the wait.
-            hal.us+=3000;
-            assert(complete()); // No rising edge required if IDLE/FIFO prove completion.
-            assert(radio.finishTransmit()==0 && (hal.regs[0]&0x3f)==0x2e);
-            restore(radio,module,hal);
-            assert(hal.rx_strobes==receives+1);
-            for (unsigned reg=3;reg<=0x2e;++reg)
-                if (reg!=6) assert(hal.regs[reg]==profile[reg]);
-        }
-    }
-    hal.no_start=false;
-    for (unsigned fault=0;fault<3;++fault) {
-        assert(start(packet,sizeof(packet))==0);
-        if (fault==0) hal.no_end=true;
-        if (fault==1) hal.stuck_high=true;
-        if (fault==2) hal.underflow=true;
-        hal.us+=100000;
-        assert(!complete());
-        if (fault==2) assert(hal.regs[0x3a]==0x80 && hal.regs[0x35]==0x16);
-        hal.no_end=hal.stuck_high=hal.underflow=false;
-        restore(radio,module,hal); // Deadline/fault path must force IDLE before RX.
-    }
-    // Real start mapping/calibration failures occur before STX. This verifies
-    // the production HAL's pre-STX classification against the pinned sequence.
-    auto strobes=hal.tx_strobes;
-    hal.refuse_register=0;
-    assert(start(packet,sizeof(packet))==RADIOLIB_ERR_SPI_WRITE_FAILED);
-    assert(hal.tx_strobes==strobes);
-    hal.refuse_register=-1; restore(radio,module,hal);
-    hal.calibration_us=100000;
-    auto before=hal.us;
-    assert(start(packet,sizeof(packet))==RADIOLIB_ERR_TX_TIMEOUT);
-    assert(hal.tx_strobes==strobes && hal.us-before<10000);
-    hal.calibration_us=200; restore(radio,module,hal);
-    // Real finishTransmit cleanup errors, separately from asynchronous start.
-    assert(start(packet,sizeof(packet))==0); hal.us+=3000; assert(complete());
-    hal.refuse_register=0;
-    assert(radio.finishTransmit()==(candidate ? RADIOLIB_ERR_SPI_WRITE_FAILED : 0));
-    hal.refuse_register=-1; restore(radio,module,hal);
-    // Slow calibration is accepted by the new 1600 us guard, old 800 us fails.
-    hal.calibration_us = 1100;
-    assert(transmit(packet, sizeof(packet)) == (candidate ? 0 : RADIOLIB_ERR_TX_TIMEOUT));
-    restore(radio, module, hal);
-    hal.calibration_us = 100000;
-    assert(transmit(packet, sizeof(packet)) == RADIOLIB_ERR_TX_TIMEOUT);
-    restore(radio, module, hal);
-    hal.calibration_us = 200;
+    // A GDO2 that never rises or never falls ends in a bounded TX timeout.
     for (bool start_failure : {true, false}) {
         hal.no_start = start_failure; hal.no_end = !start_failure;
         unsigned long before = hal.us;
-        assert(transmit(packet, sizeof(packet)) == RADIOLIB_ERR_TX_TIMEOUT);
-        assert(hal.us - before < 100000); // synthetic clock, not a physical bound
+        assert(transmit(radio, module, packet, sizeof(packet)) == RADIOLIB_ERR_TX_TIMEOUT);
+        assert(hal.us - before < 100000);
         hal.no_start = hal.no_end = false;
-        restore(radio, module, hal);
+        assert((hal.regs[0x08] & 7) == 2 && hal.regs[0x35] == 0x0d);
     }
-    // New cleanup writes can fail; the error must reach transmit's caller.
-    hal.regs[0] = 6; hal.refuse_register = 0;
-    assert(transmit(packet, sizeof(packet)) == (candidate ? RADIOLIB_ERR_SPI_WRITE_FAILED : 0));
-    hal.refuse_register = -1;
-    restore(radio, module, hal);
-    // Real Module readback error must propagate from RX setup.
-    hal.regs[2] = 0x2e; hal.refuse_register = 2;
-    assert(radio.startReceive() == RADIOLIB_ERR_SPI_WRITE_FAILED);
-    hal.refuse_register = -1;
-    restore(radio, module, hal);
-    hal.idle_failure = true;
-    assert(radio.standby() == RADIOLIB_ERR_UNKNOWN);
-    assert(radio.startReceive() == RADIOLIB_ERR_UNKNOWN);
-    hal.idle_failure = false;
-    auto sent_before = hal.sent;
-    configure(radio, module, 101.6); // full profile reinitialization after faults, no TX probe
-    assert(hal.sent == sent_before && hal.regs[0x35] == 0x0d && (hal.regs[8] & 7) == 2);
-    std::printf("RadioLib %d.%d.%d: profile, fixed TX, GDO2, state-entry/completion timeouts, RX restore and register failures passed\n",
+    std::printf("RadioLib %d.%d.%d: RF profile, fixed-length TX, TX timeouts and RX restore passed\n",
                 RADIOLIB_VERSION_MAJOR, RADIOLIB_VERSION_MINOR, RADIOLIB_VERSION_PATCH);
 }

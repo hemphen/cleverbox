@@ -4,523 +4,135 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Cleverbox</title>
 <style>
-body{font:17px system-ui;max-width:650px;margin:3rem auto;padding:0 1rem;color:#19332c;background:#f4f7f5}
-section{background:white;padding:1.3rem;margin:1rem 0;border-radius:12px}h1,h2{margin-top:0}
-label{display:block;margin:.8rem 0}input,select,textarea,button{font:inherit;padding:.6rem;box-sizing:border-box}
-input,textarea{width:100%}textarea{min-height:6rem}button{cursor:pointer;margin:.3rem .3rem .3rem 0}
-pre{white-space:pre-wrap;overflow-wrap:anywhere}small{display:block;color:#53685f}
+body{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem;color:#19332c;background:#f4f7f5}
+section{background:#fff;padding:1rem 1.2rem;margin:1rem 0;border-radius:10px}h1,h2{margin:.2rem 0 .8rem}
+input,select,button{font:inherit;padding:.35rem .5rem;margin:.2rem .3rem .2rem 0}input{width:11rem}
+table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:.3rem .4rem;border-bottom:1px solid #dde5e0;vertical-align:top}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}small,.muted{color:#53685f}#message{min-height:1.4em;font-weight:600}
 </style>
 <h1>Cleverbox</h1>
-<p>Local setup · Radio receiver</p>
-<p id="httpAccess" role="status">Checking interface permissions…</p>
-<p id="trafficNotice">Pairing and the live command button transmit RF frames. Preview buttons prepare frames only.</p>
-<section>
-<h2>Home Wi-Fi</h2>
-<p id="networkStatus" role="status" aria-live="polite">Checking network…</p>
-<p id="networkAccess"></p>
-<label>SSID <input id="wifiSsid" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
-<label>Password <input id="wifiPassword" type="password" maxlength="63" autocomplete="new-password"></label>
-<small>2.4 GHz WPA2 personal network. SSID: 1–32 bytes; password: 8–63 printable ASCII characters.
-A successful save closes the AP after 60 seconds; move to the home LAN and station IP.
-Credentials are saved only after an IP address is acquired. Connection failures keep the previous setup; storage failures report whether restoration was verified or persistence is uncertain.</small>
-<button id="wifiSave">Connect and save</button>
-<button id="wifiForget">Forget home Wi-Fi only</button>
-<button id="wifiFinishRecovery">Finish recovery</button>
-<p id="networkAction" role="status"></p>
-<small>Setup/recovery: join <strong>Cleverbox</strong>, WPA2 password <strong>cleverbox</strong>, then open http://192.168.4.1/ manually.
-After normal startup, hold BOOT/IO9 for at least five seconds, then release: recovery stays open until Finish recovery or a successful Wi-Fi save.
-EN restarts without erasing setup. Configured boots and router outages never open the AP. Do not hold BOOT during reset: this can enter download mode.
-BOOT access through the supplied enclosure is unverified; opening it or a verified access hole may be necessary.
-Failed Wi-Fi trials keep an already open session. Finish recovery closes it after 60 seconds, even offline; BOOT opens it again.
-Forgetting Wi-Fi preserves radiators, MQTT, timezone, discovery cleanup and admitted commands. Local HTTP has no login; use a trusted network.</small>
-</section>
-<section>
-<h2>Device time</h2>
-<p id="timeStatus" role="status" aria-live="polite">Checking device time…</p>
-<label>Timezone (POSIX rule) <input id="timezone" maxlength="95" placeholder="UTC0" spellcheck="false"></label>
-<small>Default UTC0 (no DST). Sweden: CET-1CEST,M3.5.0/2,M10.5.0/3. DST needs explicit M transition rules.
-Saving the timezone affects new commands only.</small>
-<button id="saveTimezone">Save timezone</button>
-<details><summary>Offline bench: explicitly set UTC time</summary>
-<label>UTC date and time <input id="manualUtc" type="datetime-local" step="1"></label>
-<small>Enter UTC, not local time (2020–2099). This is an explicit manual clock, cleared at reboot.
-Network synchronization can replace it later.</small>
-<button id="setManualTime">Set manual UTC time</button>
-</details>
-<p id="timeAction" role="status"></p>
-<small>Commands use device time. If time is unavailable, connect home Wi-Fi for SNTP or set it manually here.
-Time setup never transmits radiator settings. Admitted commands keep their clock snapshot and advance monotonically through retries.</small>
-</section>
-<section>
-<h2>MQTT broker</h2>
-<p id="mqttStatus" role="status" aria-live="polite">Checking MQTT…</p>
-<label>Broker hostname or IPv4 <input id="mqttHost" maxlength="96" placeholder="192.168.1.10" autocomplete="off"></label>
-<label>Port <input id="mqttPort" type="number" min="1" max="65535" value="1883"></label>
-<label>Username (optional) <input id="mqttUser" maxlength="64" autocomplete="off"></label>
-<label>Password (optional) <input id="mqttPassword" type="password" maxlength="128" autocomplete="new-password"></label>
-<label>Enable after saving <select id="mqttEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
-<button id="mqttSave">Save broker configuration</button>
-<button id="mqttEnable">Enable MQTT</button><button id="mqttDisable">Disable MQTT</button>
-<p>Home Assistant discovery (opt-in): observations and diagnostics appear automatically. Draft/Apply controls use the HA package.</p>
-<button id="mqttDiscoveryEnable">Enable HA discovery</button><button id="mqttDiscoveryDisable">Disable HA discovery and remove entities</button>
-<button id="mqttForget">Forget MQTT only</button>
-<p id="mqttAction" role="status"></p>
-<p><a href="https://github.com/hemphen/cleverbox/blob/main/docs/home-assistant.md">Home Assistant setup guide</a></p>
-<small>Local TCP broker; no TLS. Use a trusted LAN and broker topic ACLs. HTTP and NVS are unencrypted.
-Each configuration save replaces all fields; re-enter the password when saving. Stored passwords are never returned.
-Disable/enable keeps credentials. Forget preserves radiators, Wi-Fi, time and admitted RF commands.
-MQTT state is separate from requested settings; commands require the current session and a single-use token or new request ID (see docs/mqtt.md).</small>
-</section>
-<section id="simulationPanel" hidden>
-<h2>SIMULATION · no physical radio</h2>
-<p>Two invented radiators: F1040506 and F1040507. Pair, set device time and command without a template.
-No heating or physical RF compatibility is tested.</p>
-<label>Inclusion device <select id="simulationDevice"><option value="0">F1040506</option><option value="1">F1040507</option></select></label>
-<button id="simulationChoose">Choose simulated device</button>
-<label>Responses <select id="simulationScenario"><option value="normal">Normal</option><option value="delayed">Delayed (2.5 seconds)</option><option value="silence">Silence</option><option value="ack_only">ACK only after state TX</option></select></label>
-<button id="simulationApply">Apply response scenario</button>
-<p id="simulationAction" role="status"></p>
-</section>
-<section>
-<h2>Passive commissioning</h2>
-<p id="commissioningStatus" role="status">Checking operating mode…</p>
-<button id="listenOnly">Select listen-only</button><button id="enableControl">Enable control</button>
-<p id="modeAction" role="status"></p>
-<p>For passive monitoring, leave Touch E3 running and select listen-only. Identify radiators by their RF addresses below.</p>
-<p>For control, disconnect Touch E3, explicitly enable control, pair a radiator and set device time.
-Then send a target and mode below.</p>
-<small>Pairing can reset radiator settings. No step runs automatically. Observations clear on reboot; pairings and operating mode persist.
-Enabling control sends nothing. Listen-only is refused while pairing or RF commands are outstanding; let bounded work finish and retry.</small>
-<pre id="passiveObservations">No reports heard this boot.</pre>
-<h3>Read-only Home Assistant monitoring</h3>
-<p>Select a full radiator RF address from the reports above. Selections and names survive restart; readings do not.
-Enable global HA discovery under MQTT to publish selected devices. Disable it to stop passive publishing and remove their HA entities.
-Already paired addresses use their existing HA device. Remove monitoring before pairing an address; no action here enables RF.</p>
-<label>Radiator RF address <input id="monitorAddress" maxlength="8" placeholder="F1040506"></label>
-<label>Monitoring name <input id="monitorName" maxlength="32"></label>
-<button id="monitorSelect">Select for monitoring</button><button id="monitorRename">Rename monitor</button><button id="monitorRemove">Remove monitor</button>
-<p id="monitorAction" role="status"></p><pre id="monitorStatus"></pre>
-</section>
-<section>
-<h2>Radio receiver</h2>
-<p id="radioStatus" role="status">Checking radio…</p>
-<button id="retryRadio" disabled>Retry radio</button><p id="radioAction" role="status"></p>
-<details><summary>Global receive diagnostics (all addresses)</summary><pre id="radioReport">No radiator report received.</pre><pre id="radioDiagnostics"></pre></details>
+<p class="muted">Experimental firmware for controlled development. No login: use a trusted network.</p>
+<p id="message" role="status"></p>
+<section id="simulation" hidden>
+<h2>Simulation</h2>
+<p>No physical radio. Invented radiators F1040506 and F1040507.</p>
+<label>Answering device <select id="simDevice"><option value="0">F1040506</option><option value="1">F1040507</option></select></label>
+<label>Responses <select id="simScenario"><option>normal</option><option>delayed</option><option>silence</option><option>ack_only</option></select></label>
+<button onclick="sim()">Apply</button>
 </section>
 <section>
 <h2>Radiators</h2>
-<p>One pending command per radiator; transmissions share one radio. Pairing is exclusive.</p>
-<label>Selected radiator <select id="radiatorSelect"></select></label>
-<label>Name <input id="radiatorName" maxlength="32"></label>
-<button id="renameRadiator">Save name</button><button id="removeRadiator">Remove local record</button>
-<small>Removal deletes this bridge's configuration only. It does not reset or unpair the physical radiator.</small>
-<p id="registryStatus" role="status"></p><p id="registryAction" role="status"></p>
-<h2>Pair / add a radiator</h2>
-<p>Put one radiator in <code>rF.bi</code> mode. Pairing can reset its settings.</p>
-<label>Controller address <input id="source" maxlength="8" placeholder="8 hexadecimal digits" autocomplete="off"></label>
-<label>Discovery destination <input id="destination" maxlength="8" placeholder="8 hexadecimal digits" autocomplete="off"></label>
-<small>Enter a controller address and discovery destination in the same F1 or D0 family.
-The radiator supplies its actual address in the reply. Capacity is shown below; pairing adds a new stable identity.</small>
-<button id="pairStart" data-pair-action="start">Start pairing</button>
-<button id="pairCancel" data-pair-action="cancel" disabled>Cancel attempt</button>
-<button id="pairSave" data-pair-action="save" hidden>Retry save</button>
-<p id="pairStatus" role="status" aria-live="polite">Checking saved pairing…</p>
-<p id="pairAction" role="status"></p>
-<small>Cancel stops further steps; it cannot undo a bind already transmitted.</small>
-<details><summary>Frame previews</summary>
-<button data-command="offer">Preview offer</button>
-<button data-command="bind">Preview bind</button>
-<button data-command="poll">Preview poll</button>
-<small>Bind preview uses the address entered above, not an automatically discovered address.</small>
-</details>
+<table><thead><tr><th>Radiator</th><th>Observed</th><th>Command</th><th></th></tr></thead><tbody id="radiators"></tbody></table>
+<p><label>Mode <select id="mode"><option value="0">Comfort</option><option value="3">Eco</option><option value="2">Frost</option><option value="1">Off</option></select></label>
+<label>Target °C <input id="target" type="number" min="5" max="30" step="0.5" value="20" style="width:5rem"></label>
+<small>Send applies these to the chosen paired radiator. Commands need device time and run one at a time.</small></p>
 </section>
 <section>
-<h2>Set temperature and mode</h2>
-<p id="profileStatus" role="status">Commands use the generated controller profile.</p>
-<small>Needs explicit RF control, a saved pairing and usable device time. Each command polls for a fresh report.
-Requested settings and local transmission completion are separate from a later matching radiator report.</small>
-<label>Mode <select id="mode"><option value="0">Comfort</option><option value="3">Eco</option><option value="2">Frost</option><option value="1">Off</option></select></label>
-<label>Target °C <input id="temperature" type="number" min="5" max="30" step="0.5" value="20"></label>
-<button id="sendTarget" disabled>Send to paired radiator</button>
-<p id="commandStatus" role="status" aria-live="polite">No live command requested.</p>
-<p id="commandAction" role="status"></p>
-<pre id="pairedReport">No report from the paired radiator.</pre>
+<h2>Pair a radiator</h2>
+<p>Disconnect the Touch E3 and put the radiator in <code>rF.bi</code> mode. Pairing can reset its settings.</p>
+<label>Controller address <input id="source" maxlength="8" placeholder="F1010203"></label>
+<label>Discovery address <input id="destination" maxlength="8" placeholder="F1100001"></label>
+<button onclick="post('/api/pairing',{action:'start',source:val('source'),destination:val('destination')})">Start pairing</button>
+<button onclick="post('/api/pairing',{action:'cancel'})">Cancel</button>
+<p id="pairing"></p>
 </section>
-<section><h2>Result</h2><pre id="result" role="status" aria-live="polite">No command prepared.</pre></section>
+<section>
+<h2>Heard radiators</h2>
+<p class="muted">Reports received this boot from any controller. Monitor adds an observe-only record; nothing is transmitted.</p>
+<table><thead><tr><th>Radiator</th><th>Controller</th><th>Report</th><th></th></tr></thead><tbody id="observations"></tbody></table>
+</section>
+<section>
+<h2>Radio</h2>
+<p id="radio"></p>
+<button onclick="post('/api/radio',{action:'retry'})">Retry radio</button>
+<pre id="frame"></pre>
+</section>
+<section>
+<h2>Wi-Fi</h2>
+<p id="network"></p>
+<label>SSID <input id="ssid" maxlength="32" autocomplete="off"></label>
+<label>Password <input id="password" type="password" maxlength="63" autocomplete="new-password"></label>
+<button onclick="post('/api/network',{action:'configure',ssid:val('ssid'),password:val('password')})">Save and connect</button>
+<button onclick="confirm('Forget Wi-Fi and open the setup AP?')&&post('/api/network',{action:'forget'})">Forget</button>
+<button onclick="post('/api/network',{action:'finish_recovery'})">Close setup AP</button>
+<p><small>Setup AP: join <b>Cleverbox</b> (password <b>cleverbox</b>) and open http://192.168.4.1/.
+It opens when no Wi-Fi is saved, or after holding BOOT for five seconds and releasing it. Do not hold BOOT during reset.</small></p>
+</section>
+<section>
+<h2>Time</h2>
+<p id="time"></p>
+<label>Time zone (POSIX) <input id="timezone" maxlength="95" placeholder="CET-1CEST,M3.5.0/2,M10.5.0/3" style="width:20rem"></label>
+<button onclick="post('/api/time',{action:'timezone',timezone:val('timezone')})">Save</button><br>
+<label>Manual UTC <input id="utc" type="datetime-local" step="1"></label>
+<button onclick="post('/api/time',{action:'manual',unix_seconds:Math.floor(Date.parse(val('utc')+'Z')/1000)})">Set until reboot</button>
+</section>
+<section>
+<h2>MQTT</h2>
+<p id="mqtt"></p>
+<label>Broker <input id="host" maxlength="96" placeholder="192.168.1.10"></label>
+<label>Port <input id="port" type="number" value="1883" style="width:6rem"></label>
+<label>Username <input id="user" maxlength="64"></label>
+<label>Password <input id="mqttPassword" type="password" maxlength="128"></label>
+<button onclick="post('/api/mqtt',{action:'configure',host:val('host'),port:+val('port'),username:val('user'),password:val('mqttPassword'),enabled:true})">Save and enable</button><br>
+<button onclick="post('/api/mqtt',{action:'enable'})">Enable</button><button onclick="post('/api/mqtt',{action:'disable'})">Disable</button>
+<button onclick="post('/api/mqtt',{action:'discovery_enable'})">Enable HA discovery</button><button onclick="post('/api/mqtt',{action:'discovery_disable'})">Disable HA discovery</button>
+<button onclick="post('/api/mqtt',{action:'forget'})">Forget</button>
+</section>
 <script>
-const field=id=>document.getElementById(id);
-let networkTimer, httpControlAllowed=false, rfControlAllowed=false;
-const controlButtons=['renameRadiator','removeRadiator','pairStart','pairCancel','pairSave','sendTarget','saveTimezone','setManualTime','mqttSave','mqttEnable','mqttDisable','mqttForget','mqttDiscoveryEnable','mqttDiscoveryDisable','listenOnly','enableControl','monitorSelect','monitorRename','monitorRemove'];
-function restrictControls(){
-  if(!rfControlAllowed) for(const id of ['pairStart','sendTarget']) field(id).disabled=true;
-  if(!httpControlAllowed){
-    for(const id of controlButtons) field(id).disabled=true;
-    document.querySelectorAll('button[data-command]').forEach(button=>button.disabled=true);
-  }
-}
-function requireControl(id){
-  if(httpControlAllowed) return true;
-  field(id).textContent='Unavailable here. Join the trusted home LAN and open the station IP for radiator, time and MQTT changes.';
-  return false;
-}
-async function refreshNetwork(){
-  clearTimeout(networkTimer);
-  try {
-    const response=await fetch('/api/network',{cache:'no-store'});
-    if(!response.ok) throw new Error('Network status unavailable.');
-    const s=await response.json();
-    httpControlAllowed=s.http_control_allowed===true;
-    field('httpAccess').textContent=httpControlAllowed
-      ? 'Station interface: local control assumes a trusted LAN. HTTP has no login.'
-      : 'Recovery / unknown interface: diagnostics only; Wi-Fi setup is available on the AP. Join the home LAN for radiator, time and MQTT changes.';
-    restrictControls();
-    field('saveTimezone').disabled=field('setManualTime').disabled=!httpControlAllowed;
-    document.querySelectorAll('button[data-command]').forEach(button=>button.disabled=!httpControlAllowed);
-    field('wifiForget').disabled=field('wifiFinishRecovery').disabled=s.http_interface==='unknown';
-    field('networkStatus').textContent='Wi-Fi: '+s.state+'. Saved setup: '+(s.persistence_uncertain?'unknown after restart (RAM fallback: '+(s.configured?'yes':'no')+')':s.configured?'yes':'no')+
-      '. Attempts: '+s.attempts+'. Setup result: '+s.setup_result+'.'+(s.error!=='none'?' Error: '+s.error+'.':'')+
-      ' Manual recovery: '+(s.manual_recovery?'active':'off')+'.'+(s.recovery_error && s.recovery_error!=='none'?' Recovery error: '+s.recovery_error+'.':'')+
-      (s.event_queue_overflows?' Network event queue overflows: '+s.event_queue_overflows+'.':'');
-    field('networkAccess').textContent=(s.ip?'Application: http://'+s.ip+'. ':'')+
-      (s.recovery_ap?'Protected Cleverbox AP available at http://192.168.4.1/. '+(s.ap_closing?'It will close after the 60-second grace period, even offline.':s.manual_recovery?'Manual recovery keeps AP open. Finish recovery closes it after 60 seconds, even offline.':'Setup access stays open until successful save or Finish recovery.'):'Setup AP closed.');
-    field('wifiSave').disabled=s.http_interface==='unknown'||s.state==='connecting'||s.setup_result==='pending';
-  } catch(error){
-    httpControlAllowed=false; restrictControls();
-    field('networkStatus').textContent='Network status unavailable. If the setup AP closed, join the home network and open the station IP shown above or check router leases. For recovery hold BOOT for five seconds after startup and release.';
-    field('wifiSave').disabled=field('wifiForget').disabled=field('wifiFinishRecovery').disabled=true;
-  } finally {networkTimer=setTimeout(refreshNetwork,2000);}
-}
-async function networkAction(action){
-  const body={action};
-  if(action==='finish_recovery' && !confirm('Close setup/recovery access in 60 seconds? If you are using the AP, this page will disconnect even if home Wi-Fi is unavailable. Hold BOOT for five seconds and release to reopen it.')) return;
-  if(action==='forget'){
-    if(!confirm('Forget home Wi-Fi only? This disconnects home Wi-Fi and erases only its saved credentials. Radiators, MQTT, timezone and discovery cleanup are preserved.')) return;
-    body.confirm=true;
-  }
-  if(action==='configure'){
-    body.ssid=field('wifiSsid').value; body.password=field('wifiPassword').value;
-    if(!body.ssid.length || new TextEncoder().encode(body.ssid).length>32 || /[\x00-\x1f\x7f]/.test(body.ssid) ||
-       !/^[\x20-\x7e]{8,63}$/.test(body.password)){
-      field('networkAction').textContent='Enter an SSID of 1–32 bytes and a password of 8–63 printable ASCII characters.';
-      field('wifiPassword').value=''; return;
-    }
-  }
-  field('wifiSave').disabled=true; field('wifiForget').disabled=true; field('wifiFinishRecovery').disabled=true;
-  // Clear before sending; never repopulate from status or show credentials in errors.
-  field('wifiPassword').value='';
-  try {
-    const response=await fetch('/api/network',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!response.ok) throw new Error('Request failed');
-    field('networkAction').textContent=action==='forget'
-      ? 'Network-only forget queued. Check status; radiator setup is preserved.'
-      : action==='finish_recovery'?'Finish recovery queued. AP closes after 60 seconds, even offline. This page may disconnect. BOOT can reopen recovery.'
-      : 'Connection queued. Check setup result and station IP before leaving the recovery AP.';
-  } catch(error){field('networkAction').textContent='Network request failed or is busy. Check status before retrying.';}
-  finally {body.password=''; field('wifiForget').disabled=false; field('wifiFinishRecovery').disabled=false; await refreshNetwork();}
-}
-field('wifiSave').addEventListener('click',()=>networkAction('configure'));
-field('wifiForget').addEventListener('click',()=>networkAction('forget'));
-field('wifiFinishRecovery').addEventListener('click',()=>networkAction('finish_recovery'));
-restrictControls();
-refreshNetwork();
-let timeTimer;
-async function refreshTime(){
-  clearTimeout(timeTimer);
-  try {
-    const response=await fetch('/api/time',{cache:'no-store'});
-    if(!response.ok) throw new Error('Device time status unavailable.');
-    const s=await response.json();
-    field('timeStatus').textContent=(s.usable?'Device: '+s.local+' · UTC: '+s.utc:'Time unavailable: connect home Wi-Fi for SNTP or set manual UTC time.')+
-      ' · Timezone: '+s.timezone+' · Source: '+s.source+
-      ' · Synchronized this boot: '+(s.synchronized_this_boot?'yes; latest sync '+(s.sync_age_ms/1000).toFixed(0)+' s ago':'no')+
-      (s.network_connected?' · Network connected.':' · Offline; any usable clock continues.')+
-      (s.config_error?' · Timezone error: '+s.config_error+'.':'')+
-      (s.persistence_uncertain?' Persistence uncertain: check after restart or retry save.':'')+
-      (s.sntp_error?' SNTP error: '+s.sntp_error+'.':'');
-  }catch(error){field('timeStatus').textContent=error.message;}
-  finally{timeTimer=setTimeout(refreshTime,2000);}
-}
-async function timeAction(action){
-  if(!requireControl('timeAction')) return;
-  const body={action};
-  if(action==='timezone') body.timezone=field('timezone').value.trim();
-  else {
-    const value=field('manualUtc').value;
-    const seconds=Date.parse(value+'Z')/1000;
-    if(!value || !Number.isInteger(seconds) || seconds<1577836800 || seconds>4102444799){
-      field('timeAction').textContent='Enter a valid UTC date and time in 2020–2099.';return;
-    }
-    body.unix_seconds=seconds;
-  }
+const $=id=>document.getElementById(id), val=id=>$(id).value.trim();
+const modes=['Comfort','Off','Frost','Eco'];
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function post(path,body){
   try{
-    const response=await fetch('/api/time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!response.ok) throw new Error(await response.text());
-    field('timeAction').textContent=action==='manual'?'Manual UTC time set for this boot. No radiator command requested.':'Timezone saved. New commands use it; no radiator command requested.';
-    await refreshTime();
-  }catch(error){field('timeAction').textContent=error.message;}
+    const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await r.json().catch(()=>({}));
+    $('message').textContent=r.ok?'Done: '+path+' '+(body.action||''):'Failed ('+r.status+'): '+(data.error||'error')+(data.code?' '+data.code:'');
+  }catch(e){$('message').textContent='Request failed: '+e;}
+  refresh();
 }
-field('saveTimezone').addEventListener('click',()=>timeAction('timezone'));
-field('setManualTime').addEventListener('click',()=>timeAction('manual'));
-refreshTime();
-let mqttTimer;
-async function refreshMqtt(){
-  clearTimeout(mqttTimer);
+function report(o){
+  if(!o) return 'no report this boot';
+  const c=v=>v===null?'–':v+' °C';
+  return c(o.temperature_c)+', target '+c(o.target_c)+', '+(modes[o.mode]||'mode '+o.mode)+', '+Math.round(o.age_ms/1000)+' s ago'+(o.stale?' (stale)':'');
+}
+function send(id){
+  const mode=+val('mode'); post('/api/command',{id,mode,centi_c:mode===1?0:Math.round(+val('target')*100)});
+}
+function rename(id,name){const n=prompt('Name',name); if(n) post('/api/radiators',{action:'rename',id,name:n});}
+function remove(id){if(confirm('Remove this record? The radiator itself is not unpaired.')) post('/api/radiators',{action:'remove',id});}
+function monitor(radiator){const n=prompt('Name for '+radiator,'Radiator '+radiator); if(n) post('/api/radiators',{action:'monitor',radiator,name:n});}
+function sim(){
+  post('/api/simulation',{action:'device',index:+val('simDevice')}).then(()=>post('/api/simulation',{action:'scenario',name:val('simScenario')}));
+}
+async function get(path){const r=await fetch(path,{cache:'no-store'}); return r.json();}
+async function refresh(){
   try{
-    const r=await fetch('/api/mqtt',{cache:'no-store'}); if(!r.ok) throw new Error('MQTT status unavailable.');
-    const s=await r.json();
-    field('mqttStatus').textContent='MQTT: '+(s.connected?'ready':s.subscription_pending?'waiting for command subscription':s.broker_connected?'broker connected; command access unconfirmed':s.enabled?'waiting for Wi-Fi / broker':'disabled')+
-      ' · Configured: '+(s.configured?'yes':'no')+' · Bridge: '+s.bridge_id+
-      (s.host?' · Broker: '+s.host+':'+s.port:'')+(s.pending?' · Saving…':'')+
-      (s.config_error?' · Save/load error: '+s.config_error:'')+
-      (s.client_error?' · Client error: '+s.client_error:'')+
-      ' · HA discovery: '+(s.discovery_enabled?'enabled':'disabled')+(s.discovery_pending?' · discovery/cleanup pending: '+s.discovery_pending:'')+(s.discovery_error?' · Discovery: '+({29713:'publication acknowledgement timed out; reconnecting',29714:'configuration exceeds payload limit',29715:'publication failed; retrying'}[s.discovery_error]??('storage error '+s.discovery_error)):'')+
-      (s.subscription_error?' · Command subscription: '+({29697:'rejected',29698:'acknowledgement timed out',29699:'request failed'}[s.subscription_error]??s.subscription_error)+(s.enabled?'; retrying at a bounded pace.':'; MQTT disabled.'):'')+
-      (s.persistence_uncertain?' · Persistence uncertain: check after restart or retry save/forget.':'');
-    for(const id of ['mqttDiscoveryEnable','mqttDiscoveryDisable','mqttSave','mqttEnable','mqttDisable','mqttForget']) field(id).disabled=!!s.pending;
-    field('mqttEnable').disabled=!!s.pending||!s.configured||s.enabled;
-    field('mqttDisable').disabled=!!s.pending||!s.configured||!s.enabled;
-  }catch(error){field('mqttStatus').textContent=error.message;}
-  finally{restrictControls(); mqttTimer=setTimeout(refreshMqtt,2000);}
+    const [radio,net,time,mqtt]=await Promise.all(['/api/radio','/api/network','/api/time','/api/mqtt'].map(get));
+    $('simulation').hidden=!radio.simulation;
+    $('radiators').innerHTML=radio.radiators.map(d=>{
+      const c=d.command;
+      const cmd=c?esc(c.phase)+(c.requested_mode!==undefined?' ('+modes[c.requested_mode]+(c.requested_mode===1?'':' '+c.requested_target_c+' °C')+')':'')+
+        (c.attempts?', '+c.attempts+' sent':'')+(c.error?', error '+esc(c.error_name)+' '+c.error:''):'monitored only';
+      return '<tr><td><b>'+esc(d.name)+'</b><br><small>#'+d.id+' '+d.radiator+(d.paired?' ← '+d.controller:'')+'</small></td><td>'+
+        esc(report(d.observed))+'</td><td>'+cmd+'</td><td>'+(d.paired?'<button onclick="send('+d.id+')">Send</button>':'')+
+        '<button onclick="rename('+d.id+','+esc(JSON.stringify(d.name))+')">Rename</button><button onclick="remove('+d.id+')">Remove</button></td></tr>';
+    }).join('')||'<tr><td colspan="4">No radiators. Pair one, or monitor a heard radiator.</td></tr>';
+    const p=radio.pairing;
+    $('pairing').textContent=p.phase==='idle'?'':'Pairing #'+p.id+': '+p.phase+(p.phase==='complete'?', radiator '+p.radiator:'')+(p.error?', error '+p.error_name+' '+p.error:'');
+    $('observations').innerHTML=radio.observations.map(o=>'<tr><td>'+o.radiator+'</td><td>'+o.controller+'</td><td>'+esc(report(o))+'</td><td>'+
+      (o.id?'#'+o.id:'<button onclick="monitor(\''+o.radiator+'\')">Monitor</button>')+'</td></tr>').join('')||'<tr><td colspan="4">Nothing heard yet.</td></tr>';
+    $('radio').textContent=(radio.ready?'Ready':'Not ready')+(radio.error?'. Last error '+radio.error+' ('+radio.error_stage+')':'')+
+      '. Chip '+radio.chip_version+'. Frames: '+radio.valid_frames+' valid, '+radio.invalid_frames+' invalid, '+radio.receive_errors+
+      ' receive errors, '+radio.transmissions+' sent.'+(radio.registry_error?' Registry error '+radio.registry_error+'.':'');
+    $('frame').textContent=radio.last_frame?'Last frame ('+Math.round(radio.frame_age_ms/1000)+' s ago): '+radio.last_frame:'';
+    $('network').textContent='Wi-Fi '+net.state+(net.ip?' at http://'+net.ip+'/':'')+'. '+(net.configured?'Saved network.':'No saved network.')+
+      ' Setup AP '+(net.ap?'open':'closed')+'.'+(net.error?' Error '+net.error+'.':'');
+    $('time').textContent=time.usable?'Local '+time.local+' ('+time.source+'), UTC '+time.utc+'. Zone '+time.timezone:
+      'Time not set: connect Wi-Fi for SNTP or set UTC manually. Zone '+time.timezone;
+    $('mqtt').textContent=mqtt.configured?'Broker '+mqtt.host+':'+mqtt.port+', '+(mqtt.enabled?'enabled':'disabled')+', '+
+      (mqtt.connected?'connected':'not connected')+'. HA discovery '+(mqtt.discovery_enabled?'on':'off')+'. Bridge '+mqtt.bridge_id+'.'+
+      (mqtt.error?' Error '+mqtt.error+'.':''):'No broker configured. Bridge '+mqtt.bridge_id+'.';
+  }catch(e){$('message').textContent='Status unavailable: '+e;}
 }
-async function mqttAction(action){
-  if(!requireControl('mqttAction')) return;
-  const body={action};
-  if(action==='configure'){
-    Object.assign(body,{host:field('mqttHost').value,port:Number(field('mqttPort').value),
-      username:field('mqttUser').value,password:field('mqttPassword').value,enabled:field('mqttEnabled').value==='true'});
-  }
-  field('mqttPassword').value='';
-  try{
-    const r=await fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!r.ok) throw new Error(await r.text());
-    field('mqttAction').textContent='MQTT configuration queued. Check status for save errors. No radiator command requested.';
-  }catch(error){field('mqttAction').textContent=error.message;}
-  finally{body.password=''; await refreshMqtt();}
-}
-for(const [id,action] of [['mqttDiscoveryEnable','discovery_enable'],['mqttDiscoveryDisable','discovery_disable'],['mqttSave','configure'],['mqttEnable','enable'],['mqttDisable','disable'],['mqttForget','forget']])
-  field(id).addEventListener('click',()=>mqttAction(action));
-refreshMqtt();
-let commissioningTimer;
-async function refreshCommissioning(){
-  clearTimeout(commissioningTimer);
-  try{
-    const response=await fetch('/api/commissioning',{cache:'no-store'});
-    if(!response.ok) throw new Error('Commissioning status unavailable.');
-    const s=await response.json();
-    rfControlAllowed=s.mode==='control-enabled' && !s.pending && !s.storage_error;
-    field('commissioningStatus').textContent='Mode: '+s.mode+' · Durable save: '+s.save_status+
-      (s.pending?' · Change queued; wait for persistence outcome.':'')+
-      (s.storage_error?' · Storage error '+s.storage_error+'; RF disabled.':'')+
-      (s.persistence_uncertain?' · Persistence uncertain; inspect after reboot or retry explicitly.':'')+
-      ' · Cache capacity: '+s.capacity+(s.observations_full?' · Observation bound reached':'')+
-      ' · Report evictions: '+s.observation_evictions;
-    field('listenOnly').disabled=field('enableControl').disabled=s.pending||!httpControlAllowed;
-    field('monitorStatus').textContent='Global discovery: '+(s.discovery_enabled?'enabled':'disabled')+' · Monitor capacity: '+s.monitor_capacity+
-      ' · Save: '+s.monitor_save_status+(s.monitor_pending?' · pending':'')+(s.monitor_storage_error?' · Storage error '+s.monitor_storage_error:'')+
-      (s.monitor_persistence_uncertain?' · Persistence uncertain; reboot to inspect saved selections.':'')+'\n'+
-      (s.monitors??[]).map(m=>m.radiator+' · '+m.name+' · '+(!m.available?'No report this boot':(m.stale?'STALE · ':'')+(m.age_ms/1000).toFixed(1)+' s ago')).join('\n');
-    for(const id of ['monitorSelect','monitorRename','monitorRemove']) field(id).disabled=!httpControlAllowed||s.monitor_pending||!!s.monitor_storage_error;
-    field('passiveObservations').textContent=s.observations.map(o=>{
-      return o.radiator+' → '+o.controller+' · '+(o.stale?'STALE · ':'')+(o.age_ms/1000).toFixed(1)+' s ago'+
-        '\nMeasured: '+(o.temperature_c===null?'unavailable':o.temperature_c+' °C')+' · Target: '+(o.target_c===null?'unavailable':o.target_c+' °C')+' · Mode: '+(modes[o.mode]??o.mode)+
-        '\nPaired: '+(o.paired?'ID '+o.paired_id:'no');
-    }).join('\n\n') || 'No reports heard this boot.';
-  }catch(error){rfControlAllowed=false;field('commissioningStatus').textContent=error.message;for(const id of ['monitorSelect','monitorRename','monitorRemove']) field(id).disabled=true;}
-  finally{restrictControls();commissioningTimer=setTimeout(refreshCommissioning,2000);}
-}
-async function changeMode(mode){
-  if(!requireControl('modeAction')) return;
-  try{
-    const response=await fetch('/api/commissioning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
-    if(!response.ok) throw new Error(await response.text());
-    field('modeAction').textContent='Mode change queued. Wait for durable save status; no RF requested.';
-    await refreshCommissioning(); await refreshRadio();
-  }catch(error){field('modeAction').textContent=error.message;}
-}
-for(const [id,action] of [['monitorSelect','select'],['monitorRename','rename'],['monitorRemove','remove']])
-  field(id).addEventListener('click',async()=>{
-    if(!requireControl('monitorAction')) return;
-    const body={action,radiator:field('monitorAddress').value.trim()};
-    if(action!=='remove') body.name=field('monitorName').value.trim();
-    try{
-      const response=await fetch('/api/commissioning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      if(!response.ok) throw new Error(await response.text());
-      field('monitorAction').textContent='Monitoring change queued. Check save outcome below. No RF requested.';
-      await refreshCommissioning();
-    }catch(error){field('monitorAction').textContent=error.message;}
-  });
-field('listenOnly').addEventListener('click',()=>changeMode('listen-only'));
-field('enableControl').addEventListener('click',()=>changeMode('control-enabled'));
-let simulationConfigured=false, selectedId=0, pairingId=0, selectionEpoch=0, refreshTimer;
-function resetSelection(id){
-  selectedId=id; selectionEpoch++;
-  field('radiatorName').value=''; field('pairedReport').textContent='Waiting for selected radiator status.';
-  field('profileStatus').textContent='Checking selected radiator…';
-  for(const id of ['sendTarget']) field(id).disabled=true;
-  for(const id of ['commandAction','commandStatus']) field(id).textContent='';
-}
-field('radiatorSelect').addEventListener('change',()=>{resetSelection(Number(field('radiatorSelect').value)); refreshRadio();});
-const modes={0:'Comfort',1:'Off',2:'Frost',3:'Eco',4:'Boost',8:'Program Comfort',11:'Program Eco'};
-async function refreshRadio(){
-  clearTimeout(refreshTimer);
-  try {
-    const epoch=selectionEpoch;
-    const response=await fetch('/api/radio'+(selectedId?'?id='+selectedId:''),{cache:'no-store'});
-    if(epoch!==selectionEpoch) return;
-    if(response.status===404 && selectedId){resetSelection(0);refreshRadio();return;}
-    if(!response.ok) throw new Error('Radio status unavailable');
-    const data=await response.json();
-    if(epoch!==selectionEpoch) return;
-    const devices=data.radiators??[];
-    if(devices.length){
-      if(!devices.some(d=>d.id===selectedId)) resetSelection(devices[0].id);
-      field('radiatorSelect').replaceChildren(...devices.map(d=>{const o=document.createElement('option');o.value=String(d.id);o.textContent=d.name+' · '+d.pairing.radiator;return o;}));
-      field('radiatorSelect').value=String(selectedId);
-      Object.assign(data,devices.find(d=>d.id===selectedId));
-    }else if(selectedId) resetSelection(0);
-    if(!devices.length) field('radiatorSelect').replaceChildren();
-    field('renameRadiator').disabled=field('removeRadiator').disabled=!selectedId;
-    field('registryStatus').textContent=devices.length+' / '+data.capacity+' radiators · '
-      +(data.exchange_id?'Pairing active for identity '+data.exchange_id:(data.active_commands||0)+' commands active')
-      +(data.registry_error?' · Registry blocked: '+data.registry_problem+' ('+data.registry_error+')':'')
-      +(data.mutation_pending?' · Saving local configuration…':'')
-      +(data.mutation_error?' · Local configuration save failed: '+data.mutation_error:'');
-    pairingId=data.inclusion?.id??pairingId;
-    field('radioStatus').textContent=data.ready
-      ? 'Listening · '+data.valid_frames+' valid frames'
-      : 'Radio '+data.health+' · '+data.failure_stage+' error '+data.failure_code+
-        ' · attempt '+data.recovery_attempt+'/'+data.recovery_attempt_limit+
-        (data.health==='faulted'?' · automatic retries exhausted':data.retry_in_ms===null?' · setup attempt in progress':' · retry in '+data.retry_in_ms+' ms');
-    field('retryRadio').disabled=!httpControlAllowed||!data.retry_allowed;
-    field('radioStatus').textContent+=' · recoveries '+(data.recovery_successes??0);
-    field('simulationPanel').hidden=data.simulation!==true;
-    if(data.simulation===true){
-      field('trafficNotice').textContent='SIMULATION ONLY · all transmitted and received bytes stay on this computer. Clock runs at real speed.';
-      if(!simulationConfigured){
-        field('source').value='F1010203'; field('destination').value='F1100001';
-        field('simulationScenario').value=data.scenario; simulationConfigured=true;
-      }
-    }
-    field('radiatorName').placeholder=data.name??'New name';
-    const pair=data.pairing;
-    const inclusion=data.inclusion??pair;
-    if(pair){
-      const active=['offer','waiting_reply','bind','waiting_ack'].includes(inclusion.phase);
-      field('pairStart').disabled=!data.ready||!!data.exchange_id||!!data.active_commands||devices.length>=data.capacity||!!data.registry_error;
-      field('pairCancel').disabled=!active;
-      field('pairSave').hidden=inclusion.phase!=='complete'||inclusion.saved;
-      field('pairStatus').textContent=inclusion.duplicate ? 'Duplicate radiator: local record already exists.' : inclusion.error ? 'Inclusion / save error '+inclusion.error+' · '+inclusion.phase : pair.saved
-        ? 'Saved pairing: '+pair.controller+' → '+pair.radiator
-        : pair.phase==='complete'
-          ? 'Inclusion acknowledged, but saving failed. Retry save. Error '+pair.error
-          : 'Pairing: '+pair.phase+(pair.error?' · error '+pair.error:'');
-    }
-    const command=data.command;
-    if(command){
-      field('profileStatus').textContent='Generated Touch E3 profile · no template required.';
-      const active=['poll','waiting_report','sending','waiting_readback'].includes(command.phase);
-      field('sendTarget').disabled=!data.ready||!selectedId||!pair?.saved||active||!!command.pending||!!data.exchange_id;
-      field('commandStatus').textContent=command.phase==='idle' ? 'No live command requested.'
-        : 'Command: '+command.phase+' · state transmissions: '+command.attempts
-          +'\nRequested: '+command.requested_target_c+' °C · '+(modes[command.requested_mode]??command.requested_mode)
-          +(command.match_age_ms===undefined?'':' · matching report '+(command.match_age_ms/1000).toFixed(1)+' s ago')
-          +(command.error?' · error '+command.error:'');
-    }
-    const observed=data.observed;
-    field('pairedReport').textContent=observed
-      ? (data.ready?'Paired radiator · ':'Radio unavailable · retained observation · ')+(observed.stale?'STALE · ':'')+'last report '+(observed.age_ms/1000).toFixed(1)+' s ago'
-        +'\nMeasured: '+(observed.temperature_c===null?'unavailable':observed.temperature_c+' °C')
-        +'\nReported target: '+(observed.target_c===null?'unavailable':observed.target_c+' °C')
-        +'\nReported mode: '+(modes[observed.mode]??'Unknown')+' ('+observed.mode+')'
-      : 'No report from the paired radiator.';
-    const r=data.report;
-    field('radioReport').textContent=r
-      ? 'Radiator '+r.source+' → '+r.destination+'\nLast received '+(r.age_ms/1000).toFixed(1)+' s ago'
-        +'\nTemperature: '+(r.temperature_c===null?'unavailable':r.temperature_c+' °C')
-        +'\nTarget: '+(r.target_c===null?'unavailable':r.target_c+' °C')
-        +'\nMode: '+(modes[r.mode]??'Unknown')+' ('+r.mode+')'
-      : 'No radiator report received.';
-    field('radioDiagnostics').textContent=JSON.stringify(data,null,2);
-  } catch(error){field('radioStatus').textContent=error.message;field('sendTarget').disabled=true;field('pairedReport').textContent='Status unavailable; the last observation cannot be refreshed.';}
-  restrictControls();
-  clearTimeout(refreshTimer); refreshTimer=setTimeout(refreshRadio,2000);
-}
-refreshRadio();
-refreshCommissioning();
-async function simulationAction(body){
-  try {
-    const response=await fetch('/api/simulation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!response.ok) throw new Error(await response.text());
-    field('simulationAction').textContent='Response scenario applied. Queued simulated responses cleared.';
-  } catch(error){field('simulationAction').textContent=error.message;}
-}
-field('simulationChoose').addEventListener('click',()=>simulationAction({action:'device',index:Number(field('simulationDevice').value)}));
-field('simulationApply').addEventListener('click',()=>simulationAction({action:'scenario',name:field('simulationScenario').value}));
-async function registryAction(action){
-  if(!requireControl('registryAction')) return;
-  const body={action,id:selectedId};
-  if(action==='rename') body.name=field('radiatorName').value.trim();
-  try{
-    const response=await fetch('/api/radiators',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!response.ok) throw new Error(await response.text());
-    field('registryAction').textContent='Local configuration action queued; check save status.';
-    if(action==='remove') resetSelection(0);
-  }catch(error){field('registryAction').textContent=error.message;}
-}
-field('renameRadiator').addEventListener('click',()=>registryAction('rename'));
-field('removeRadiator').addEventListener('click',()=>registryAction('remove'));
-field('sendTarget').addEventListener('click',async()=>{
-  if(!requireControl('commandAction') || !rfControlAllowed) return;
-  const button=field('sendTarget'); button.disabled=true;
-  const body={id:selectedId,mode:Number(field('mode').value),
-    centi_c:Math.round(Number(field('temperature').value)*100)};
-  if(body.mode===1) body.centi_c=0;
-  try {
-    const response=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!response.ok) throw new Error(await response.text());
-    field('commandAction').textContent='Queued. Waiting for a radiator report; delivery is not yet established.';
-  } catch(error){field('commandAction').textContent=error.message;}
-});
-document.querySelectorAll('button[data-pair-action]').forEach(button=>button.addEventListener('click',async()=>{
-  if(!requireControl('pairAction')) return;
-  const action=button.dataset.pairAction;
-  if(action==='start' && !rfControlAllowed) return;
-  const body={action};
-  if(action!=='start') body.id=pairingId;
-  if(action==='start'){
-    body.source=field('source').value.trim();
-    body.destination=field('destination').value.trim();
-  }
-  button.disabled=true;
-  try {
-    const response=await fetch('/api/pairing',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!response.ok) throw new Error(await response.text());
-    const result=await response.json(); pairingId=result.id;
-    field('pairAction').textContent='Action accepted for identity '+pairingId+'. Status updates shortly.';
-  } catch(error){field('pairAction').textContent=error.message;}
-  finally {button.disabled=false; restrictControls();}
-}));
-field('retryRadio').addEventListener('click',async()=>{
-  if(!requireControl('radioAction')) return;
-  try {
-    const r=await fetch('/api/radio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'retry'})});
-    if(!r.ok) throw new Error(await r.text());
-    field('radioAction').textContent='Radio retry accepted. Failed commands and pairing will not resume.';
-    refreshRadio();
-  }catch(error){field('radioAction').textContent=error.message;}
-});
-document.querySelectorAll('button[data-command]').forEach(button=>button.addEventListener('click',async()=>{
-  if(!requireControl('result')) return;
-  const command=button.dataset.command;
-  const body={command,source:field('source').value.trim(),destination:field('destination').value.trim()};
-  button.disabled=true;
-  try {
-    const response=await fetch('/api/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!response.ok) throw new Error(await response.text());
-    const result=await response.json();
-    field('result').textContent='Prepared only — not transmitted.\n'+result.frame;
-  } catch(error) {field('result').textContent=error.message;}
-  finally {button.disabled=false; restrictControls();}
-}));
+refresh(); setInterval(refresh,2000);
 </script>
-</html>
