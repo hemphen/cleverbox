@@ -1,97 +1,64 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-// Host-only FIFO/queue facade for the production radio worker. No RF driver runs.
-#include <cassert>
-#include <mutex>
-#include <sys/random.h>
+// Host stand-ins for FreeRTOS and RadioLib used by radio_transport.cpp. The
+// CC1101 is a FIFO model fed by host/simulation.cpp.
 #include <cstdint>
 #include <cstring>
-#include <cstdlib>
 #include <vector>
-#include <deque>
 #include "esp_err.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "board.h"
-using SemaphoreHandle_t = std::mutex *;
-inline constexpr int portMAX_DELAY = -1;
-inline SemaphoreHandle_t xSemaphoreCreateMutex() { static std::mutex m; return &m; }
-inline int xSemaphoreTake(SemaphoreHandle_t m, int) { m->lock(); return 1; }
-inline int xSemaphoreGive(SemaphoreHandle_t m) { m->unlock(); return 1; }
-using portMUX_TYPE = int;
-#define portMUX_INITIALIZER_UNLOCKED 0
-#define portENTER_CRITICAL(lock) assert(++*(lock) == 1)
-#define portEXIT_CRITICAL(lock) assert(--*(lock) == 0)
+
 constexpr int pdPASS = 1;
 inline int xTaskCreate(void (*)(void *), const char *, int, void *, int, void *) { return pdPASS; }
-inline void vTaskDelete(void *) {}
 inline void vTaskDelay(int) {}
-using QueueHandle_t = int;
-inline std::deque<std::vector<uint8_t>> queued;
-inline size_t item_size, queue_capacity;
-inline QueueHandle_t xQueueCreate(int capacity, size_t n) { item_size = n; queue_capacity = capacity; queued.clear(); return 1; }
-inline int xQueueSend(QueueHandle_t, const void *p, int) {
-    if (queued.size() == queue_capacity) return 0;
-    auto b = static_cast<const uint8_t *>(p); queued.emplace_back(b, b + item_size); return pdPASS;
-}
-inline unsigned uxQueueMessagesWaiting(QueueHandle_t) { return queued.size(); }
-inline int xQueueReceive(QueueHandle_t, void *p, int) {
-    if (queued.empty()) return 0;
-    memcpy(p, queued.front().data(), item_size); queued.pop_front(); return pdPASS;
-}
+
 constexpr uint32_t RADIOLIB_NC = UINT32_MAX;
-constexpr int RADIOLIB_ERR_TX_TIMEOUT = -5;
-constexpr int RADIOLIB_ERR_NONE = 0, RADIOLIB_ENCODING_NRZ = 0;
-constexpr int RADIOLIB_CC1101_REG_PKTCTRL0 = 0, RADIOLIB_CC1101_REG_RXBYTES = 1,
-              RADIOLIB_CC1101_REG_FIFO = 2, RADIOLIB_CC1101_REG_MDMCFG2 = 3,
-              RADIOLIB_CC1101_REG_PKTCTRL1 = 4, RADIOLIB_CC1101_REG_TXBYTES = 5, RADIOLIB_CC1101_REG_MARCSTATE = 6, RADIOLIB_CC1101_REG_IOCFG2 = 7;
-constexpr int RADIOLIB_CC1101_MARC_STATE_IDLE = 1, RADIOLIB_CC1101_MARC_STATE_TXFIFO_UNDERFLOW = 0x16;
-constexpr int RADIOLIB_CC1101_GDOX_HIGH_Z = 0x2e;
+constexpr int RADIOLIB_ENCODING_NRZ = 0;
+constexpr int RADIOLIB_CC1101_REG_PKTCTRL0 = 0x08, RADIOLIB_CC1101_REG_PKTCTRL1 = 0x07,
+              RADIOLIB_CC1101_REG_MDMCFG2 = 0x12, RADIOLIB_CC1101_REG_RXBYTES = 0x3b,
+              RADIOLIB_CC1101_REG_FIFO = 0x3f;
+
 inline std::vector<uint8_t> fifo;
 inline size_t fifo_used;
 void simulated_transmit(const uint8_t *, size_t);
-inline int injected_begin, injected_receive, injected_tx, injected_spi;
-class IdfHal { public:
-    int GpioModeInput = 0, failure = 0;
-    bool stx = false;
-    bool tx_started() const { return stx; }
-    uint32_t digitalRead(int pin) { assert(pin==RADIO_GDO2); return 0; }
-    void pinMode(int, int) {}
-    void begin_operation(unsigned) { failure = 0; stx = false; }
-    int error() { return failure; }
-    void record_error(int e) { if (!failure) failure=e; }
+inline int injected_init, injected_receive, injected_transmit; // RadioLib-style error codes.
+
+class EspHal {
+public:
+    EspHal(int, int, int) {}
+    const uint32_t GpioModeInput = 0;
+    void pinMode(uint32_t, uint32_t) {}
 };
-inline IdfHal *host_hal;
 class Module {
 public:
-    Module(IdfHal *h, int, int, uint32_t, int) { host_hal=h; }
+    Module(EspHal *, int, int, uint32_t, int) {}
     int SPIsetRegValue(int, int, int, int) { return 0; }
     uint8_t SPIreadRegister(int reg) {
-        if (injected_spi) { host_hal->record_error(injected_spi); return 0; }
-        if (reg == (RADIOLIB_CC1101_REG_RXBYTES | 0x40)) return fifo.size() - fifo_used;
-        if (reg == (RADIOLIB_CC1101_REG_TXBYTES | 0x40)) return 0;
-        if (reg == (RADIOLIB_CC1101_REG_MARCSTATE | 0x40)) return 1;
-        assert(reg == RADIOLIB_CC1101_REG_FIFO && fifo_used < fifo.size());
-        return fifo[fifo_used++];
+        if (reg == (RADIOLIB_CC1101_REG_RXBYTES | 0x40)) return (uint8_t)(fifo.size() - fifo_used);
+        return fifo_used < fifo.size() ? fifo[fifo_used++] : 0;
     }
     void SPIreadRegisterBurst(int, size_t n, uint8_t *out) {
-        assert(fifo_used + n <= fifo.size()); memcpy(out, fifo.data() + fifo_used, n); fifo_used += n;
+        memcpy(out, fifo.data() + fifo_used, n); fifo_used += n;
     }
 };
 class CC1101 {
 public:
     explicit CC1101(Module *) {}
-    int standby() { return 0; }
-    int fixedPacketLengthMode(size_t) { return 0; }
-    int startTransmit(const uint8_t *p, size_t n) { host_hal->stx=true; simulated_transmit(p, n); return injected_tx; }
-    int finishTransmit() { return 0; }
-    int startReceive() { fifo.clear(); fifo_used = 0; return injected_receive; }
-    int begin(double, double, double, double, int, int) { if (injected_spi) host_hal->record_error(injected_spi); return injected_begin; }
-    int getChipVersion() { return -1; } // No physical chip.
+    int begin(double, double, double, double, int, int) { return injected_init; }
+    int getChipVersion() { return 0x14; }
     int setPreambleLength(int, int) { return 0; }
     int setEncoding(int) { return 0; }
     int setSyncWord(int, int) { return 0; }
     int setCrcFiltering(bool) { return 0; }
     int disableAddressFiltering() { return 0; }
+    int standby() { return 0; }
+    int fixedPacketLengthMode(size_t) { return 0; }
+    int startReceive() { fifo.clear(); fifo_used = 0; return injected_receive; }
+    int transmit(const uint8_t *p, size_t n) {
+        if (injected_transmit) return injected_transmit;
+        simulated_transmit(p, n); return 0;
+    }
 };
-
-inline uint32_t esp_random() { uint32_t n; if (getrandom(&n, sizeof(n), 0) != sizeof(n)) std::abort(); return n; }

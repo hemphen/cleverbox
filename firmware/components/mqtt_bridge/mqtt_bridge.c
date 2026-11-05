@@ -1,496 +1,359 @@
 // SPDX-License-Identifier: MIT
+// MQTT topics, commands, snapshots and Home Assistant discovery. See docs/mqtt.md.
 #include "mqtt_bridge.h"
-#include "mqtt_discovery.h"
 #include "radio_transport.h"
-#include "network_setup.h"
+#include "device_store.h"
 #include "device_time.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "cJSON.h"
-#include "nvs.h"
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-// One MQTT task owns settings, client calls, routing and publication. The shared
-// lock protects only status/action/event copies, never NVS, JSON or network I/O.
 static mqtt_client_ops client;
-static mqtt_settings settings, candidate;
+static SemaphoreHandle_t mutex;
+// Guarded by mutex: settings, status and the flags below.
+static mqtt_settings settings;
 static mqtt_bridge_status status;
-static bool action_pending, link_connected, running, reset_requested;
-static int discovery_action;
-static bool discovery_records;
-static unsigned link_epoch, owner_epoch;
-static int64_t retry_ms, state_ms;
-static int subscription_id, suback_id, suback_qos;
-static bool suback_received;
-static int64_t subscription_deadline, suback_ms;
-static char base[64], availability[96], session[33];
-static uint64_t high_water, next_cookie;
-typedef struct { char topic[MQTT_TOPIC_BYTES], data[MQTT_PAYLOAD_BYTES+1]; size_t used, total; unsigned epoch; bool retained; } input;
-static input assembly, inputs[MQTT_INPUT_SLOTS];
-static size_t input_head, input_count;
-typedef struct {
-    uint32_t id; uint64_t cookie, request_id;
-    char session[33], command_token[33]; rf_control_status last; int error; bool published;
-} tracking;
-static tracking tracked[CLEVERBOX_RADIATOR_CAPACITY];
-// One single-use capability per configured identity, not an evicting replay cache.
-// Numeric clients retain their bridge-wide high-water contract. Token clients
-// let this owner allocate from that same sequence atomically at consumption.
-typedef struct { uint32_t id; char token[33], admission[512]; } command_permit;
-static command_permit permits[CLEVERBOX_RADIATOR_CAPACITY];
-static command_permit *permit_for(uint32_t id) {
-    for (size_t i = 0; i < CLEVERBOX_RADIATOR_CAPACITY; ++i)
-        if (permits[i].id == id) return &permits[i];
-    for (size_t i = 0; i < CLEVERBOX_RADIATOR_CAPACITY; ++i)
-        if (!permits[i].id) {
-            permits[i].id = id; client.nonce(permits[i].token); return &permits[i];
-        }
-    return NULL;
+static bool restart, replay;
+static int64_t next_snapshot;
+// Bridge task only.
+static bool running;
+static uint32_t published_version;
+static uint32_t advertised[CLEVERBOX_RADIATOR_CAPACITY]; // Discovery configs on the broker.
+static size_t advertised_count;
+static radiator_record records[CLEVERBOX_RADIATOR_CAPACITY];
+static char base[48], availability[64];
+
+static void take(void) { xSemaphoreTake(mutex, portMAX_DELAY); }
+static void give(void) { xSemaphoreGive(mutex); }
+
+static void update_status(void)
+{
+    status.configured = settings.host[0] != 0;
+    status.enabled = settings.enabled; status.discovery = settings.discovery; status.port = settings.port;
+    strcpy(status.host, settings.host); strcpy(status.username, settings.username);
 }
-static int64_t now(void) { return esp_timer_get_time()/1000; }
-static void update_settings_status(void) {
-    status.configured = settings.configured; status.enabled = settings.enabled;
-    strcpy(status.host, settings.host); strcpy(status.username, settings.username); status.port = settings.port;
-}
-void mqtt_bridge_init(mqtt_client_ops ops, const char bridge_id[13]) {
-    client = ops; memset(&settings, 0, sizeof(settings)); memset(&status, 0, sizeof(status));
-    memset(permits, 0, sizeof(permits)); memset(tracked, 0, sizeof(tracked)); memset(&assembly, 0, sizeof(assembly));
-    action_pending = link_connected = running = reset_requested = false; link_epoch = owner_epoch = 0;
-    input_head = input_count = 0; high_water = next_cookie = 0; retry_ms = state_ms = 0; session[0] = 0;
-    subscription_id = suback_id = suback_qos = 0; suback_received = false;
-    subscription_deadline = suback_ms = 0;
+
+void mqtt_bridge_init(mqtt_client_ops ops, const char bridge_id[13])
+{
+    client = ops;
+    if (!mutex) mutex = xSemaphoreCreateMutex();
+    memset(&status, 0, sizeof(status));
     strcpy(status.bridge_id, bridge_id);
     snprintf(base, sizeof(base), "cleverbox/v1/%s", bridge_id);
     snprintf(availability, sizeof(availability), "%s/availability", base);
-    esp_err_t err = mqtt_store_load(&settings);
-    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) status.config_error = err;
-    update_settings_status(); mqtt_discovery_init(bridge_id);
-    mqtt_discovery_status(&status); discovery_records = mqtt_discovery_has_records();
+    struct { uint8_t version; mqtt_settings s; } stored = {0};
+    size_t size = sizeof(stored);
+    if (store_load("mqtt", &stored, &size) == ESP_OK && size == sizeof(stored) && stored.version == 1 &&
+        mqtt_settings_valid(&stored.s)) settings = stored.s;
+    else memset(&settings, 0, sizeof(settings));
+    update_status();
+    restart = true;
+    running = false; advertised_count = 0; published_version = 0;
 }
-static void update_discovery_status(void) {
-    mqtt_bridge_status d = {0}; mqtt_discovery_status(&d);
-    bool records = mqtt_discovery_has_records();
-    mqtt_platform_lock(); discovery_records = records; status.discovery_enabled = d.discovery_enabled;
-    status.discovery_error = d.discovery_error; status.discovery_pending = d.discovery_pending; mqtt_platform_unlock();
+
+void mqtt_bridge_get(mqtt_bridge_status *out) { take(); *out = status; give(); }
+
+static bool printable(const char *s)
+{
+    for (; *s; ++s) if ((unsigned char)*s < 32 || (unsigned char)*s > 126) return false;
+    return true;
 }
-void mqtt_bridge_get(mqtt_bridge_status *out) { mqtt_platform_lock(); *out = status; mqtt_platform_unlock(); }
-esp_err_t mqtt_bridge_configure(const mqtt_settings *s) {
-    if (!mqtt_settings_valid(s) || !s->configured) return ESP_ERR_INVALID_ARG;
-    mqtt_platform_lock();
-    esp_err_t err = status.pending || (discovery_records && settings.configured &&
-        (strcmp(settings.host, s->host) || settings.port != s->port)) ? ESP_ERR_INVALID_STATE : ESP_OK;
-    if (err == ESP_OK) { candidate = *s; action_pending = status.pending = true; }
-    mqtt_platform_unlock(); return err;
+
+bool mqtt_settings_valid(const mqtt_settings *s)
+{
+    if (!s->host[0]) return true; // Not configured.
+    if (!s->port || !memchr(s->host, 0, sizeof(s->host)) || !memchr(s->username, 0, sizeof(s->username)) ||
+        !memchr(s->password, 0, sizeof(s->password)) || !printable(s->username) || !printable(s->password)) return false;
+    for (const char *p = s->host; *p; ++p)
+        if (!isalnum((unsigned char)*p) && *p != '.' && *p != '-') return false; // Hostname or IPv4.
+    return true;
 }
-esp_err_t mqtt_bridge_action(const char *action) {
+
+// Discovery changes keep the connection; broker changes restart the client.
+static esp_err_t save(const mqtt_settings *s, bool reconnect)
+{
+    struct { uint8_t version; mqtt_settings s; } stored = {1, *s};
+    esp_err_t e = s->host[0] ? store_save("mqtt", &stored, sizeof(stored)) : store_erase("mqtt");
+    take();
+    settings = *s; update_status(); status.error = e;
+    restart |= reconnect;
+    replay = true;
+    give();
+    return e;
+}
+
+esp_err_t mqtt_bridge_configure(const mqtt_settings *s)
+{
+    if (!s->host[0] || !mqtt_settings_valid(s)) return ESP_ERR_INVALID_ARG;
+    take(); mqtt_settings next = *s; next.discovery = settings.discovery; give();
+    return save(&next, true);
+}
+
+esp_err_t mqtt_bridge_action(const char *action)
+{
+    take(); mqtt_settings next = settings; give();
     if (!action) return ESP_ERR_INVALID_ARG;
-    mqtt_platform_lock(); esp_err_t err = ESP_OK;
-    if (status.pending) err = ESP_ERR_INVALID_STATE;
-    else if (!strcmp(action, "discovery_enable") || !strcmp(action, "discovery_disable"))
-        discovery_action = !strcmp(action, "discovery_enable") ? 1 : -1;
-    else if (!strcmp(action, "forget")) {
-        if (discovery_records) err = ESP_ERR_INVALID_STATE;
-        else memset(&candidate, 0, sizeof(candidate));
+    bool discovery = !strncmp(action, "discovery_", 10);
+    if (!strcmp(action, "forget")) memset(&next, 0, sizeof(next));
+    else if (!strcmp(action, "discovery_enable")) next.discovery = true;
+    else if (!strcmp(action, "discovery_disable")) next.discovery = false;
+    else if ((!strcmp(action, "enable") || !strcmp(action, "disable")) && next.host[0]) next.enabled = !strcmp(action, "enable");
+    else return ESP_ERR_INVALID_ARG;
+    return save(&next, !discovery);
+}
+
+static void publish_json(const char *suffix, cJSON *j, int qos, bool retain)
+{
+    char topic[96], *payload = cJSON_PrintUnformatted(j);
+    cJSON_Delete(j);
+    snprintf(topic, sizeof(topic), "%s/%s", base, suffix);
+    if (payload) client.publish(topic, payload, qos, retain);
+    cJSON_free(payload);
+}
+
+static void address_text(const uint8_t a[4], char out[9])
+{
+    snprintf(out, 9, "%02X%02X%02X%02X", a[0], a[1], a[2], a[3]);
+}
+
+void mqtt_bridge_connected(bool connected)
+{
+    if (connected) {
+        char topic[96];
+        snprintf(topic, sizeof(topic), "%s/radiators/+/set", base);
+        client.subscribe(topic);
+        client.subscribe("homeassistant/status");
+        client.publish(availability, "online", 1, true);
     }
-    else if ((!strcmp(action, "enable") || !strcmp(action, "disable")) && settings.configured) {
-        candidate = settings; candidate.enabled = !strcmp(action, "enable");
-    } else err = ESP_ERR_INVALID_ARG;
-    if (err == ESP_OK) action_pending = status.pending = true;
-    mqtt_platform_unlock(); return err;
+    take();
+    status.connected = connected;
+    if (connected) { replay = true; next_snapshot = 0; }
+    give();
 }
-void mqtt_bridge_client_error(esp_err_t error) {
-    mqtt_platform_lock(); status.client_error = error; mqtt_platform_unlock();
-}
-void mqtt_bridge_connection(bool connected) {
-    mqtt_platform_lock();
-    link_connected = connected; ++link_epoch;
-    // Latch loss even if CONNECTED follows before the owner's next tick.
-    // Clean sessions do not clear the client's unacknowledged QoS1 outbox.
-    if (!connected) reset_requested = true;
-    if (connected) status.client_error = ESP_OK;
-    status.connected = false; status.session[0] = 0;
-    status.broker_connected = connected; status.subscription_pending = false;
-    subscription_id = 0; suback_received = false;
-    input_head = input_count = 0; assembly.total = 0;
-    mqtt_platform_unlock();
-}
-void mqtt_bridge_suback(int message_id, int granted_qos) {
-    mqtt_platform_lock();
-    if (link_connected && status.subscription_pending && message_id > 0 && message_id <= 65535 &&
-        (!subscription_id || message_id == subscription_id)) {
-        // subscribe() may yield to the client callback before it returns its ID.
-        // Preserve that early ACK; the owner still verifies its exact ID/epoch.
-        suback_id = message_id; suback_qos = granted_qos;
-        suback_ms = now(); suback_received = true;
-    }
-    mqtt_platform_unlock();
-}
-void mqtt_bridge_input(const char *topic, size_t topic_len, const char *data,
-                       size_t length, size_t offset, size_t total, bool retained) {
-    mqtt_platform_lock();
-    bool valid = link_connected && data && total && total <= MQTT_PAYLOAD_BYTES && offset <= total && length <= total-offset;
-    if (!offset) {
-        assembly.total = 0;
-        valid = valid && topic && topic_len && topic_len < MQTT_TOPIC_BYTES && !memchr(topic, 0, topic_len);
-        if (valid) {
-            memcpy(assembly.topic, topic, topic_len); assembly.topic[topic_len] = 0;
-            assembly.used = 0; assembly.total = total; assembly.epoch = link_epoch; assembly.retained = retained;
-        }
-    } else valid = valid && assembly.total == total && assembly.used == offset && assembly.epoch == link_epoch;
-    if (valid && !memchr(data, 0, length)) {
-        memcpy(assembly.data+offset, data, length); assembly.used = offset+length;
-        assembly.retained |= retained;
-        if (assembly.used == total) {
-            assembly.data[total] = 0;
-            if (input_count < MQTT_INPUT_SLOTS) {
-                inputs[(input_head+input_count)%MQTT_INPUT_SLOTS] = assembly; ++input_count;
-            } else ++status.dropped_input;
-            assembly.total = 0;
-        }
-    } else { assembly.total = 0; ++status.dropped_input; }
-    mqtt_platform_unlock();
-}
-static bool publish(const char *suffix, const char *payload, bool retain) {
-    char topic[MQTT_TOPIC_BYTES]; snprintf(topic, sizeof(topic), "%s/%s", base, suffix);
-    return client.publish(topic, payload, retain);
-}
-static bool json_publish(const char *suffix, cJSON *j) {
-    char payload[2048]; bool ok = cJSON_PrintPreallocated(j, payload, sizeof(payload), false);
-    cJSON_Delete(j); return ok && publish(suffix, payload, false);
-}
-static cJSON *envelope(const char *s, uint64_t request_id) {
-    cJSON *j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "session", s);
-    if (request_id) cJSON_AddNumberToObject(j, "request_id", (double)request_id);
-    return j;
-}
-static void admission(uint32_t id, uint64_t request_id, const char *token, const char *reason, int error) {
-    cJSON *j = envelope(session, request_id); char suffix[64];
-    if (token) cJSON_AddStringToObject(j, "command_token", token);
-    cJSON_AddStringToObject(j, "stage", "admission");
-    cJSON_AddBoolToObject(j, "accepted", reason == NULL);
-    cJSON_AddStringToObject(j, "reason", reason ? reason : "accepted"); cJSON_AddNumberToObject(j, "error", error);
-    if (id) snprintf(suffix, sizeof(suffix), "radiators/%u/result", (unsigned)id);
-    else strcpy(suffix, "errors");
-    if (id) {
-        radiator_record d;
-        command_permit *p = radio_device_status(id, &d) == ESP_OK ? permit_for(id) : NULL;
-        if (p) cJSON_PrintPreallocated(j, p->admission, sizeof(p->admission), false);
-    }
-    json_publish(suffix, j);
-}
-static bool number(cJSON *j, const char *key, double low, double high, double *out) {
+
+static bool integer(cJSON *j, const char *key, double low, double high, double *out)
+{
     cJSON *v = cJSON_GetObjectItemCaseSensitive(j, key);
-    if (!cJSON_IsNumber(v) || !isfinite(v->valuedouble) || v->valuedouble < low ||
-        v->valuedouble > high || floor(v->valuedouble) != v->valuedouble) return false;
-    *out = v->valuedouble; return true;
+    if (!cJSON_IsNumber(v) || v->valuedouble < low || v->valuedouble > high ||
+        floor(v->valuedouble) != v->valuedouble) return false;
+    *out = v->valuedouble;
+    return true;
 }
-// Commands/configuration are flat objects. Bound parser recursion, reject NUL
-// escapes (cJSON truncates them), arrays, nested objects and duplicate keys.
-bool mqtt_json_flat(const char *p) {
-    bool quoted = false; unsigned objects = 0;
-    for (; *p; ++p) {
-        if (*p == '\\' && quoted) {
-            if (!strncmp(p, "\\u0000", 6)) return false;
-            if (!p[1]) return false;
-            ++p; continue;
-        }
-        if (*p == '"') quoted = !quoted;
-        if (!quoted && (*p == '[' || (*p == '{' && ++objects > 1))) return false;
+
+// Command: {"mode":0..3,"centi_c":0..3000[,"request_id":N]} on B/radiators/<id>/set.
+void mqtt_bridge_message(const char *topic, const char *payload, size_t length, bool retained)
+{
+    if (!strcmp(topic, "homeassistant/status")) {
+        if (length == 6 && !memcmp(payload, "online", 6)) { take(); replay = true; next_snapshot = 0; give(); }
+        return;
     }
-    return !quoted && objects == 1;
+    size_t n = strlen(base);
+    char *end = NULL;
+    unsigned long id = 0;
+    if (!strncmp(topic, base, n) && !strncmp(topic + n, "/radiators/", 11) && isdigit((unsigned char)topic[n + 11]))
+        id = strtoul(topic + n + 11, &end, 10);
+    cJSON *result = cJSON_CreateObject();
+    if (!id || id > UINT32_MAX || strcmp(end, "/set")) {
+        cJSON_AddBoolToObject(result, "accepted", false);
+        cJSON_AddStringToObject(result, "reason", "invalid_topic");
+        cJSON_AddStringToObject(result, "topic", topic);
+        publish_json("errors", result, 0, false);
+        return;
+    }
+    cJSON *j = length <= MQTT_PAYLOAD_BYTES ? cJSON_ParseWithLength(payload, length) : NULL;
+    double mode, centi_c, request_id = 0;
+    bool id_ok = !cJSON_HasObjectItem(j, "request_id") || integer(j, "request_id", 1, 9007199254740991.0, &request_id);
+    const char *reason;
+    // A retained command would be replayed at every reconnect and boot.
+    if (retained) reason = "retained_command";
+    else if (!id_ok || !integer(j, "mode", 0, 3, &mode) || !integer(j, "centi_c", 0, 3000, &centi_c)) reason = "invalid_request";
+    else {
+        esp_err_t e = radio_command((uint32_t)id, (rf_mode)mode, (int)centi_c, (uint64_t)request_id);
+        reason = e == ESP_OK ? "accepted" : radio_error_name(e);
+    }
+    cJSON_Delete(j);
+    if (request_id) cJSON_AddNumberToObject(result, "request_id", request_id);
+    cJSON_AddBoolToObject(result, "accepted", !strcmp(reason, "accepted"));
+    cJSON_AddStringToObject(result, "reason", reason);
+    char suffix[48];
+    snprintf(suffix, sizeof(suffix), "radiators/%lu/result", id);
+    publish_json(suffix, result, 0, false);
 }
-static void route(const input *in) {
-    size_t n = strlen(base); uint32_t id = 0;
-    if (!strncmp(in->topic, base, n) && !strncmp(in->topic+n, "/radiators/", 11)) {
-        const char *p = in->topic+n+11; char *end; unsigned long long v = strtoull(p, &end, 10);
-        if (*p >= '1' && *p <= '9' && v <= UINT32_MAX && !strcmp(end, "/set")) id = (uint32_t)v;
-    }
-    if (!id) { admission(0, 0, NULL, "invalid_topic", ESP_ERR_INVALID_ARG); return; }
-    cJSON *j = mqtt_json_flat(in->data) ? cJSON_ParseWithOpts(in->data, NULL, true) : NULL;
-    double seq = 0, mode = 0, target = 0;
-    bool has_seq = number(j, "request_id", 1, 9007199254740991.0, &seq);
-    const char *s = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(j, "session"));
-    const char *token = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(j, "command_token"));
-    bool token_form = cJSON_HasObjectItem(j, "command_token");
-    const char *reason = NULL; esp_err_t err = ESP_ERR_INVALID_ARG;
-    command_permit *permit = NULL;
-    radiator_record device;
-    bool known = radio_device_status(id, &device) == ESP_OK;
-    if (in->retained) reason = "retained_command";
-    else if (!s || strcmp(s, session)) reason = "session_mismatch";
-    else if (token_form) {
-        if (!token || strlen(token) != 32 || cJSON_HasObjectItem(j, "request_id")) reason = "invalid_fields";
-        else if (!known) reason = "unknown_identity";
-        else if (!(permit = permit_for(id)) || strcmp(token, permit->token)) reason = "invalid_command_token";
-        else if (high_water == 9007199254740991ULL) reason = "request_id_exhausted";
-        else { seq = (double)(high_water+1); has_seq = true; }
-    } else if (!has_seq) reason = "invalid_request_id";
-    else if ((uint64_t)seq <= high_water) reason = "duplicate_or_out_of_order";
-    if (!reason) {
-        // Consume every new request ID, including rejected requests. No replay,
-        // cache eviction or implicit retry. IDs are global within this session.
-        high_water = (uint64_t)seq;
-        // A valid identity consumes its permit even on busy/invalid/prerequisite
-        // rejection. Old UI submissions cannot become actionable after recovery.
-        if (known && (permit = permit_for(id))) client.nonce(permit->token);
-        state_ms = 0;
-        if (!cJSON_IsObject(j) || cJSON_GetArraySize(j) != 4 ||
-            !number(j, "mode", 0, 3, &mode) || !number(j, "centi_c", 0, 3000, &target)) reason = "invalid_fields";
-        else {
-            radiator_record d;
-            if (radio_device_status(id, &d) != ESP_OK) reason = "unknown_identity";
-            else {
-                rf_control_request request = {0}; request.mode = (rf_mode)mode; request.centi_c = (int)target;
-                uint64_t cookie = ++next_cookie;
-                err = radio_control_start_device_tracked(id, &request, cookie);
-                if (err == ESP_OK) {
-                    tracking *t = NULL;
-                    for (size_t i = 0; i < CLEVERBOX_RADIATOR_CAPACITY; ++i)
-                        if (tracked[i].id == id) { t = &tracked[i]; break; }
-                    if (!t) for (size_t i = 0; i < CLEVERBOX_RADIATOR_CAPACITY; ++i)
-                        if (!tracked[i].id) { t = &tracked[i]; break; }
-                    // Removed identities are pruned by observations before routing.
-                    if (t) { memset(t, 0, sizeof(*t)); t->id = id; t->cookie = cookie; t->request_id = (uint64_t)seq; strcpy(t->session, session); if (token) strcpy(t->command_token, token); }
-                } else if (err == RADIO_ERR_LISTEN_ONLY) reason = "listen_only";
-                else if (err == RADIO_ERR_TIME_UNAVAILABLE) reason = "time_unavailable";
-                else if (err == ESP_ERR_INVALID_ARG) reason = "invalid_settings_or_relationship";
-                else reason = "busy_or_unavailable";
-            }
-        }
-    }
-    admission(id, has_seq ? (uint64_t)seq : 0, token && strlen(token) == 32 ? token : NULL, reason, reason ? err : ESP_OK); cJSON_Delete(j);
+
+static const char *phase_name(const radiator_record *d)
+{
+    return d->command_queued ? "queued" : rf_control_phase_name(d->command.phase);
 }
-static void results(bool force) {
-    for (size_t i = 0; i < CLEVERBOX_RADIATOR_CAPACITY; ++i) {
-        radiator_record d;
-        if (permits[i].id && radio_device_status(permits[i].id, &d) != ESP_OK)
-            memset(&permits[i], 0, sizeof(permits[i]));
-    }
-    for (size_t i = 0; i < CLEVERBOX_RADIATOR_CAPACITY; ++i) {
-        tracking *t = &tracked[i]; if (!t->id) continue;
-        radiator_record d;
-        if (radio_device_status(t->id, &d) != ESP_OK) { memset(t, 0, sizeof(*t)); continue; }
-        if (d.result_cookie != t->cookie) continue;
-        rf_control_status *r = &d.tracked_result;
-        if (!force && t->published && t->last.phase == r->phase && t->last.attempts == r->attempts && t->error == d.tracked_error) continue;
-        cJSON *j = envelope(t->session, t->request_id); char suffix[64];
-        if (t->command_token[0]) cJSON_AddStringToObject(j, "command_token", t->command_token);
-        cJSON_AddStringToObject(j, "stage", "delivery"); cJSON_AddStringToObject(j, "phase", rf_control_phase_name(r->phase));
-        cJSON_AddNumberToObject(j, "attempts", r->attempts); cJSON_AddNumberToObject(j, "error", d.tracked_error);
-        cJSON_AddBoolToObject(j, "pending", rf_control_active(r));
-        cJSON_AddNumberToObject(j, "requested_centi_c", r->centi_c); cJSON_AddNumberToObject(j, "requested_mode", r->mode);
-        if (r->phase == RF_CONTROL_MATCHED) cJSON_AddNumberToObject(j, "match_age_ms", now()-r->matched_ms);
-        snprintf(suffix, sizeof(suffix), "radiators/%u/result", (unsigned)t->id);
-        if (json_publish(suffix, j)) { t->last = *r; t->error = d.tracked_error; t->published = true; }
-    }
-}
-static void observations(void) {
-    radiator_record d; int64_t time = now();
+
+static void publish_snapshots(int64_t now, size_t count)
+{
     radio_status radio = radio_transport_status();
-    unsigned clock; int64_t sampled;
-    bool time_ready=device_time_command_clock(&clock,&sampled);
-    cJSON *bridge = envelope(session, 0);
-    cJSON_AddNumberToObject(bridge, "uptime_ms", (double)time);
-    cJSON_AddNumberToObject(bridge, "request_id_floor", (double)high_water);
-    cJSON_AddNumberToObject(bridge, "stale_after_ms", RF_REPORT_STALE_MS);
-    cJSON_AddStringToObject(bridge,"radio_health",radio_health_name(radio.health));
-    cJSON_AddBoolToObject(bridge,"radio_ready",radio.ready);
-    cJSON_AddBoolToObject(bridge,"control_ready",radio.ready && radio.control_enabled && !radio.mode_pending && !radio.mode_error && !radio.registry_error && !radio.exchange_id && !radio.mutation_pending && time_ready);
-    cJSON_AddStringToObject(bridge,"radio_failure_stage",radio_failure_name(radio.failure_stage));
-    cJSON_AddNumberToObject(bridge,"radio_failure_code",radio.failure_code);
-    cJSON_AddNumberToObject(bridge,"recovery_attempt",radio.recovery_attempt);
-    cJSON_AddNumberToObject(bridge,"recovery_attempts",radio.recovery_attempts);
-    cJSON_AddNumberToObject(bridge,"recovery_successes",radio.recovery_successes);
-    cJSON_AddBoolToObject(bridge,"retry_exhausted",radio.health==RADIO_FAULTED);
-    if (radio.retry_at_ms) cJSON_AddNumberToObject(bridge,"retry_in_ms",(double)(radio.retry_at_ms>time?radio.retry_at_ms-time:0));
-    else cJSON_AddNullToObject(bridge,"retry_in_ms");
-    json_publish("bridge", bridge);
-    for (size_t i = 0; radio_device_at(i, &d) == ESP_OK; ++i) {
-        cJSON *j = envelope(session, 0); char suffix[64];
-        command_permit *permit = permit_for(d.id);
-        if (permit) cJSON_AddStringToObject(j, "command_token", permit->token);
-        cJSON_AddNumberToObject(j, "id", d.id); cJSON_AddStringToObject(j, "name", d.name);
-        cJSON_AddBoolToObject(j,"radio_ready",radio.ready);
-        cJSON_AddStringToObject(j,"radio_health",radio_health_name(radio.health));
-        cJSON_AddBoolToObject(j, "available", d.has_paired_report);
-        // Conservative 15-second headroom: HA expiry cannot carry a reported
-        // fresh value beyond the five-minute threshold between snapshots.
-        cJSON_AddBoolToObject(j, "fresh", radio.ready && d.has_paired_report && time-d.paired_report_time_us/1000 + 15000 < RF_REPORT_STALE_MS);
-        if (permit && permit->admission[0]) cJSON_AddItemToObject(j, "admission", cJSON_Parse(permit->admission));
-        cJSON *delivery = cJSON_AddObjectToObject(j, "delivery");
-        for (size_t k = 0; k < CLEVERBOX_RADIATOR_CAPACITY; ++k) {
-            tracking *t = &tracked[k];
-            if (t->id != d.id || t->cookie != d.result_cookie) continue;
-            cJSON_AddStringToObject(delivery, "session", t->session);
-            cJSON_AddNumberToObject(delivery, "request_id", (double)t->request_id);
-            if (t->command_token[0]) cJSON_AddStringToObject(delivery, "command_token", t->command_token);
-            cJSON_AddStringToObject(delivery, "phase", rf_control_phase_name(d.tracked_result.phase));
-            cJSON_AddNumberToObject(delivery, "error", d.tracked_error);
-            cJSON_AddNumberToObject(delivery, "attempts", d.tracked_result.attempts);
-            cJSON_AddNumberToObject(delivery, "requested_centi_c", d.tracked_result.centi_c);
-            cJSON_AddNumberToObject(delivery, "requested_mode", d.tracked_result.mode);
-        }
-        if (d.has_paired_report) {
-            int64_t age = time-d.paired_report_time_us/1000;
+    device_time_status time;
+    device_time_get(&time);
+    cJSON *bridge = cJSON_CreateObject();
+    cJSON_AddNumberToObject(bridge, "uptime_ms", (double)now);
+    cJSON_AddBoolToObject(bridge, "radio_ready", radio.ready);
+    cJSON_AddStringToObject(bridge, "radio_error_stage", radio.error_stage);
+    cJSON_AddNumberToObject(bridge, "radio_error", radio.error);
+    cJSON_AddBoolToObject(bridge, "time_usable", time.usable);
+    publish_json("bridge", bridge, 0, false);
+    for (size_t i = 0; i < count; ++i) {
+        const radiator_record *d = &records[i];
+        cJSON *j = cJSON_CreateObject();
+        char text[9], suffix[48];
+        cJSON_AddNumberToObject(j, "id", d->id);
+        cJSON_AddStringToObject(j, "name", d->name);
+        address_text(d->radiator, text); cJSON_AddStringToObject(j, "radiator", text);
+        cJSON_AddBoolToObject(j, "paired", radiator_paired(d));
+        cJSON_AddBoolToObject(j, "radio_ready", radio.ready);
+        cJSON_AddBoolToObject(j, "available", d->has_report);
+        int64_t age = now - d->report_ms;
+        // 15 s headroom: HA expires snapshots after 15 s, so a value published
+        // as fresh is never shown past the five-minute stale threshold.
+        cJSON_AddBoolToObject(j, "fresh", radio.ready && d->has_report && age + 15000 < RF_REPORT_STALE_MS);
+        if (d->has_report) {
             cJSON_AddNumberToObject(j, "age_ms", (double)age);
             cJSON_AddBoolToObject(j, "stale", age >= RF_REPORT_STALE_MS);
-            cJSON_AddNumberToObject(j, "mode", d.paired_report.mode);
-            if (d.paired_report.temperature_available) cJSON_AddNumberToObject(j, "temperature_centi_c", d.paired_report.temperature_centi_c);
-            if (d.paired_report.target_available) cJSON_AddNumberToObject(j, "target_centi_c", d.paired_report.target_centi_c);
+            address_text(d->report.destination, text); cJSON_AddStringToObject(j, "controller", text);
+            cJSON_AddNumberToObject(j, "mode", d->report.mode);
+            if (d->report.temperature_available) cJSON_AddNumberToObject(j, "temperature_centi_c", d->report.temperature_centi_c);
+            if (d->report.target_available) cJSON_AddNumberToObject(j, "target_centi_c", d->report.target_centi_c);
         }
-        snprintf(suffix, sizeof(suffix), "radiators/%u/state", (unsigned)d.id); json_publish(suffix, j);
-    }
-    // Read-only address snapshots have no token, request state or command topic.
-    // No retained readings; reboot starts unavailable until receive validates a report.
-    radio_monitor m;
-    for (size_t i=0;status.discovery_enabled && radio_monitor_at(i,&m)==ESP_OK;++i) {
-        cJSON *j=envelope(session,0); char a[9], b[9], suffix[64];
-        snprintf(a,sizeof(a),"%02X%02X%02X%02X",m.selection.address[0],m.selection.address[1],m.selection.address[2],m.selection.address[3]);
-        cJSON_AddStringToObject(j,"radiator",a); cJSON_AddStringToObject(j,"name",m.selection.name);
-        cJSON_AddBoolToObject(j,"radio_ready",radio.ready);
-        cJSON_AddStringToObject(j,"radio_health",radio_health_name(radio.health));
-        cJSON_AddBoolToObject(j,"available",m.available);
-        int64_t age=time-m.observation.time_us/1000; if (age<0) age=0;
-        cJSON_AddBoolToObject(j,"fresh",radio.ready && m.available && age+15000<RF_REPORT_STALE_MS);
-        if (m.available) {
-            const rf_report *r=&m.observation.report;
-            snprintf(b,sizeof(b),"%02X%02X%02X%02X",r->destination[0],r->destination[1],r->destination[2],r->destination[3]);
-            cJSON_AddStringToObject(j,"controller",b); cJSON_AddNumberToObject(j,"age_ms",(double)age);
-            cJSON_AddBoolToObject(j,"stale",age>=RF_REPORT_STALE_MS); cJSON_AddNumberToObject(j,"mode",r->mode);
-            if (r->temperature_available) cJSON_AddNumberToObject(j,"temperature_centi_c",r->temperature_centi_c);
-            if (r->target_available) cJSON_AddNumberToObject(j,"target_centi_c",r->target_centi_c);
-        }
-        snprintf(suffix,sizeof(suffix),"passive/%s/state",a); json_publish(suffix,j);
-    }
-}
-static void stop(void) {
-    if (running) client.stop(availability);
-    running = false; mqtt_bridge_connection(false); session[0] = 0; mqtt_discovery_disconnected();
-    // stop() has joined/destroyed the client and discarded its outbox. Its
-    // DISCONNECTED callback (and the explicit reset above) need no second stop.
-    mqtt_platform_lock(); reset_requested = false; mqtt_platform_unlock();
-}
-static void subscription_failed(int error) {
-    stop(); // Clear partial/queued input and destroy the subscription outbox.
-    mqtt_platform_lock(); status.subscription_error = error; mqtt_platform_unlock();
-    retry_ms = now()+MQTT_RETRY_MS;
-}
-void mqtt_bridge_tick(void) {
-    mqtt_settings change; bool action;
-    mqtt_platform_lock(); action = action_pending;
-    if (action) { change = candidate; memset(&candidate, 0, sizeof(candidate)); action_pending = false; }
-    mqtt_platform_unlock();
-    if (action && discovery_action) {
-        int requested = discovery_action; discovery_action = 0;
-        esp_err_t err = mqtt_discovery_set(requested > 0);
-        update_discovery_status();
-        mqtt_platform_lock(); status.pending = false; status.config_error = err; mqtt_platform_unlock();
-        action = false;
-    }
-    if (action) {
-        esp_err_t err = mqtt_store_save(&change);
-        if (err == ESP_OK) stop();
-        mqtt_platform_lock();
-        status.config_error = err; status.pending = false;
-        status.persistence_uncertain = err != ESP_OK;
-        if (err == ESP_OK) { settings = change; update_settings_status(); }
-        mqtt_platform_unlock(); memset(&change, 0, sizeof(change)); retry_ms = now();
-    }
-    mqtt_platform_lock(); bool reset = reset_requested; mqtt_platform_unlock();
-    if (reset) {
-        // Never issue a newer discovery configuration while an older client's
-        // QoS1 packet remains eligible for retransmission, even after link loss.
-        stop(); retry_ms = now()+MQTT_RETRY_MS; return;
-    }
-    network_status network; bool wifi = network_get_status(&network) == ESP_OK && network.state == NET_CONNECTED;
-    if (!settings.configured || !settings.enabled || !wifi) { if (running) stop(); return; }
-    if (!running && now() >= retry_ms) {
-        char id[32]; snprintf(id, sizeof(id), "cleverbox-%s", status.bridge_id);
-        esp_err_t err = client.start(&settings, id, availability);
-        mqtt_platform_lock(); status.client_error = err; mqtt_platform_unlock();
-        running = err == ESP_OK; retry_ms = now()+MQTT_RETRY_MS;
-    }
-    bool connected; unsigned epoch;
-    mqtt_platform_lock(); connected = link_connected; epoch = link_epoch; mqtt_platform_unlock();
-    if (epoch != owner_epoch) {
-        mqtt_discovery_disconnected();
-        owner_epoch = epoch; session[0] = 0; high_water = 0; memset(permits, 0, sizeof(permits));
-        if (connected) {
-            char topic[MQTT_TOPIC_BYTES]; snprintf(topic, sizeof(topic), "%s/radiators/+/set", base);
-            mqtt_platform_lock();
-            if (epoch != link_epoch || !link_connected) { mqtt_platform_unlock(); return; }
-            status.subscription_pending = true; subscription_id = 0; suback_received = false;
-            subscription_deadline = now()+MQTT_SUBACK_TIMEOUT_MS;
-            mqtt_platform_unlock();
-            // Clear any old retained availability while command access is unproven.
-            client.publish(availability, "offline", true);
-            int id = client.subscribe(topic);
-            mqtt_platform_lock();
-            bool current = epoch == link_epoch && link_connected && status.subscription_pending;
-            if (current) {
-                subscription_id = id;
-                if (suback_received && suback_id != id) suback_received = false;
+        if (radiator_paired(d)) {
+            cJSON *c = cJSON_AddObjectToObject(j, "command");
+            cJSON_AddStringToObject(c, "phase", phase_name(d));
+            cJSON_AddNumberToObject(c, "attempts", d->command.attempts);
+            cJSON_AddNumberToObject(c, "error", d->command_error);
+            if (d->command_queued || d->command.phase != RF_CONTROL_IDLE) {
+                cJSON_AddNumberToObject(c, "requested_mode", d->command.mode);
+                cJSON_AddNumberToObject(c, "requested_centi_c", d->command.centi_c);
             }
-            mqtt_platform_unlock();
-            if (!current) return;
-            if (id <= 0 || id > 65535) { subscription_failed(MQTT_ERR_SUBSCRIBE_REQUEST); return; }
+            if (d->request_id) cJSON_AddNumberToObject(c, "request_id", (double)d->request_id);
+        }
+        snprintf(suffix, sizeof(suffix), "radiators/%u/state", (unsigned)d->id);
+        publish_json(suffix, j, 0, false);
+    }
+}
+
+static void config_topic(uint32_t id, char *out, size_t size)
+{
+    snprintf(out, size, "homeassistant/device/cleverbox_%s_%u/config", status.bridge_id, (unsigned)id);
+}
+
+// One device per radiator. Readings are unavailable unless fresh and present.
+static void publish_config(const radiator_record *d)
+{
+    static const struct { const char *key, *platform, *name, *field, *value, *unit, *device_class; bool diagnostic, paired; } parts[] = {
+        {"temperature", "sensor", "Temperature", "temperature_centi_c", "{{ value_json.temperature_centi_c / 100 }}", "°C", "temperature", false, false},
+        {"observed_target", "sensor", "Observed target", "target_centi_c", "{{ value_json.target_centi_c / 100 }}", "°C", "temperature", false, false},
+        {"observed_mode", "sensor", "Observed mode", "mode", "{{ {0:'Comfort',1:'Off',2:'Frost',3:'Eco'}.get(value_json.mode, 'Unknown') }}", NULL, NULL, false, false},
+        {"observation_fresh", "binary_sensor", "Observation fresh", NULL, "{{ 'ON' if value_json.fresh else 'OFF' }}", NULL, NULL, true, false},
+        {"report_age", "sensor", "Report age", NULL, "{{ value_json.age_ms / 1000 if value_json.age_ms is defined else none }}", "s", "duration", true, false},
+        {"last_command", "sensor", "Last command", NULL, "{{ value_json.command.phase }}", NULL, NULL, true, true},
+        {"last_admission", "sensor", "Last admission", NULL, "{{ value_json.reason }}", NULL, NULL, true, true},
+    };
+    char identity[48], state[96], result[96], text[160], topic[112];
+    snprintf(identity, sizeof(identity), "cleverbox_%s_%u", status.bridge_id, (unsigned)d->id);
+    snprintf(state, sizeof(state), "%s/radiators/%u/state", base, (unsigned)d->id);
+    snprintf(result, sizeof(result), "%s/radiators/%u/result", base, (unsigned)d->id);
+    cJSON *root = cJSON_CreateObject(), *device = cJSON_AddObjectToObject(root, "device");
+    cJSON_AddStringToObject(device, "identifiers", identity);
+    cJSON_AddStringToObject(device, "name", d->name);
+    cJSON_AddStringToObject(device, "manufacturer", "Cleverbox");
+    cJSON_AddStringToObject(device, "model", radiator_paired(d) ? "Paired radiator" : "Monitored radiator");
+    cJSON_AddStringToObject(cJSON_AddObjectToObject(root, "origin"), "name", "Cleverbox");
+    cJSON *components = cJSON_AddObjectToObject(root, "components");
+    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i) {
+        if (parts[i].paired && !radiator_paired(d)) continue;
+        bool admission = !strcmp(parts[i].key, "last_admission");
+        cJSON *c = cJSON_AddObjectToObject(components, parts[i].key);
+        cJSON_AddStringToObject(c, "platform", parts[i].platform);
+        snprintf(text, sizeof(text), "%s_%s", identity, parts[i].key);
+        cJSON_AddStringToObject(c, "unique_id", text);
+        snprintf(text, sizeof(text), "%s.%s_%s", parts[i].platform, identity, parts[i].key);
+        cJSON_AddStringToObject(c, "default_entity_id", text);
+        cJSON_AddStringToObject(c, "name", parts[i].name);
+        cJSON_AddStringToObject(c, "state_topic", admission ? result : state);
+        cJSON_AddStringToObject(c, "value_template", parts[i].value);
+        if (parts[i].unit) cJSON_AddStringToObject(c, "unit_of_measurement", parts[i].unit);
+        if (parts[i].device_class) cJSON_AddStringToObject(c, "device_class", parts[i].device_class);
+        if (parts[i].diagnostic) cJSON_AddStringToObject(c, "entity_category", "diagnostic");
+        if (!admission) cJSON_AddNumberToObject(c, "expire_after", 15);
+        cJSON *a = cJSON_AddArrayToObject(c, "availability"), *v = cJSON_CreateObject();
+        cJSON_AddStringToObject(v, "topic", availability);
+        cJSON_AddItemToArray(a, v);
+        if (parts[i].field) {
+            v = cJSON_CreateObject();
+            cJSON_AddStringToObject(v, "topic", state);
+            snprintf(text, sizeof(text), "{{ 'online' if value_json.fresh and value_json.%s is defined else 'offline' }}", parts[i].field);
+            cJSON_AddStringToObject(v, "value_template", text);
+            cJSON_AddItemToArray(a, v);
+            cJSON_AddStringToObject(c, "availability_mode", "all");
         }
     }
-    bool became_ready = false;
-    mqtt_platform_lock();
-    bool current = epoch == link_epoch && link_connected;
-    bool pending = current && status.subscription_pending;
-    bool acked = pending && suback_received && suback_id == subscription_id;
-    bool late = pending && (acked ? suback_ms >= subscription_deadline : now() >= subscription_deadline);
-    int grant = suback_qos;
-    mqtt_platform_unlock();
-    if (late) { subscription_failed(MQTT_ERR_SUBSCRIBE_TIMEOUT); return; }
-    if (acked) {
-        if (grant != 0) { subscription_failed(MQTT_ERR_SUBSCRIBE_REJECTED); return; }
-        client.nonce(session);
-        mqtt_platform_lock();
-        if (epoch == link_epoch && link_connected && status.subscription_pending) {
-            status.connected = true; status.subscription_pending = false;
-            status.subscription_error = ESP_OK; strcpy(status.session, session); became_ready = true;
+    config_topic(d->id, topic, sizeof(topic));
+    char *payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (payload) client.publish(topic, payload, 1, true);
+    cJSON_free(payload);
+}
+
+// Publish configs after registry changes, on (re)connect and on HA birth.
+// An empty retained config removes a device from HA and from the broker.
+static void sync_discovery(bool enabled, bool force, size_t count)
+{
+    uint32_t version = radio_transport_status().registry_version;
+    char topic[112];
+    if (enabled && (force || version != published_version)) {
+        for (size_t i = 0; i < advertised_count; ++i) {
+            bool present = false;
+            for (size_t k = 0; k < count; ++k) present |= records[k].id == advertised[i];
+            if (!present) { config_topic(advertised[i], topic, sizeof(topic)); client.publish(topic, "", 1, true); }
         }
-        mqtt_platform_unlock();
-        if (became_ready) {
-            client.publish(availability, "online", true); state_ms = 0;
-            client.subscribe("homeassistant/status");
-            mqtt_discovery_replay();
+        for (size_t i = 0; i < count; ++i) { publish_config(&records[i]); advertised[i] = records[i].id; }
+        advertised_count = count;
+        published_version = version;
+    } else if (!enabled && advertised_count) {
+        for (size_t i = 0; i < advertised_count; ++i) {
+            config_topic(advertised[i], topic, sizeof(topic)); client.publish(topic, "", 1, true);
         }
+        advertised_count = 0;
     }
-    mqtt_platform_lock(); current = epoch == link_epoch && link_connected && status.connected; mqtt_platform_unlock();
-    if (!current || !session[0]) return;
-    mqtt_discovery_tick(&client); update_discovery_status();
-    mqtt_bridge_status discovery = {0}; mqtt_discovery_status(&discovery);
-    if (discovery.discovery_error == MQTT_ERR_DISCOVERY_TIMEOUT ||
-        discovery.discovery_error == MQTT_ERR_DISCOVERY_PUBLISH) {
-        // A failed QoS1 send may already be in ESP-MQTT's outbox. Destroy it
-        // before retrying so an old config cannot overtake a cleanup marker.
-        stop(); retry_ms = now()+MQTT_RETRY_MS; return;
-    }
-    results(became_ready);
-    static radio_health published_health = RADIO_INITIALIZING;
-    radio_health health = radio_transport_status().health;
-    if (health != published_health) { published_health = health; state_ms = 0; }
-    if (now() >= state_ms) { observations(); state_ms = now()+5000; }
-    // Drain a bounded batch. Epoch checks discard work queued before link loss;
-    // there is no offline input queue. Already-admitted RF runs independently.
-    for (size_t count = 0; count < MQTT_INPUT_SLOTS; ++count) {
-        input in; bool got;
-        mqtt_platform_lock(); got = input_count != 0;
-        if (got) { in = inputs[input_head]; input_head = (input_head+1)%MQTT_INPUT_SLOTS; --input_count; }
-        bool current = got && in.epoch == link_epoch && link_connected;
-        mqtt_platform_unlock();
-        if (!got) break;
-        if (current && in.epoch == owner_epoch) {
-            if (!strcmp(in.topic, "homeassistant/status")) {
-                if (!strcmp(in.data, "online")) { mqtt_discovery_replay(); state_ms = 0; }
-            } else route(&in);
+}
+
+void mqtt_bridge_tick(int64_t now)
+{
+    take();
+    bool start = restart, force = replay, connected = status.connected, snapshot = now >= next_snapshot;
+    mqtt_settings s = settings;
+    restart = false;
+    if (connected) replay = false;
+    if (connected && snapshot) next_snapshot = now + MQTT_SNAPSHOT_MS;
+    give();
+    if (start) {
+        if (running) {
+            if (connected) client.publish(availability, "offline", 0, true); // A clean stop sends no will.
+            client.stop();
         }
+        running = false;
+        take(); status.connected = false; give();
+        if (s.enabled && s.host[0]) {
+            char id[32];
+            snprintf(id, sizeof(id), "cleverbox-%s", status.bridge_id);
+            esp_err_t e = client.start(&s, id, availability);
+            running = e == ESP_OK;
+            take(); status.error = e; give();
+        }
+        return;
     }
+    if (!connected) return;
+    size_t count = radio_radiators(records, CLEVERBOX_RADIATOR_CAPACITY);
+    sync_discovery(s.discovery, force, count);
+    if (snapshot) publish_snapshots(now, count);
 }

@@ -1,26 +1,74 @@
 // SPDX-License-Identifier: MIT
-#include <math.h>
-#include <errno.h>
+// Local JSON API. See docs/http-api.md.
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include "cJSON.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
-#include "radiator_protocol.h"
-#include "radio_transport.h"
 #include "http_api.h"
-#include "http_access.h"
-#include "network_setup.h"
 #include "device_time.h"
 #include "mqtt_bridge.h"
+#include "network_setup.h"
+#include "radio_transport.h"
 #ifdef CLEVERBOX_HOST
 #include "simulation.h"
 #endif
 
+static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
+
+// Parse a JSON request body (application/json, under 1 KiB). NULL if invalid.
+static cJSON *read_json(httpd_req_t *r)
+{
+    char body[1024];
+    if (httpd_req_get_hdr_value_str(r, "Content-Type", body, sizeof(body)) != ESP_OK ||
+        strcmp(body, "application/json") || !r->content_len || r->content_len >= sizeof(body)) return NULL;
+    size_t used = 0;
+    while (used < r->content_len) {
+        int n = httpd_req_recv(r, body + used, r->content_len - used);
+        if (n <= 0) return NULL;
+        used += (size_t)n;
+    }
+    body[used] = 0;
+    return cJSON_Parse(body);
+}
+
+static esp_err_t send_json(httpd_req_t *r, const char *status, cJSON *j)
+{
+    char *text = cJSON_PrintUnformatted(j);
+    cJSON_Delete(j);
+    httpd_resp_set_status(r, status);
+    httpd_resp_set_type(r, "application/json");
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    esp_err_t e = httpd_resp_sendstr(r, text ? text : "{}");
+    cJSON_free(text);
+    return e;
+}
+
+// Reply with `ok` on success, otherwise an error object with a status code.
+static esp_err_t send_result(httpd_req_t *r, esp_err_t e, const char *status, cJSON *ok)
+{
+    if (e == ESP_OK) return send_json(r, status, ok ? ok : cJSON_CreateObject());
+    cJSON_Delete(ok);
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddStringToObject(j, "error", radio_error_name(e));
+    cJSON_AddNumberToObject(j, "code", e);
+    bool radio = e >= RADIO_ERR_NOT_READY && e <= RADIO_ERR_NOT_PAIRED;
+    return send_json(r, e == ESP_ERR_INVALID_ARG ? "400 Bad Request" : e == ESP_ERR_NOT_FOUND ? "404 Not Found" :
+                        radio || e == ESP_ERR_INVALID_STATE ? "409 Conflict" : "500 Internal Server Error", j);
+}
+
 static const char *string(cJSON *j, const char *key)
 {
     return cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(j, key));
+}
+
+static bool integer(cJSON *j, const char *key, double low, double high, double *out)
+{
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(j, key);
+    if (!cJSON_IsNumber(v) || v->valuedouble < low || v->valuedouble > high || (int64_t)v->valuedouble != v->valuedouble)
+        return false;
+    *out = v->valuedouble;
+    return true;
 }
 
 static bool address(cJSON *j, const char *key, uint8_t out[4])
@@ -29,695 +77,291 @@ static bool address(cJSON *j, const char *key, uint8_t out[4])
     return rf_parse_hex(string(j, key), out, 4, &n) && n == 4;
 }
 
-static esp_err_t preview(httpd_req_t *r)
+static void add_address(cJSON *j, const char *key, const uint8_t a[4])
 {
-    char body[1024], type[40];
-    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
-        strcmp(type, "application/json") != 0)
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use application/json");
-    if (r->content_len == 0 || r->content_len >= sizeof(body))
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid body length");
-    size_t used = 0;
-    while (used < r->content_len) {
-        int n = httpd_req_recv(r, body + used, r->content_len - used);
-        if (n <= 0) return ESP_FAIL;
-        used += (size_t)n;
-    }
-    body[used] = 0;
-    cJSON *j = cJSON_ParseWithOpts(body, NULL, true);
-    rf_frame f = {0}; bool ok = false;
-    const char *op = string(j, "command");
-    if (op) {
-        uint8_t src[4], dst[4];
-        rf_command command;
-        bool known = true;
-        if (strcmp(op, "offer") == 0) command = RF_OFFER;
-        else if (strcmp(op, "bind") == 0) command = RF_BIND;
-        else if (strcmp(op, "poll") == 0) command = RF_POLL;
-        else { command = RF_POLL; known = false; }
-        if (known && address(j, "source", src) && address(j, "destination", dst))
-            ok = rf_short(&f, src, dst, command);
-    }
-    cJSON_Delete(j);
-    if (!ok) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid command or frame");
-    char hex[RF_MAX_FRAME * 2 + 1], response[640];
-    rf_to_hex(&f, hex);
-    snprintf(response, sizeof(response),
-             "{\"status\":\"preview\",\"transmitted\":false,\"frame\":\"%s\"}", hex);
-    httpd_resp_set_type(r, "application/json");
-    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
-    return httpd_resp_sendstr(r, response);
+    char text[9];
+    snprintf(text, sizeof(text), "%02X%02X%02X%02X", a[0], a[1], a[2], a[3]);
+    cJSON_AddStringToObject(j, key, text);
 }
 
-// Missing identity uses single-radiator resolution only; malformed identity
-// never falls back. No server-side browser selection exists.
-static bool identity(cJSON *j, uint32_t *id) {
-    cJSON *v = cJSON_GetObjectItemCaseSensitive(j, "id"); *id = 0;
-    if (!v) return true;
-    if (!cJSON_IsNumber(v) || !isfinite(v->valuedouble) || v->valuedouble < 1 ||
-        v->valuedouble > UINT32_MAX || floor(v->valuedouble) != v->valuedouble) return false;
-    *id = (uint32_t)v->valuedouble; return true;
-}
-
-static esp_err_t pairing_action(httpd_req_t *r)
+static void add_report(cJSON *j, const rf_report *report, int64_t age)
 {
-    char body[256], type[40];
-    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
-        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
-    size_t used = 0;
-    while (used < r->content_len) {
-        int n = httpd_req_recv(r, body + used, r->content_len - used);
-        if (n <= 0) return ESP_FAIL;
-        used += (size_t)n;
-    }
-    body[used] = 0;
-    cJSON *j = cJSON_ParseWithOpts(body, NULL, true);
-    const char *action = string(j, "action");
-    esp_err_t result = ESP_ERR_INVALID_ARG; uint32_t id = 0;
-    bool valid_id = identity(j, &id);
-    if (valid_id && action && !strcmp(action, "start")) {
-        uint8_t source[4], destination[4];
-        rf_pairing check = {0};
-        if (address(j, "source", source) && address(j, "destination", destination) &&
-            rf_pair_start(&check, source, destination, 0))
-            result = radio_pair_start(source, destination, &id);
-    } else if (valid_id && action && !strcmp(action, "cancel")) result = radio_pair_cancel(id);
-    else if (valid_id && action && !strcmp(action, "save")) result = radio_pair_save(id);
-    cJSON_Delete(j);
-    if (result == RADIO_ERR_LISTEN_ONLY) {
-        httpd_resp_set_status(r, "409 Conflict"); return httpd_resp_sendstr(r, "Listen-only mode: enable control explicitly on the station interface first.");
-    }
-    if (result == ESP_ERR_INVALID_ARG)
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid pairing action or addresses");
-    if (result != ESP_OK) {
-        httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, "Radio unavailable, exchange busy, registry full, or storage blocked. Check radio status.");
-    }
-    httpd_resp_set_status(r, "202 Accepted");
-    httpd_resp_set_type(r, "application/json");
-    char response[64]; snprintf(response, sizeof(response), "{\"accepted\":true,\"id\":%u}", (unsigned)id);
-    return httpd_resp_sendstr(r, response);
+    cJSON_AddNumberToObject(j, "age_ms", (double)age);
+    cJSON_AddBoolToObject(j, "stale", age >= RF_REPORT_STALE_MS);
+    add_address(j, "controller", report->destination);
+    cJSON_AddNumberToObject(j, "mode", report->mode);
+    if (report->temperature_available) cJSON_AddNumberToObject(j, "temperature_c", report->temperature_centi_c / 100.0);
+    else cJSON_AddNullToObject(j, "temperature_c");
+    if (report->target_available) cJSON_AddNumberToObject(j, "target_c", report->target_centi_c / 100.0);
+    else cJSON_AddNullToObject(j, "target_c");
 }
 
-static bool integer(cJSON *j, const char *key, int low, int high, int *out)
+static cJSON *radiator_json(const radiator_record *d, int64_t now)
 {
-    cJSON *value = cJSON_GetObjectItemCaseSensitive(j, key);
-    if (!cJSON_IsNumber(value) || !isfinite(value->valuedouble) ||
-        value->valuedouble < low || value->valuedouble > high ||
-        value->valuedouble != value->valueint) return false;
-    *out = value->valueint;
-    return true;
-}
-
-static esp_err_t live_command(httpd_req_t *r)
-{
-    char body[512], type[40];
-    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
-        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
-    size_t used = 0;
-    while (used < r->content_len) {
-        int n = httpd_req_recv(r, body + used, r->content_len - used);
-        if (n <= 0) return ESP_FAIL;
-        used += (size_t)n;
-    }
-    body[used] = 0;
-    cJSON *j = cJSON_ParseWithOpts(body, NULL, true);
-    rf_control_request command = {0};
-    int mode, target, clock = 0; uint32_t id = 0;
-    bool override = cJSON_GetObjectItemCaseSensitive(j, "clock_seconds") != NULL;
-#ifndef CLEVERBOX_HOST
-    if (override) {
-        cJSON_Delete(j);
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST,
-            "clock_seconds is host-only; physical commands require device time");
-    }
-#endif
-    bool valid = identity(j, &id) && integer(j, "mode", 0, 3, &mode) && integer(j, "centi_c", 0, 3000, &target) &&
-                 (!override || integer(j, "clock_seconds", 0, 86399, &clock));
-    int fields = 2 + (cJSON_GetObjectItemCaseSensitive(j, "id") != NULL) + override;
-    valid = valid && cJSON_IsObject(j) && cJSON_GetArraySize(j) == fields;
-    if (valid) {
-        command.mode = (rf_mode)mode; command.centi_c = target; command.clock_seconds = clock;
-    }
-    cJSON_Delete(j);
-    esp_err_t result = ESP_ERR_INVALID_ARG;
-    if (valid) {
-#ifdef CLEVERBOX_HOST
-        result = override ? radio_control_start(id, &command) : radio_control_start_device(id, &command);
-#else
-        result = radio_control_start_device(id, &command);
-#endif
-    }
-    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
-    if (result == RADIO_ERR_LISTEN_ONLY) {
-        httpd_resp_set_status(r, "409 Conflict"); return httpd_resp_sendstr(r, "Listen-only mode or mode storage error: no RF commands admitted.");
-    }
-    if (result == RADIO_ERR_TIME_UNAVAILABLE) {
-        httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, "Device time unavailable. Connect home Wi-Fi for SNTP or explicitly set UTC time in Device time, then retry.");
-    }
-    if (result == ESP_ERR_INVALID_ARG)
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid target, mode, clock or saved relationship");
-    if (result != ESP_OK) {
-        httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, "Command busy, radio unavailable or no valid saved pairing; check radio status");
-    }
-    httpd_resp_set_status(r, "202 Accepted");
-    httpd_resp_set_type(r, "application/json");
-    return httpd_resp_sendstr(r, "{\"status\":\"queued\"}");
-}
-
-static const char *store_result(radio_store_result result)
-{
-    switch (result) {
-        case RADIO_STORE_PENDING: return "pending";
-        case RADIO_STORE_OK: return "succeeded";
-        case RADIO_STORE_FAILED: return "failed";
-        default: return "not_attempted";
-    }
-}
-
-static void address_text(const uint8_t a[4], char out[9])
-{
-    snprintf(out, 9, "%02X%02X%02X%02X", a[0], a[1], a[2], a[3]);
-}
-
-static void device_json(cJSON *j, const radiator_record *d, int64_t now) {
-    cJSON_AddNumberToObject(j, "id", d->id); cJSON_AddStringToObject(j, "name", d->name);
-    char controller[9], radiator[9]; address_text(d->pair.controller, controller); address_text(d->pair.radiator, radiator);
-    cJSON *pair = cJSON_AddObjectToObject(j, "pairing");
-    cJSON_AddBoolToObject(pair, "saved", true); cJSON_AddStringToObject(pair, "phase", "complete");
-    cJSON_AddNumberToObject(pair, "error", 0);
-    cJSON_AddStringToObject(pair, "controller", controller); cJSON_AddStringToObject(pair, "radiator", radiator);
-    cJSON *command = cJSON_AddObjectToObject(j, "command");
-    cJSON_AddStringToObject(command, "phase", rf_control_phase_name(d->control.phase));
-    cJSON_AddNumberToObject(command, "error", d->control_error);
-    cJSON_AddNumberToObject(command, "attempts", d->control.attempts);
-    cJSON_AddBoolToObject(command, "pending", d->command_reserved);
-    cJSON_AddStringToObject(command, "frame_source", "generated-touch-e3");
-    if (d->control.phase != RF_CONTROL_IDLE) {
-        cJSON_AddNumberToObject(command, "requested_target_c", d->control.centi_c / 100.0);
-        cJSON_AddNumberToObject(command, "requested_mode", d->control.mode);
-    }
-    if (d->control.phase == RF_CONTROL_MATCHED)
-        cJSON_AddNumberToObject(command, "match_age_ms", now / 1000 - d->control.matched_ms);
-    if (d->has_paired_report) {
-        cJSON *observed = cJSON_AddObjectToObject(j, "observed");
-        int64_t age = (now - d->paired_report_time_us) / 1000;
-        cJSON_AddNumberToObject(observed, "age_ms", age);
-        cJSON_AddBoolToObject(observed, "stale", age >= RF_REPORT_STALE_MS);
-        cJSON_AddNumberToObject(observed, "mode", d->paired_report.mode);
-        if (d->paired_report.temperature_available)
-            cJSON_AddNumberToObject(observed, "temperature_c", d->paired_report.temperature_centi_c / 100.0);
-        else cJSON_AddNullToObject(observed, "temperature_c");
-        if (d->paired_report.target_available)
-            cJSON_AddNumberToObject(observed, "target_c", d->paired_report.target_centi_c / 100.0);
-        else cJSON_AddNullToObject(observed, "target_c");
-    }
-}
-static esp_err_t json_response(httpd_req_t *r, cJSON *j) {
-    char *body = cJSON_PrintUnformatted(j); cJSON_Delete(j);
-    if (!body) return ESP_ERR_NO_MEM;
-    httpd_resp_set_type(r, "application/json"); httpd_resp_set_hdr(r, "Cache-Control", "no-store");
-    esp_err_t result = httpd_resp_sendstr(r, body); cJSON_free(body); return result;
-}
-static void health_json(cJSON *j, const radio_status *s) {
-    unsigned clock; int64_t sampled;
-    bool time_ready=device_time_command_clock(&clock,&sampled);
-    cJSON_AddStringToObject(j,"health",radio_health_name(s->health));
-    cJSON_AddBoolToObject(j,"control_ready",s->ready && s->control_enabled && !s->mode_pending && !s->mode_error && !s->registry_error && !s->exchange_id && !s->mutation_pending && time_ready);
-    cJSON_AddStringToObject(j,"failure_stage",radio_failure_name(s->failure_stage));
-    cJSON_AddNumberToObject(j,"failure_code",s->failure_code);
-    cJSON_AddNumberToObject(j,"recovery_attempt",s->recovery_attempt);
-    cJSON_AddNumberToObject(j,"recovery_attempt_limit",RADIO_RECOVERY_ATTEMPTS);
-    cJSON_AddNumberToObject(j,"recovery_attempts",s->recovery_attempts);
-    cJSON_AddNumberToObject(j,"recovery_successes",s->recovery_successes);
-    cJSON_AddBoolToObject(j,"retry_pending",s->retry_pending);
-    cJSON_AddBoolToObject(j,"retry_allowed",s->health==RADIO_FAULTED && s->worker_running && !s->retry_pending);
-    if (s->retry_at_ms) {
-        int64_t delay=s->retry_at_ms-esp_timer_get_time()/1000;
-        cJSON_AddNumberToObject(j,"retry_in_ms",(double)(delay>0?delay:0));
-    } else cJSON_AddNullToObject(j,"retry_in_ms");
-}
-static esp_err_t radio_action(httpd_req_t *r) {
-    char body[64],type[40];
-    if (httpd_req_get_hdr_value_str(r,"Content-Type",type,sizeof(type))!=ESP_OK || strcmp(type,"application/json") ||
-        !r->content_len || r->content_len>=sizeof(body))
-        return httpd_resp_send_err(r,HTTPD_400_BAD_REQUEST,"Use a small JSON retry action");
-    size_t used=0;
-    while (used<r->content_len) {
-        int n=httpd_req_recv(r,body+used,r->content_len-used); if (n<=0) return ESP_FAIL; used+=(size_t)n;
-    }
-    body[used]=0;
-    cJSON *j=mqtt_json_flat(body)?cJSON_ParseWithOpts(body,NULL,true):NULL;
-    const char *a=string(j,"action");
-    bool valid=cJSON_IsObject(j) && cJSON_GetArraySize(j)==1 && a && !strcmp(a,"retry");
-    cJSON_Delete(j);
-    if (!valid) return httpd_resp_send_err(r,HTTPD_400_BAD_REQUEST,"Use exactly action: retry");
-    if (radio_retry()!=ESP_OK) {
-        httpd_resp_set_status(r,"409 Conflict");
-        return httpd_resp_sendstr(r,"Retry requires an exhausted radio and a running worker; inspect radio status.");
-    }
-    httpd_resp_set_status(r,"202 Accepted");
-    return json_response(r,cJSON_Parse("{\"accepted\":true,\"transmitted\":false}"));
-}
-// Passive diagnostics deliberately have the same AP/unknown read exposure as
-// existing RF diagnostics. Mutations need STA.
-static void matching_pair(cJSON *j, const uint8_t radiator[4]) {
-    radiator_record d; bool found = false;
-    for (size_t i = 0; radio_device_at(i, &d) == ESP_OK; ++i)
-        if (!memcmp(d.pair.radiator, radiator, 4)) { found = true; break; }
-    cJSON_AddBoolToObject(j, "paired", found);
-    if (found) cJSON_AddNumberToObject(j, "paired_id", d.id);
-}
-static esp_err_t commissioning_status(httpd_req_t *r) {
-    radio_status s = radio_transport_status(); int64_t now = esp_timer_get_time();
-    cJSON *j = cJSON_CreateObject(); if (!j) return ESP_ERR_NO_MEM;
-    cJSON_AddStringToObject(j, "mode", s.control_enabled ? "control-enabled" : "listen-only");
-    cJSON_AddBoolToObject(j, "pending", s.mode_pending);
-    cJSON_AddStringToObject(j, "save_status", store_result(s.mode_save_result));
-    cJSON_AddNumberToObject(j, "storage_error", s.mode_error);
-    cJSON_AddBoolToObject(j, "persistence_uncertain", s.mode_persistence_uncertain);
-    cJSON_AddNumberToObject(j, "capacity", RADIO_PASSIVE_CAPACITY);
-    cJSON_AddBoolToObject(j, "observations_full", s.observation_count == RADIO_PASSIVE_CAPACITY);
-    cJSON_AddNumberToObject(j, "observation_evictions", s.observation_evictions);
-    cJSON_AddNumberToObject(j,"monitor_capacity",RADIO_MONITOR_CAPACITY);
-    cJSON_AddBoolToObject(j,"monitor_pending",s.monitor_pending);
-    cJSON_AddStringToObject(j,"monitor_save_status",store_result(s.monitor_result));
-    cJSON_AddNumberToObject(j,"monitor_storage_error",s.monitor_error);
-    cJSON_AddBoolToObject(j,"monitor_persistence_uncertain",s.monitor_uncertain);
-    mqtt_bridge_status ms; mqtt_bridge_get(&ms);
-    cJSON_AddBoolToObject(j,"discovery_enabled",ms.discovery_enabled);
-    cJSON *selected=cJSON_AddArrayToObject(j,"monitors"); radio_monitor m;
-    for (size_t i=0;radio_monitor_at(i,&m)==ESP_OK;++i) {
-        cJSON *row=cJSON_CreateObject(); char a[9]; address_text(m.selection.address,a);
-        cJSON_AddStringToObject(row,"radiator",a); cJSON_AddStringToObject(row,"name",m.selection.name);
-        cJSON_AddBoolToObject(row,"available",m.available);
-        if (m.available) {
-            int64_t age=now>m.observation.time_us ? (now-m.observation.time_us)/1000 : 0;
-            cJSON_AddNumberToObject(row,"age_ms",(double)age);
-            cJSON_AddBoolToObject(row,"stale",age>=RF_REPORT_STALE_MS);
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddNumberToObject(j, "id", d->id);
+    cJSON_AddStringToObject(j, "name", d->name);
+    add_address(j, "radiator", d->radiator);
+    bool paired = radiator_paired(d);
+    cJSON_AddBoolToObject(j, "paired", paired);
+    if (paired) add_address(j, "controller", d->controller);
+    if (d->has_report) add_report(cJSON_AddObjectToObject(j, "observed"), &d->report, now - d->report_ms);
+    if (paired) {
+        cJSON *c = cJSON_AddObjectToObject(j, "command");
+        cJSON_AddStringToObject(c, "phase", d->command_queued ? "queued" : rf_control_phase_name(d->command.phase));
+        cJSON_AddNumberToObject(c, "attempts", d->command.attempts);
+        cJSON_AddNumberToObject(c, "error", d->command_error);
+        cJSON_AddStringToObject(c, "error_name", radio_error_name(d->command_error));
+        if (d->command_queued || d->command.phase != RF_CONTROL_IDLE) {
+            cJSON_AddNumberToObject(c, "requested_mode", d->command.mode);
+            cJSON_AddNumberToObject(c, "requested_target_c", d->command.centi_c / 100.0);
         }
-        cJSON_AddItemToArray(selected,row);
+        if (d->command.phase == RF_CONTROL_MATCHED) cJSON_AddNumberToObject(c, "match_age_ms", (double)(now - d->command.matched_ms));
     }
-    cJSON *observed = cJSON_AddArrayToObject(j, "observations");
-    radio_observation o;
-    for (size_t i = 0; radio_observation_at(i, &o) == ESP_OK; ++i) {
-        cJSON *row = cJSON_CreateObject(); char a[9], b[9];
-        address_text(o.report.source, a); address_text(o.report.destination, b);
-        cJSON_AddStringToObject(row, "radiator", a); cJSON_AddStringToObject(row, "controller", b);
-        // A radio task may publish after this HTTP snapshot sampled now.
-        int64_t age = now > o.time_us ? (now - o.time_us) / 1000 : 0;
-        cJSON_AddNumberToObject(row, "age_ms", age); cJSON_AddBoolToObject(row, "stale", age >= RF_REPORT_STALE_MS);
-        cJSON_AddNumberToObject(row, "mode", o.report.mode);
-        if (o.report.temperature_available) cJSON_AddNumberToObject(row, "temperature_c", o.report.temperature_centi_c / 100.0);
-        else cJSON_AddNullToObject(row, "temperature_c");
-        if (o.report.target_available) cJSON_AddNumberToObject(row, "target_c", o.report.target_centi_c / 100.0);
-        else cJSON_AddNullToObject(row, "target_c");
-        matching_pair(row, o.report.source); cJSON_AddItemToArray(observed, row);
-    }
-    return json_response(r, j);
+    return j;
 }
-static esp_err_t commissioning_action(httpd_req_t *r) {
-    char body[256], type[40];
-    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
-        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
-    size_t used = 0;
-    while (used < r->content_len) {
-        int n = httpd_req_recv(r, body + used, r->content_len - used);
-        if (n <= 0) return ESP_FAIL;
-        used += (size_t)n;
-    }
-    body[used] = 0;
-    cJSON *j = !memchr(body, 0, used) && mqtt_json_flat(body) ? cJSON_ParseWithOpts(body, NULL, true) : NULL;
-    const char *mode = string(j, "mode");
-    esp_err_t e = ESP_ERR_INVALID_ARG;
-    if (cJSON_IsObject(j) && cJSON_GetArraySize(j) == 1 && mode &&
-        (!strcmp(mode, "listen-only") || !strcmp(mode, "control-enabled")))
-        e = radio_mode_set(!strcmp(mode, "control-enabled"));
-    const char *action=string(j,"action"); uint8_t a[4];
-    if (action && address(j,"radiator",a) && cJSON_GetArraySize(j)==(!strcmp(action,"remove") ? 2 : 3))
-        e=radio_monitor_change(action,a,string(j,"name"));
-    cJSON_Delete(j);
-    if (e == ESP_ERR_INVALID_ARG) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST,
-        "Use mode or monitor action select/rename/remove with radiator address and name");
-    if (e == RADIO_ERR_MONITOR_CAPACITY || e == RADIO_ERR_MONITOR_PAIRED || e == RADIO_ERR_MONITOR_UNOBSERVED) {
-        httpd_resp_set_status(r,"409 Conflict");
-        return httpd_resp_sendstr(r,e==RADIO_ERR_MONITOR_CAPACITY ? "Monitor capacity exhausted; remove a selection first." :
-            e==RADIO_ERR_MONITOR_PAIRED ? "Address already paired; use its existing Home Assistant device." :
-            "Address not observed; wait for a valid radiator report and select its full RF address.");
-    }
-    if (e != ESP_OK) {
-        httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, "Mode transition busy, monitoring full, address not observed/already paired, or persistence blocked. Check commissioning status; remove monitoring before pairing.");
-    }
-    httpd_resp_set_status(r, "202 Accepted"); httpd_resp_set_type(r, "application/json");
-    return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");
-}
-static esp_err_t radio_status_page(httpd_req_t *r) {
-    radio_status s = radio_transport_status(); int64_t now = esp_timer_get_time();
-    uint32_t id = 0; char query[64];
-    if (httpd_req_get_url_query_len(r)) {
-        if (httpd_req_get_url_query_str(r, query, sizeof(query)) != ESP_OK || strncmp(query, "id=", 3))
-            return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use ?id=<stable identity>");
-        char *end; errno = 0; unsigned long long parsed = strtoull(query + 3, &end, 10);
-        if (errno || !query[3] || *end || parsed == 0 || parsed > UINT32_MAX || query[3] < '0' || query[3] > '9')
-            return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid identity");
-        id = (uint32_t)parsed;
-    }
-    radiator_record selected = {0};
-    bool has_device = radio_device_status(id, &selected) == ESP_OK;
-    if (id && !has_device) { httpd_resp_set_status(r, "404 Not Found"); return httpd_resp_sendstr(r, "Unknown radiator identity"); }
-    cJSON *j = cJSON_CreateObject(); if (!j) return ESP_ERR_NO_MEM;
+
+static radiator_record records[CLEVERBOX_RADIATOR_CAPACITY];
+static radio_observation observations[RADIO_OBSERVATION_CAPACITY];
+
+static esp_err_t radio_get(httpd_req_t *r)
+{
+    radio_status s = radio_transport_status();
+    int64_t now = now_ms();
+    cJSON *j = cJSON_CreateObject();
 #ifdef CLEVERBOX_HOST
     simulation_status(j);
 #endif
-    health_json(j,&s);
-    cJSON_AddBoolToObject(j, "ready", s.ready); cJSON_AddNumberToObject(j, "error", s.error);
+    cJSON_AddBoolToObject(j, "ready", s.ready);
+    cJSON_AddNumberToObject(j, "error", s.error);
+    cJSON_AddStringToObject(j, "error_stage", s.error_stage);
     cJSON_AddNumberToObject(j, "chip_version", s.chip_version);
-    cJSON_AddNumberToObject(j, "valid_frames", s.valid_frames); cJSON_AddNumberToObject(j, "invalid_frames", s.invalid_frames);
+    cJSON_AddNumberToObject(j, "valid_frames", s.valid_frames);
+    cJSON_AddNumberToObject(j, "invalid_frames", s.invalid_frames);
     cJSON_AddNumberToObject(j, "receive_errors", s.receive_errors);
-    cJSON_AddNumberToObject(j, "capacity", s.capacity); cJSON_AddNumberToObject(j, "registry_error", s.registry_error);
-    cJSON_AddStringToObject(j, "registry_problem", s.registry_error == DEVICE_STORE_ERR_CAPACITY ?
-        "stored_registry_exceeds_capacity" : s.registry_error ? "load_failed" : "none");
-    cJSON_AddNumberToObject(j, "exchange_id", s.exchange_id);
-    cJSON_AddBoolToObject(j, "mutation_pending", s.mutation_pending); cJSON_AddNumberToObject(j, "mutation_error", s.mutation_error);
-    cJSON *devices = cJSON_AddArrayToObject(j, "radiators"); radiator_record d;
-    unsigned active_commands = 0;
-    for (size_t i = 0; radio_device_at(i, &d) == ESP_OK; ++i) {
-        if (d.command_reserved) ++active_commands;
-        cJSON *item = cJSON_CreateObject(); device_json(item, &d, now); cJSON_AddItemToArray(devices, item);
-    }
-    cJSON_AddNumberToObject(j, "active_commands", active_commands);
-    if (has_device) device_json(j, &selected, now);
-    else if (s.device_count == 0) { radiator_record empty = {0}; device_json(j, &empty, now); cJSON_DeleteItemFromObjectCaseSensitive(j, "pairing"); }
-    if (!has_device) {
-        cJSON *pair = cJSON_AddObjectToObject(j, "pairing");
-        cJSON_AddStringToObject(pair, "phase", rf_pair_phase_name(s.pairing.phase));
-        cJSON_AddBoolToObject(pair, "saved", s.device_count != 0 && s.pairing_saved); cJSON_AddNumberToObject(pair, "error", s.pairing_error);
-        char controller[9], radiator[9]; address_text(s.pairing.controller, controller); address_text(s.pairing.radiator, radiator);
-        cJSON_AddStringToObject(pair, "controller", controller); cJSON_AddStringToObject(pair, "radiator", radiator);
-    }
-    cJSON *inclusion = cJSON_AddObjectToObject(j, "inclusion");
-    cJSON_AddNumberToObject(inclusion, "id", s.pairing_id);
-    cJSON_AddBoolToObject(inclusion, "duplicate", s.pairing_duplicate);
-    cJSON_AddStringToObject(inclusion, "phase", rf_pair_phase_name(s.pairing.phase));
-    cJSON_AddBoolToObject(inclusion, "saved", s.pairing_saved); cJSON_AddNumberToObject(inclusion, "error", s.pairing_error);
+    cJSON_AddNumberToObject(j, "transmissions", s.transmissions);
+    cJSON_AddNumberToObject(j, "capacity", CLEVERBOX_RADIATOR_CAPACITY);
+    cJSON_AddNumberToObject(j, "registry_error", s.registry_error);
     if (s.has_frame) {
         char hex[RF_MAX_FRAME * 2 + 1];
         rf_to_hex(&s.last_frame, hex);
         cJSON_AddStringToObject(j, "last_frame", hex);
-        cJSON_AddNumberToObject(j, "frame_age_ms", (now - s.frame_time_us) / 1000);
+        cJSON_AddNumberToObject(j, "frame_age_ms", (double)(now - s.frame_ms));
     }
-    if (s.has_report) {
-        cJSON *report = cJSON_AddObjectToObject(j, "report");
-        char source[9], destination[9];
-        address_text(s.last_report.source, source);
-        address_text(s.last_report.destination, destination);
-        cJSON_AddStringToObject(report, "source", source);
-        cJSON_AddStringToObject(report, "destination", destination);
-        cJSON_AddNumberToObject(report, "age_ms", (now - s.report_time_us) / 1000);
-        if (s.last_report.temperature_available)
-            cJSON_AddNumberToObject(report, "temperature_c", s.last_report.temperature_centi_c / 100.0);
-        else cJSON_AddNullToObject(report, "temperature_c");
-        if (s.last_report.target_available)
-            cJSON_AddNumberToObject(report, "target_c", s.last_report.target_centi_c / 100.0);
-        else cJSON_AddNullToObject(report, "target_c");
-        cJSON_AddNumberToObject(report, "mode", s.last_report.mode);
+    cJSON *p = cJSON_AddObjectToObject(j, "pairing");
+    cJSON_AddNumberToObject(p, "id", s.pairing_id);
+    cJSON_AddStringToObject(p, "phase", rf_pair_phase_name(s.pairing.phase));
+    cJSON_AddNumberToObject(p, "error", s.pairing_error);
+    cJSON_AddStringToObject(p, "error_name", radio_error_name(s.pairing_error));
+    add_address(p, "controller", s.pairing.controller);
+    add_address(p, "discovery", s.pairing.candidate);
+    add_address(p, "radiator", s.pairing.radiator);
+    cJSON *list = cJSON_AddArrayToObject(j, "radiators");
+    size_t count = radio_radiators(records, CLEVERBOX_RADIATOR_CAPACITY);
+    for (size_t i = 0; i < count; ++i) cJSON_AddItemToArray(list, radiator_json(&records[i], now));
+    list = cJSON_AddArrayToObject(j, "observations");
+    size_t heard = radio_observations(observations, RADIO_OBSERVATION_CAPACITY);
+    for (size_t i = 0; i < heard; ++i) {
+        cJSON *o = cJSON_CreateObject();
+        add_address(o, "radiator", observations[i].report.source);
+        add_report(o, &observations[i].report, now - observations[i].time_ms);
+        for (size_t k = 0; k < count; ++k)
+            if (!memcmp(records[k].radiator, observations[i].report.source, 4)) cJSON_AddNumberToObject(o, "id", records[k].id);
+        cJSON_AddItemToArray(list, o);
     }
-    return json_response(r, j);
+    return send_json(r, "200 OK", j);
 }
-static esp_err_t registry_action(httpd_req_t *r) {
-    char body[256], type[40];
-    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
-        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
-    size_t used = 0;
-    while (used < r->content_len) { int n = httpd_req_recv(r, body + used, r->content_len - used); if (n <= 0) return ESP_FAIL; used += n; }
-    body[used] = 0; cJSON *j = cJSON_ParseWithOpts(body, NULL, true);
-    uint32_t id = 0; const char *action = string(j, "action"); esp_err_t result = ESP_ERR_INVALID_ARG;
-    if (identity(j, &id) && action) {
-        if (!strcmp(action, "rename")) result = radio_device_rename(id, string(j, "name"));
-        else if (!strcmp(action, "remove")) result = radio_device_remove(id);
-        else if (!strcmp(action, "select")) {
-            radiator_record d; result = radio_device_status(id, &d);
-            if (result == ESP_OK) {
-                cJSON_Delete(j); cJSON *out = cJSON_CreateObject(); device_json(out, &d, esp_timer_get_time());
-                return json_response(r, out); // Stateless selection; caller keeps the identity.
-            }
-        }
+
+static esp_err_t radio_post(httpd_req_t *r)
+{
+    cJSON *j = read_json(r);
+    esp_err_t e = j && string(j, "action") && !strcmp(string(j, "action"), "retry") ? radio_retry() : ESP_ERR_INVALID_ARG;
+    cJSON_Delete(j);
+    return send_result(r, e, "202 Accepted", NULL);
+}
+
+static esp_err_t pairing_post(httpd_req_t *r)
+{
+    cJSON *j = read_json(r);
+    const char *action = string(j, "action");
+    uint8_t controller[4], discovery[4];
+    uint32_t id = 0;
+    esp_err_t e = ESP_ERR_INVALID_ARG;
+    if (action && !strcmp(action, "start") && address(j, "source", controller) && address(j, "destination", discovery))
+        e = radio_pair_start(controller, discovery, &id);
+    else if (action && !strcmp(action, "cancel")) e = radio_pair_cancel();
+    cJSON_Delete(j);
+    cJSON *ok = cJSON_CreateObject();
+    if (id) cJSON_AddNumberToObject(ok, "id", id);
+    return send_result(r, e, "202 Accepted", ok);
+}
+
+static esp_err_t command_post(httpd_req_t *r)
+{
+    cJSON *j = read_json(r);
+    double id, mode, centi_c;
+    esp_err_t e = integer(j, "id", 1, UINT32_MAX, &id) && integer(j, "mode", 0, 3, &mode) &&
+                  integer(j, "centi_c", 0, 3000, &centi_c)
+                  ? radio_command((uint32_t)id, (rf_mode)mode, (int)centi_c, 0) : ESP_ERR_INVALID_ARG;
+    cJSON_Delete(j);
+    return send_result(r, e, "202 Accepted", NULL);
+}
+
+static esp_err_t radiators_post(httpd_req_t *r)
+{
+    cJSON *j = read_json(r);
+    const char *action = string(j, "action");
+    double id = 0;
+    uint32_t added = 0;
+    uint8_t radiator[4];
+    esp_err_t e = ESP_ERR_INVALID_ARG;
+    if (!action) {
+    } else if (!strcmp(action, "monitor") && address(j, "radiator", radiator)) {
+        e = radio_monitor(radiator, string(j, "name"), &added);
+    } else if (integer(j, "id", 1, UINT32_MAX, &id)) {
+        if (!strcmp(action, "rename")) e = radio_rename((uint32_t)id, string(j, "name"));
+        else if (!strcmp(action, "remove")) e = radio_remove((uint32_t)id);
     }
     cJSON_Delete(j);
-    if (result == ESP_ERR_INVALID_ARG) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Invalid registry action, identity or name");
-    if (result != ESP_OK) { httpd_resp_set_status(r, "409 Conflict"); return httpd_resp_sendstr(r, "Unknown/ambiguous identity, active operation, storage blocked or busy"); }
-    httpd_resp_set_status(r, "202 Accepted"); httpd_resp_set_type(r, "application/json");
-    return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");
+    cJSON *ok = cJSON_CreateObject();
+    cJSON_AddNumberToObject(ok, "id", added ? added : (uint32_t)id);
+    return send_result(r, e, "200 OK", ok);
 }
 
-static esp_err_t network_status_page(httpd_req_t *r) {
+// Builds a short frame without sending it.
+static esp_err_t preview_post(httpd_req_t *r)
+{
+    cJSON *j = read_json(r);
+    const char *command = string(j, "command");
+    uint8_t source[4], destination[4];
+    rf_frame f = {0};
+    bool ok = command && address(j, "source", source) && address(j, "destination", destination) &&
+              (!strcmp(command, "offer") || !strcmp(command, "bind") || !strcmp(command, "poll")) &&
+              rf_short(&f, source, destination, !strcmp(command, "offer") ? RF_OFFER : !strcmp(command, "bind") ? RF_BIND : RF_POLL);
+    cJSON_Delete(j);
+    cJSON *out = cJSON_CreateObject();
+    if (ok) {
+        char hex[RF_MAX_FRAME * 2 + 1];
+        rf_to_hex(&f, hex);
+        cJSON_AddStringToObject(out, "frame", hex);
+    }
+    return send_result(r, ok ? ESP_OK : ESP_ERR_INVALID_ARG, "200 OK", out);
+}
+
+static esp_err_t network_get(httpd_req_t *r)
+{
     network_status s;
-    if (network_get_status(&s) != ESP_OK) {
-        httpd_resp_set_status(r, "503 Service Unavailable");
-        return httpd_resp_sendstr(r, "Network status unavailable");
-    }
+    network_get_status(&s);
     cJSON *j = cJSON_CreateObject();
-    http_interface interface = http_request_interface(r);
-    cJSON_AddStringToObject(j, "http_interface", http_interface_name(interface));
-    cJSON_AddBoolToObject(j, "http_control_allowed", interface == HTTP_INTERFACE_STA);
-    cJSON_AddBoolToObject(j, "ap_closing", s.ap_closing);
     cJSON_AddStringToObject(j, "state", network_state_name(s.state));
-    cJSON_AddStringToObject(j, "setup_result", network_setup_name(s.setup));
-    cJSON_AddBoolToObject(j, "configured", s.configured);
-    cJSON_AddBoolToObject(j, "persistence_uncertain", s.persistence_uncertain);
-    cJSON_AddBoolToObject(j, "recovery_ap", s.recovery_ap);
-    cJSON_AddBoolToObject(j, "manual_recovery", s.manual_recovery);
-    cJSON_AddStringToObject(j, "recovery_error", s.recovery_error);
-    cJSON_AddNumberToObject(j, "event_queue_overflows", s.event_queue_overflows);
-    cJSON_AddNumberToObject(j, "attempts", s.attempts);
     cJSON_AddStringToObject(j, "ip", s.ip);
-    cJSON_AddStringToObject(j, "error", s.error);
-    return json_response(r, j);
-}
-static esp_err_t network_action(httpd_req_t *r) {
-    char body[768], type[40];
-    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
-        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
-    size_t used = 0;
-    while (used < r->content_len) {
-        int n = httpd_req_recv(r, body + used, r->content_len - used);
-        if (n <= 0) { memset(body, 0, sizeof(body)); return ESP_FAIL; }
-        used += (size_t)n;
-    }
-    body[used] = 0;
-    // cJSON strings are NUL terminated. Reject actual escaped/embedded NUL,
-    // while allowing literal backslash text in otherwise valid credentials.
-    bool valid = !memchr(body, 0, used);
-    for (size_t i = 0; valid && i + 1 < used; ++i) {
-        if (body[i] != '\\') continue;
-        if (i + 5 < used && !strncmp(body + i + 1, "u0000", 5)) valid = false;
-        ++i; // Skip the escaped character, including an escaped backslash.
-    }
-    cJSON *j = valid ? cJSON_ParseWithOpts(body, NULL, true) : NULL;
-    memset(body, 0, sizeof(body));
-    const char *action = string(j, "action");
-    esp_err_t err = ESP_ERR_INVALID_ARG;
-    network_credentials credentials = {0};
-    const char *ssid = string(j, "ssid"), *password = string(j, "password");
-    if (cJSON_IsObject(j) && action && !strcmp(action, "configure") &&
-        cJSON_GetArraySize(j) == 3 && ssid && password &&
-        strlen(ssid) < sizeof(credentials.ssid) && strlen(password) < sizeof(credentials.password)) {
-        strcpy(credentials.ssid, ssid); strcpy(credentials.password, password);
-        err = network_configure(&credentials);
-    } else if (cJSON_IsObject(j) && action && !strcmp(action, "forget") && cJSON_GetArraySize(j) == 2 &&
-               cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(j, "confirm")))
-        err = network_forget();
-    else if (cJSON_IsObject(j) && action && !strcmp(action, "finish_recovery") && cJSON_GetArraySize(j) == 1)
-        err = network_finish_recovery();
-    // Avoid retaining the password in the parsed request after admission.
-    cJSON *secret = cJSON_GetObjectItemCaseSensitive(j, "password");
-    if (cJSON_IsString(secret)) memset(secret->valuestring, 0, strlen(secret->valuestring));
-    memset(&credentials, 0, sizeof(credentials)); cJSON_Delete(j);
-    if (err == ESP_ERR_INVALID_ARG)
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use configure with SSID (1–32 bytes) and personal-network password (8–63 printable ASCII characters), finish_recovery, or forget with confirm:true");
-    if (err != ESP_OK) {
-        httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, "Network setup busy or unavailable; check status and retry");
-    }
-    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
-    httpd_resp_set_type(r, "application/json"); httpd_resp_set_status(r, "202 Accepted");
-    return httpd_resp_sendstr(r, "{\"accepted\":true}");
+    cJSON_AddBoolToObject(j, "configured", s.configured);
+    cJSON_AddBoolToObject(j, "ap", s.ap);
+    cJSON_AddNumberToObject(j, "error", s.error);
+    return send_json(r, "200 OK", j);
 }
 
-static esp_err_t time_status_page(httpd_req_t *r) {
-    device_time_status s; device_time_get(&s);
+static esp_err_t network_post(httpd_req_t *r)
+{
+    cJSON *j = read_json(r);
+    const char *action = string(j, "action"), *ssid = string(j, "ssid"), *password = string(j, "password");
+    network_credentials c = {0};
+    esp_err_t e = ESP_ERR_INVALID_ARG;
+    if (!action) {
+    } else if (!strcmp(action, "configure") && ssid && password &&
+               strlen(ssid) < sizeof(c.ssid) && strlen(password) < sizeof(c.password)) {
+        strcpy(c.ssid, ssid); strcpy(c.password, password);
+        e = network_configure(&c);
+    } else if (!strcmp(action, "forget")) e = network_forget();
+    else if (!strcmp(action, "finish_recovery")) e = network_close_ap();
+    cJSON_Delete(j);
+    return send_result(r, e, "200 OK", NULL);
+}
+
+static esp_err_t time_get(httpd_req_t *r)
+{
+    device_time_status s;
+    device_time_get(&s);
     cJSON *j = cJSON_CreateObject();
     cJSON_AddBoolToObject(j, "usable", s.usable);
-    cJSON_AddStringToObject(j, "source", s.source == TIME_NETWORK ? "network" : s.source == TIME_MANUAL ? "manual" : "unsynchronized");
+    cJSON_AddStringToObject(j, "source", s.source == TIME_NETWORK ? "network" : s.source == TIME_MANUAL ? "manual" : "unset");
     cJSON_AddStringToObject(j, "timezone", s.timezone);
-    cJSON_AddBoolToObject(j, "synchronized_this_boot", s.synchronized_this_boot);
-    cJSON_AddBoolToObject(j, "network_connected", s.network_connected);
-    if (s.synchronized_this_boot) cJSON_AddNumberToObject(j, "sync_age_ms", s.sync_age_ms);
-    else cJSON_AddNullToObject(j, "sync_age_ms");
-    cJSON_AddNumberToObject(j, "config_error", s.config_error);
-    cJSON_AddNumberToObject(j, "sntp_error", s.sntp_error);
-    cJSON_AddBoolToObject(j, "persistence_uncertain", s.persistence_uncertain);
     if (s.usable) {
         cJSON_AddNumberToObject(j, "unix_seconds", (double)s.unix_seconds);
         cJSON_AddStringToObject(j, "utc", s.utc);
         cJSON_AddStringToObject(j, "local", s.local);
     }
-    return json_response(r, j);
+    return send_json(r, "200 OK", j);
 }
-static esp_err_t time_action(httpd_req_t *r) {
-    char body[256], type[40];
-    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
-    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
-        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
-    size_t used = 0;
-    while (used < r->content_len) {
-        int n = httpd_req_recv(r, body + used, r->content_len - used);
-        if (n <= 0) return ESP_FAIL;
-        used += (size_t)n;
-    }
-    body[used] = 0;
-    bool valid = !memchr(body, 0, used);
-    for (size_t i = 0; valid && i + 1 < used; ++i) {
-        if (body[i] != '\\') continue;
-        if (i + 5 < used && !strncmp(body + i + 1, "u0000", 5)) valid = false;
-        ++i;
-    }
-    cJSON *j = valid ? cJSON_ParseWithOpts(body, NULL, true) : NULL;
+
+static esp_err_t time_post(httpd_req_t *r)
+{
+    cJSON *j = read_json(r);
     const char *action = string(j, "action");
-    esp_err_t err = ESP_ERR_INVALID_ARG;
-    if (cJSON_IsObject(j) && cJSON_GetArraySize(j) == 2 && action) {
-        if (!strcmp(action, "timezone")) err = device_time_timezone(string(j, "timezone"));
-        else if (!strcmp(action, "manual")) {
-            cJSON *v = cJSON_GetObjectItemCaseSensitive(j, "unix_seconds");
-            if (cJSON_IsNumber(v) && isfinite(v->valuedouble) &&
-                v->valuedouble >= DEVICE_TIME_MIN && v->valuedouble <= DEVICE_TIME_MAX &&
-                floor(v->valuedouble) == v->valuedouble)
-                err = device_time_manual((int64_t)v->valuedouble);
-        }
-    }
+    double seconds;
+    esp_err_t e = ESP_ERR_INVALID_ARG;
+    if (action && !strcmp(action, "timezone")) e = device_time_timezone(string(j, "timezone"));
+    else if (action && !strcmp(action, "manual") && integer(j, "unix_seconds", DEVICE_TIME_MIN, DEVICE_TIME_MAX, &seconds))
+        e = device_time_manual((int64_t)seconds);
     cJSON_Delete(j);
-    if (err == ESP_ERR_INVALID_ARG)
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use timezone with a supported POSIX rule, or manual with integer UTC unix_seconds (2020–2099)");
-    if (err != ESP_OK) {
-        httpd_resp_set_status(r, "409 Conflict");
-        return httpd_resp_sendstr(r, "Time update failed. Check time status; timezone persistence may be uncertain. Retry explicitly.");
-    }
-    httpd_resp_set_type(r, "application/json");
-    return httpd_resp_sendstr(r, "{\"updated\":true,\"transmitted\":false}");
+    return send_result(r, e, "200 OK", NULL);
 }
 
-static esp_err_t mqtt_status_page(httpd_req_t *r) {
-    mqtt_bridge_status s; mqtt_bridge_get(&s); cJSON *j = cJSON_CreateObject();
-    cJSON_AddBoolToObject(j, "configured", s.configured); cJSON_AddBoolToObject(j, "enabled", s.enabled);
-    cJSON_AddBoolToObject(j, "connected", s.connected); cJSON_AddBoolToObject(j, "pending", s.pending);
-    cJSON_AddBoolToObject(j, "persistence_uncertain", s.persistence_uncertain);
-    cJSON_AddStringToObject(j, "bridge_id", s.bridge_id); cJSON_AddStringToObject(j, "session", s.session);
-    cJSON_AddStringToObject(j, "host", s.host); cJSON_AddNumberToObject(j, "port", s.port);
+static esp_err_t mqtt_get(httpd_req_t *r)
+{
+    mqtt_bridge_status s;
+    mqtt_bridge_get(&s);
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddBoolToObject(j, "configured", s.configured);
+    cJSON_AddBoolToObject(j, "enabled", s.enabled);
+    cJSON_AddBoolToObject(j, "connected", s.connected);
+    cJSON_AddBoolToObject(j, "discovery_enabled", s.discovery);
+    cJSON_AddStringToObject(j, "bridge_id", s.bridge_id);
+    cJSON_AddStringToObject(j, "host", s.host);
+    cJSON_AddNumberToObject(j, "port", s.port);
     cJSON_AddStringToObject(j, "username", s.username);
-    cJSON_AddNumberToObject(j, "config_error", s.config_error); cJSON_AddNumberToObject(j, "client_error", s.client_error);
-    cJSON_AddBoolToObject(j, "broker_connected", s.broker_connected);
-    cJSON_AddBoolToObject(j, "subscription_pending", s.subscription_pending);
-    cJSON_AddNumberToObject(j, "subscription_error", s.subscription_error);
-    cJSON_AddBoolToObject(j, "discovery_enabled", s.discovery_enabled);
-    cJSON_AddNumberToObject(j, "discovery_error", s.discovery_error);
-    cJSON_AddNumberToObject(j, "discovery_pending", s.discovery_pending);
-    cJSON_AddNumberToObject(j, "dropped_input", s.dropped_input); return json_response(r, j);
-}
-static esp_err_t mqtt_action(httpd_req_t *r) {
-    char body[768], type[40]; httpd_resp_set_hdr(r, "Cache-Control", "no-store");
-    if (httpd_req_get_hdr_value_str(r, "Content-Type", type, sizeof(type)) != ESP_OK ||
-        strcmp(type, "application/json") || !r->content_len || r->content_len >= sizeof(body))
-        return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Use a small JSON request");
-    size_t used = 0;
-    while (used < r->content_len) {
-        int n = httpd_req_recv(r, body+used, r->content_len-used);
-        if (n <= 0) { memset(body, 0, sizeof(body)); return ESP_FAIL; }
-        used += (size_t)n;
-    }
-    body[used] = 0; bool valid = !memchr(body, 0, used);
-    for (size_t i = 0; valid && i+1 < used; ++i) {
-        if (body[i] != '\\') continue;
-        if (i+5 < used && !strncmp(body+i+1, "u0000", 5)) valid = false;
-        ++i;
-    }
-    cJSON *j = valid && mqtt_json_flat(body) ? cJSON_ParseWithOpts(body, NULL, true) : NULL; memset(body, 0, sizeof(body));
-    const char *action = string(j, "action"); esp_err_t err = ESP_ERR_INVALID_ARG;
-    mqtt_settings settings = {0}; int port;
-    const char *host = string(j, "host"), *user = string(j, "username"), *password = string(j, "password");
-    cJSON *enabled = cJSON_GetObjectItemCaseSensitive(j, "enabled");
-    if (cJSON_IsObject(j) && action && !strcmp(action, "configure") && cJSON_GetArraySize(j) == 6 &&
-        host && user && password && strlen(host) <= MQTT_HOST_BYTES && strlen(user) <= MQTT_USER_BYTES &&
-        strlen(password) <= MQTT_PASSWORD_BYTES && integer(j, "port", 1, 65535, &port) && cJSON_IsBool(enabled)) {
-        settings.configured = true; settings.enabled = cJSON_IsTrue(enabled); settings.port = (uint16_t)port;
-        strcpy(settings.host, host); strcpy(settings.username, user); strcpy(settings.password, password);
-        err = mqtt_bridge_configure(&settings);
-    } else if (cJSON_IsObject(j) && cJSON_GetArraySize(j) == 1) err = mqtt_bridge_action(action);
-    cJSON *secret = cJSON_GetObjectItemCaseSensitive(j, "password");
-    if (cJSON_IsString(secret)) memset(secret->valuestring, 0, strlen(secret->valuestring));
-    memset(&settings, 0, sizeof(settings)); cJSON_Delete(j);
-    if (err == ESP_ERR_INVALID_ARG) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST,
-        "Use configure with host, port, username, password and enabled, or enable/disable/forget");
-    if (err != ESP_OK) { httpd_resp_set_status(r, "409 Conflict"); return httpd_resp_sendstr(r, "MQTT setup busy, or discovery records remain. Disable discovery and finish cleanup before changing or forgetting the broker."); }
-    httpd_resp_set_status(r, "202 Accepted"); httpd_resp_set_type(r, "application/json");
-    return httpd_resp_sendstr(r, "{\"accepted\":true,\"transmitted\":false}");
+    cJSON_AddNumberToObject(j, "error", s.error);
+    return send_json(r, "200 OK", j);
 }
 
-// Single endpoint admission table. New routes must deliberately choose their
-// recovery exposure. All POSTs except Wi-Fi setup require the trusted LAN.
-typedef struct {
-    const char *uri;
-    int method;
-    esp_err_t (*handler)(httpd_req_t *);
-    bool recovery;
-} api_route;
-static const api_route routes[] = {
-    {"/api/commissioning", HTTP_GET, commissioning_status, true},
-    {"/api/commissioning", HTTP_POST, commissioning_action, false},
-    {"/api/mqtt", HTTP_GET, mqtt_status_page, true},
-    {"/api/mqtt", HTTP_POST, mqtt_action, false},
-    {"/api/time", HTTP_GET, time_status_page, true},
-    {"/api/time", HTTP_POST, time_action, false},
-    {"/api/network", HTTP_GET, network_status_page, true},
-    {"/api/network", HTTP_POST, network_action, true},
-    {"/api/radiators", HTTP_GET, radio_status_page, true},
-    {"/api/radiators", HTTP_POST, registry_action, false},
-    {"/api/preview", HTTP_POST, preview, false},
-    {"/api/radio", HTTP_GET, radio_status_page, true},
-    {"/api/radio", HTTP_POST, radio_action, false},
-    {"/api/pairing", HTTP_POST, pairing_action, false},
-    {"/api/command", HTTP_POST, live_command, false},
-};
-static esp_err_t dispatch(httpd_req_t *r) {
-    const api_route *route = r->user_ctx;
-    http_interface interface = http_request_interface(r);
-    if (interface == HTTP_INTERFACE_STA ||
-        (interface == HTTP_INTERFACE_AP && route->recovery) ||
-        (interface == HTTP_INTERFACE_UNKNOWN && route->method == HTTP_GET))
-        return route->handler(r);
-    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
-    // Close denied POST connections: their unread bodies must not become the
-    // next request on a persistent socket. Nothing has reached a handler yet.
-    httpd_resp_set_hdr(r, "Connection", "close");
-    httpd_resp_set_status(r, "403 Forbidden");
-    esp_err_t result = httpd_resp_sendstr(r,
-        "This operation requires the station interface on your trusted home LAN. "
-        "Recovery access permits Wi-Fi setup and diagnostics only.");
-    // IDF closes the session immediately when a URI handler returns ESP_FAIL.
-    return result == ESP_OK ? ESP_FAIL : result;
+static esp_err_t mqtt_post(httpd_req_t *r)
+{
+    cJSON *j = read_json(r);
+    const char *action = string(j, "action"), *host = string(j, "host");
+    const char *user = string(j, "username"), *password = string(j, "password");
+    double port;
+    mqtt_settings s = {0};
+    esp_err_t e = ESP_ERR_INVALID_ARG;
+    if (action && !strcmp(action, "configure")) {
+        if (host && user && password && integer(j, "port", 1, 65535, &port) &&
+            cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(j, "enabled")) && strlen(host) <= MQTT_HOST_BYTES &&
+            strlen(user) <= MQTT_USER_BYTES && strlen(password) <= MQTT_PASSWORD_BYTES) {
+            s.enabled = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(j, "enabled"));
+            s.port = (uint16_t)port;
+            strcpy(s.host, host); strcpy(s.username, user); strcpy(s.password, password);
+            e = mqtt_bridge_configure(&s);
+        }
+    } else if (action) e = mqtt_bridge_action(action);
+    cJSON_Delete(j);
+    return send_result(r, e, "200 OK", NULL);
 }
-void http_api_register(httpd_handle_t server) {
-    for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {
-        httpd_uri_t uri = {.uri = routes[i].uri, .method = routes[i].method,
-            .handler = dispatch, .user_ctx = (void *)&routes[i]};
-        ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri));
-    }
+
+void http_api_register(httpd_handle_t server)
+{
+    static const httpd_uri_t routes[] = {
+        {.uri = "/api/radio", .method = HTTP_GET, .handler = radio_get},
+        {.uri = "/api/radio", .method = HTTP_POST, .handler = radio_post},
+        {.uri = "/api/pairing", .method = HTTP_POST, .handler = pairing_post},
+        {.uri = "/api/command", .method = HTTP_POST, .handler = command_post},
+        {.uri = "/api/radiators", .method = HTTP_POST, .handler = radiators_post},
+        {.uri = "/api/preview", .method = HTTP_POST, .handler = preview_post},
+        {.uri = "/api/network", .method = HTTP_GET, .handler = network_get},
+        {.uri = "/api/network", .method = HTTP_POST, .handler = network_post},
+        {.uri = "/api/time", .method = HTTP_GET, .handler = time_get},
+        {.uri = "/api/time", .method = HTTP_POST, .handler = time_post},
+        {.uri = "/api/mqtt", .method = HTTP_GET, .handler = mqtt_get},
+        {.uri = "/api/mqtt", .method = HTTP_POST, .handler = mqtt_post},
+    };
+    for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i)
+        ESP_ERROR_CHECK(httpd_register_uri_handler(server, &routes[i]));
 }

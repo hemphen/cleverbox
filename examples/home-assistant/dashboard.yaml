@@ -1,15 +1,10 @@
-# Discovery observation IDs include bridge identity. Replace 020000000001 and radiator IDs.
-# Helpers/Apply come from the optional package; adjust customized IDs.
+# Manual card. Replace 020000000001 and the radiator IDs as in the package.
 type: vertical-stack
 cards:
   - type: entities
-    title: Cleverbox transport
+    title: Radiator 1
     entities:
       - binary_sensor.cleverbox_ready
-      - sensor.cleverbox_session
-  - type: entities
-    title: Radiator 1 — observations and explicit draft
-    entities:
       - sensor.cleverbox_020000000001_1_temperature
       - sensor.cleverbox_020000000001_1_observed_target
       - sensor.cleverbox_020000000001_1_observed_mode
@@ -18,9 +13,9 @@ cards:
       - input_select.cleverbox_1_draft_mode
       - button.cleverbox_1_apply
       - sensor.cleverbox_020000000001_1_last_admission
-      - sensor.cleverbox_020000000001_1_last_delivery
+      - sensor.cleverbox_020000000001_1_last_command
   - type: entities
-    title: Radiator 2 — observations and explicit draft
+    title: Radiator 2
     entities:
       - sensor.cleverbox_020000000001_2_temperature
       - sensor.cleverbox_020000000001_2_observed_target
@@ -30,4 +25,4 @@ cards:
       - input_select.cleverbox_2_draft_mode
       - button.cleverbox_2_apply
       - sensor.cleverbox_020000000001_2_last_admission
-      - sensor.cleverbox_020000000001_2_last_delivery
+      - sensor.cleverbox_020000000001_2_last_command

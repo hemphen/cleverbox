@@ -1,63 +1,55 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-#include "esp_err.h"
-#include "mode_store.h"
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+#include "esp_err.h"
 #include "radiator_protocol.h"
 #include "radiator_control.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
-typedef struct { uint8_t controller[4], radiator[4]; } paired_device;
-// Capacity is a build setting, not an RF protocol limit. Names are UTF-8 bytes.
+
+// Small settings records in NVS namespace "cleverbox". Plain NVS calls: a
+// failed write returns its error and the caller reports it.
+esp_err_t store_load(const char *key, void *data, size_t *size);
+esp_err_t store_save(const char *key, const void *data, size_t size);
+esp_err_t store_erase(const char *key);
+
+// Capacity is a build setting, not an RF protocol limit.
 #ifndef CLEVERBOX_RADIATOR_CAPACITY
-#define CLEVERBOX_RADIATOR_CAPACITY 8
+#define CLEVERBOX_RADIATOR_CAPACITY 16
 #endif
 #define RADIATOR_NAME_BYTES 32
-#define REGISTRY_HEADER_BYTES 7
-#define REGISTRY_RECORD_BYTES (4 + RADIATOR_NAME_BYTES + 1 + 8)
-#define REGISTRY_STORAGE_BYTES (REGISTRY_HEADER_BYTES + REGISTRY_RECORD_BYTES * CLEVERBOX_RADIATOR_CAPACITY)
-#define DEVICE_STORE_ERR_CAPACITY 0x7c01
-#if CLEVERBOX_RADIATOR_CAPACITY < 1 || CLEVERBOX_RADIATOR_CAPACITY > 65535
-#error Invalid radiator capacity
-#endif
-typedef enum { RADIO_STORE_NONE, RADIO_STORE_PENDING, RADIO_STORE_OK, RADIO_STORE_FAILED } radio_store_result;
+
+// One record per radiator. A paired radiator has a nonzero controller address
+// (Cleverbox is its controller). A monitored radiator has an all-zero
+// controller and is only observed. ID, name and addresses persist; the rest is
+// RAM-only and cleared at boot.
 typedef struct {
     uint32_t id;
     char name[RADIATOR_NAME_BYTES + 1];
-    paired_device pair;
-    // Everything below is transient.
-    bool has_paired_report;
-    int64_t paired_report_time_us;
-    rf_report paired_report;
-    rf_control_status control;
-    bool command_reserved; // Admission through worker handoff and terminal publication.
-    bool command_pending;
-    // Optional transport correlation mailbox. Not persisted. Subsequent untracked
-    // HTTP commands cannot erase a tracked command's final result before it is read.
-    uint64_t command_cookie, result_cookie;
-    rf_control_status tracked_result;
-    int tracked_error;
-    int control_error;
+    uint8_t controller[4], radiator[4];
+    bool has_report;
+    int64_t report_ms;
+    rf_report report;
+    bool command_queued;
+    rf_control_status command;
+    int command_error;
+    uint64_t request_id;
 } radiator_record;
 typedef struct {
     uint32_t next_id;
     size_t count;
     radiator_record records[CLEVERBOX_RADIATOR_CAPACITY];
 } radiator_registry;
-#define RADIO_MONITOR_CAPACITY CLEVERBOX_RADIATOR_CAPACITY
-#define MONITOR_STORAGE_BYTES (7 + RADIO_MONITOR_CAPACITY * (4 + RADIATOR_NAME_BYTES + 1))
-typedef struct { uint8_t address[4]; char name[RADIATOR_NAME_BYTES + 1]; } monitor_selection;
-typedef struct { size_t count; monitor_selection records[RADIO_MONITOR_CAPACITY]; } monitor_registry;
-esp_err_t device_monitors_load(monitor_registry *out);
-esp_err_t device_monitors_save(const monitor_registry *value);
-// Registry v2 only. Unknown formats are rejected without mutation.
-// Capacity/version/validation failures block mutation, never truncate records.
-esp_err_t device_registry_load(radiator_registry *registry);
-esp_err_t device_registry_save(const radiator_registry *registry);
-// Save one prospective add/update/removal before publishing it to RAM.
-esp_err_t device_registry_save_record(const radiator_registry *registry,
-                                     const radiator_record *record, uint32_t remove_id);
+
+bool radiator_paired(const radiator_record *record);
+bool radiator_name_valid(const char *name);
+// Registry v2: version (2), count (LE16), next ID (LE32), then per record:
+// ID (LE32), name (33, NUL-terminated), controller (4), radiator (4).
+esp_err_t registry_load(radiator_registry *registry);
+esp_err_t registry_save(const radiator_registry *registry);
 #ifdef __cplusplus
 }
 #endif
